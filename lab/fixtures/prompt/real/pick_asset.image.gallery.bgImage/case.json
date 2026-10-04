@@ -1879,12 +1879,12 @@
    }
   ]
  },
- "request": "Open the image picker for the background image in the gallery titled 'Follow along'.",
+ "request": "Open the image picker for the Background Image in the 'Follow along' section.",
  "expected": {
   "ops": [
    {
     "op": "pick_asset",
-    "purpose": "background image for the gallery titled 'Follow along'",
+    "purpose": "Background Image for the 'Follow along' section",
     "asset_type": "image"
    },
    {
@@ -1895,14 +1895,14 @@
      "sectionId": "gallery"
     },
     "values": {
-     "bgImage": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200x1200.webp"
+     "bgImage": "https://cdn.int.breadstack.io/gal/lab/hero-field-1600x900.webp"
     },
     "assets": {
      "bgImage": {
-      "alt": "",
+      "alt": "Sunlit field at harvest",
       "srcset": {
-       "600": "https://cdn.int.breadstack.io/gal/lab/paper-texture-600.webp",
-       "1200": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200.webp"
+       "800": "https://cdn.int.breadstack.io/gal/lab/hero-field-800.webp",
+       "1600": "https://cdn.int.breadstack.io/gal/lab/hero-field-1600.webp"
       }
      }
     }
@@ -1911,15 +1911,15 @@
   "diff": [
    {
     "path": "homeSections[7].settings.bgImage",
-    "after": "BREADSTACK_CDN/lab/paper-texture-1200x1200.webp"
+    "after": "BREADSTACK_CDN/lab/hero-field-1600x900.webp"
    },
    {
-    "path": "homeSections[7].settings.bgImageSrcSet.600",
-    "after": "BREADSTACK_CDN/lab/paper-texture-600.webp"
+    "path": "homeSections[7].settings.bgImageSrcSet.800",
+    "after": "BREADSTACK_CDN/lab/hero-field-800.webp"
    },
    {
-    "path": "homeSections[7].settings.bgImageSrcSet.1200",
-    "after": "BREADSTACK_CDN/lab/paper-texture-1200.webp"
+    "path": "homeSections[7].settings.bgImageSrcSet.1600",
+    "after": "BREADSTACK_CDN/lab/hero-field-1600.webp"
    }
   ]
  },
@@ -1940,16 +1940,17 @@
   "mirror": false,
   "keyed_by": null,
   "current": null,
+  "field_phrase": "Background Image",
   "variant": "pick_asset",
-  "asset_id": "asset-texture-1",
+  "asset_id": "asset-hero-1",
   "measured": {
    "warnings": [],
    "written": [
     "homeSections[7].settings.bgImage",
     "homeSections[7].settings.bgImageSrcSet"
    ],
-   "engine_commit": "0f9fd067303f58871bc212aa045650fb53523fa3"
+   "engine_commit": "388825c161de41571453dddaf8ec5eee162b9f65"
   }
  },
- "engine_fingerprint": "1a13c10fe6d5f8b2e5f85fd5bb77704fa993dbdb4777e2203a0bc74ff3b9e801"
+ "engine_fingerprint": "bc880927d876672c00b17245cefd9f3a4bf000bcadbd23c91623ef77df8ae398"
 }

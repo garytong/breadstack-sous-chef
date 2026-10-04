@@ -98,7 +98,7 @@
      "type": "string"
     },
     "order": {
-     "description": "reorder: the complete new order as indexes into the current list (or section ids for the sections list); must be a permutation of the current rows.",
+     "description": "reorder only: the COMPLETE new order — list EVERY current row exactly once (a 3-row list needs 3 entries; to move one row, write the full new order, e.g. [1, 0, 2] — a partial order such as [1, 0] is refused, E_ORDER). Plain lists take 0-based indexes into the current rows. ID-KEYED lists take the row ids, NEVER indexes: a list that describe_target / lookup_fields shows with `orders` (filterOrder, headerNavOrder, footerNavOrder, paymentMethodsOrder, cardChipOrder, sortOptionsOrder, …) e.g. [\"brand\", \"category\", \"price\", …] with every current id, and a page's sections list (section ids). An E_ORDER reply names the valid ids / the row count: resend the full order.",
      "items": {
       "anyOf": [
        {
@@ -163,18 +163,19 @@
    "type": "object"
   },
   "name": "edit_list",
-  "description": "Edit one list on a target: add a row, remove / duplicate a row, reorder rows, or update one row's fields (how detail panels — reviews, FAQ items, hero bullets, posts, footer columns — are edited). ONE structural change (add/remove/reorder/duplicate) per call. Nested lists use the dotted key (slides[].bullets) and an index array [parentIdx, childIdx]; `add` on a nested list takes the parent index only. On a page target the list \"sections\" is the page's own section rows {id,type,enabled}: add takes item {id: <sectionType>} (the item's id IS the section type to add; the host assigns the row's instance id), update only {enabled}, duplicate copies a row, and built-in __pinned_* rows cannot be added, removed or reordered (E_PINNED). Lists and their allowed ops come from describe_target or lookup_fields {list}. Known lists — sections.blog: pageVisibility.blog.posts; sections.blogSection: pageVisibility.blog.posts; sections.contentBlock: bullets, faqs, images, imagesAlt, imagesLink, items, milestones, tiers; sections.featuredCategories: pageVisibility.products.categoryOrder; sections.gallery: images; sections.hero: slides, slides[].bullets; sections.heroBanner: slides, slides[].bullets; sections.locations: disabledLocationIds, locationOrder; sections.loyaltyForm: infoSections; sections.milestones: faqs, milestones; sections.perksCards: bullets, faqs, images, imagesAlt, imagesLink, imagesSrcSet, items, milestones, tiers; sections.perksIcons: bullets, faqs, images, imagesAlt, imagesLink, imagesSrcSet, items, milestones, tiers; sections.promotion: items, weekdayItems; sections.reviews: reviews; sections.testimonials: reviews; globalPanels.FooterSection: footerCustomColumns, footerCustomColumns[].links, footerLocationOrder, pageVisibility._meta.footerBottomCustomLinks, pageVisibility._meta.footerBottomOrder, pageVisibility._meta.footerNavCustomLinks, pageVisibility._meta.footerNavOrder, paymentMethodsOrder; globalPanels.HeaderSection: pageVisibility._meta.headerNavCustomLinks, pageVisibility._meta.headerNavOrder; globalPanels.ProductCardSection: cardChipOrder, cardRibbonColorRules; globalPanels.ShopMenuSection: shopMenuItems; branding: certifications; pages.blog: posts; pages.blog-detail: blog.posts; pages.faq: faqCategories, faqCategories[].items; pages.privacy-policy: privacyContent; pages.product-details: productDetail.chipOrder; pages.products: filterOrder, productListCategoryOrder, sortOptionsOrder; pages.return-refund: returnRefundContent; pages.terms-of-service: termsContent; details.CategoryDetailsPanel: childCategoryOrder. Section types for sections.add: blog, blogSection, content, contentBlock, featuredCategories, gallery, hero, heroBanner, locations, loyaltyForm, milestones, newsletter, perksCards, perksIcons, productCarousel, promotion, reviews, sectionDivider, testimonials."
+  "description": "Edit one list on a target: add a row, remove / duplicate a row, reorder rows, or update one row's fields (how detail panels — reviews, FAQ items, hero bullets, posts, footer columns — are edited). ONE structural change (add/remove/reorder/duplicate) per call; `reorder` writes the COMPLETE new order (see `order`). Nested lists use the dotted key (slides[].bullets) and an index array [parentIdx, childIdx]; `add` on a nested list takes the parent index only. On a page target the list \"sections\" is the page's own section rows {id,type,enabled}: add takes item {id: <sectionType>} (the item's id IS the section type to add; the host assigns the row's instance id), update only {enabled}, duplicate copies a row, and built-in __pinned_* rows cannot be added, removed or reordered (E_PINNED). Lists and their allowed ops come from describe_target or lookup_fields {list}. Known lists — sections.blog: pageVisibility.blog.posts; sections.blogSection: pageVisibility.blog.posts; sections.contentBlock: bullets, faqs, images, imagesAlt, imagesLink, items, milestones, tiers; sections.featuredCategories: pageVisibility.products.categoryOrder; sections.gallery: images; sections.hero: slides, slides[].bullets; sections.heroBanner: slides, slides[].bullets; sections.locations: disabledLocationIds, locationOrder; sections.loyaltyForm: infoSections; sections.milestones: faqs, milestones; sections.perksCards: bullets, faqs, images, imagesAlt, imagesLink, imagesSrcSet, items, milestones, tiers; sections.perksIcons: bullets, faqs, images, imagesAlt, imagesLink, imagesSrcSet, items, milestones, tiers; sections.promotion: items, weekdayItems; sections.reviews: reviews; sections.testimonials: reviews; globalPanels.FooterSection: footerCustomColumns, footerCustomColumns[].links, footerLocationOrder, pageVisibility._meta.footerBottomCustomLinks, pageVisibility._meta.footerBottomOrder, pageVisibility._meta.footerNavCustomLinks, pageVisibility._meta.footerNavOrder, paymentMethodsOrder; globalPanels.HeaderSection: pageVisibility._meta.headerNavCustomLinks, pageVisibility._meta.headerNavOrder; globalPanels.ProductCardSection: cardChipOrder, cardRibbonColorRules; globalPanels.ShopMenuSection: shopMenuItems; branding: certifications; pages.blog: posts; pages.blog-detail: blog.posts; pages.faq: faqCategories, faqCategories[].items; pages.privacy-policy: privacyContent; pages.product-details: productDetail.chipOrder; pages.products: filterOrder, productListCategoryOrder, sortOptionsOrder; pages.return-refund: returnRefundContent; pages.terms-of-service: termsContent; details.CategoryDetailsPanel: childCategoryOrder. Section types for sections.add: blog, blogSection, content, contentBlock, featuredCategories, gallery, hero, heroBanner, locations, loyaltyForm, milestones, newsletter, perksCards, perksIcons, productCarousel, promotion, reviews, sectionDivider, testimonials."
  },
  {
   "input_schema": {
    "additionalProperties": false,
    "properties": {
     "keys": {
-     "description": "Field keys to clear. Omit only to clear the whole target.",
+     "description": "The field keys to clear — only these are touched. At least one; every key must be a field of the target (dotted keyed keys allowed).",
      "items": {
       "description": "",
       "type": "string"
      },
+     "minItems": 1,
      "type": "array"
     },
     "target": {
@@ -215,12 +216,13 @@
     }
    },
    "required": [
-    "target"
+    "target",
+    "keys"
    ],
    "type": "object"
   },
   "name": "reset",
-  "description": "Clear fields back to their unset state (the editor's ↺ button): each key is written as its manifest unset_value — NOT the template default (use restore_default for that). Without keys the WHOLE target is cleared (a section loses every setting; a page loses its options including published), so always pass keys unless the merchant clearly asked to clear everything.",
+  "description": "Clear SPECIFIC fields back to their unset state (the editor's ↺ button): exactly the keys you list are written as their manifest unset_value — nothing else on the target changes, and NOT the template default (use restore_default for that). Clearing a whole target (every field of a section, page or panel) is not available: list every key you mean, confirmed via lookup_fields, one call per target. A call without keys is refused (E_OP) and nothing is cleared.",
   "strict": true
  },
  {
@@ -228,11 +230,12 @@
    "additionalProperties": false,
    "properties": {
     "keys": {
-     "description": "Field keys to restore. Omit only to restore the whole target.",
+     "description": "The field keys to restore — only these are touched. At least one; every key must be a field of the target (dotted keyed keys allowed).",
      "items": {
       "description": "",
       "type": "string"
      },
+     "minItems": 1,
      "type": "array"
     },
     "target": {
@@ -273,12 +276,13 @@
     }
    },
    "required": [
-    "target"
+    "target",
+    "keys"
    ],
    "type": "object"
   },
   "name": "restore_default",
-  "description": "Put fields back to the template's default value (the manifest `default`), going through the normal write path (companions, mirror, aliases). A key with no default is cleared instead. Without keys every field of the target is restored — pass keys unless the merchant asked for the whole thing.",
+  "description": "Put SPECIFIC fields back to the template's default value (the manifest `default`), going through the normal write path (companions, mirror, aliases): exactly the keys you list are restored — nothing else on the target changes. A listed key with no default is cleared to its unset_value instead. Restoring a whole target (every field of a section, page or panel) is not available: list every key you mean, confirmed via lookup_fields. A call without keys is refused (E_OP) and nothing is restored.",
   "strict": true
  },
  {
@@ -524,8 +528,7 @@
    "type": "object"
   },
   "name": "lookup_fields",
-  "description": "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, and the list it belongs to; plus the container's lists. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate.",
-  "strict": true
+  "description": "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, and the list it belongs to; plus the container's lists. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate."
  },
  {
   "input_schema": {
@@ -639,8 +642,7 @@
    "type": "object"
   },
   "name": "describe_target",
-  "description": "Describe a target (or container): its lists with allowed ops / orders / detail panel, its field key stems (or every key when few), the hero mirror, presets, keyed-key prefixes and — for a page — its built-in pinned section id. Cheap orientation before lookup_fields.",
-  "strict": true
+  "description": "Describe a target (or container): its lists with allowed ops / orders / detail panel, its field key stems (or every key when few), the hero mirror, presets, keyed-key prefixes and — for a page — its built-in pinned section id. Cheap orientation before lookup_fields."
  },
  {
   "input_schema": {

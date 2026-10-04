@@ -353,11 +353,11 @@ def main(argv: list[str] | None = None) -> int:
     say(render_plan(p))
     if args.dry_run:
         if importlib.util.find_spec("unsloth") is None and args.method == "gguf":
-            say("The [train] extra is not installed: pip install -e 'lab[train]' before exporting.")
+            say("The [train] extra is not installed: run 'make -C lab train-env' before exporting.")
         say("Dry run: nothing written. Drop --dry-run to export.")
         return 0
     if importlib.util.find_spec("unsloth") is None:
-        die("the [train] extra is not installed — pip install -e 'lab[train]' first")
+        die("the [train] extra is not installed — run 'make -C lab train-env' first")
     return export(args, p, base_text)
 
 

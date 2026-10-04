@@ -68,9 +68,24 @@ def test_the_replay_uses_a_fresh_copy_of_the_case_state_and_the_golden_ctx(engin
     before = copy.deepcopy(case["site_state"])
     V.verify(V.trace_from_fixture(fx), case, engine)
     (call,) = engine.calls
-    assert call["ctx"] == {"templateId": "editorial", **V.GOLDEN_CTX}
+    assert call["ctx"] == {"templateId": "editorial", **V.GOLDEN_CTX, "currentPage": "home"}  # the case's context.page
     assert call["state"] == before and case["site_state"] == before
     assert call["ops"] == case["expected"]["ops"]
+
+
+def test_ctx_of_carries_the_viewed_page_like_the_collector():
+    """collect.ctx_for sends `currentPage` = context.page live, and the engine
+    fills a section target that omits `page` from it (headless.mjs, 2026-10-03,
+    as the browser host always did). The replay must send the same ctx or a
+    bare target the collector accepted is E_TARGET here → a false invalid_op."""
+    from souschef_lab import collect as C
+    case = {"template": "editorial", "context": {"page": "products", "locations": [{"id": 7}, {"name": "no id"}]}}
+    ctx = V.ctx_of(case)
+    assert ctx["currentPage"] == "products" and ctx["locations"] == [{"id": "7"}] and ctx["templateId"] == "editorial"
+    assert V.ctx_of({"template": "editorial", "context": {}}).get("currentPage") is None  # nothing to fill from
+    assert V.ctx_of({"template": "editorial"}).get("currentPage") is None
+    live = C.ctx_for(case)
+    assert live["currentPage"] == ctx["currentPage"] and live["templateId"] == ctx["templateId"]
 
 
 def test_ops_are_tool_calls_minus_server_tools_report_unsupported_and_pick_asset():

@@ -119,20 +119,21 @@ def default_plan(cases_path: Path | None) -> list[dict]:
         _msg("Done — the loyalty form is on the home page and the tiles have a border.", usage=(190, 14)),
     ]})
 
-    # 4. pick_asset — the asset the collector will answer with is deterministic (collect.pick_asset_for), so the
-    #    scripted set_fields can carry its URL + {alt, srcset} as the model would after reading the asset result
+    # 4. pick_asset — the asset the collector will answer with is deterministic (collect.pick_asset_for →
+    #    state.fixture_asset_for, keyed by the case id ALONE — the same function the generator used for the case's
+    #    expected ops), so the scripted set_fields carries its URL + {alt, srcset} as the model would after reading the
+    #    asset result, reproduces expected.diff, and the capture is a `pass`. The call id plays no part in the pick
+    #    (before 377cefa it did, and this plan searched for the id whose pick matched the case).
     pick = _case(cases, "image/gallery/gallery/bgImage/pick")
     p_op, s_op = pick["expected"]["ops"][0], pick["expected"]["ops"][1]
     assets = C.load_assets(C.DEFAULT_ASSETS)
     key = next(iter(s_op["values"]))
-    # pick_asset_for hashes (case id, toolCallId): choose the call id whose pick is the asset the case expects, so the
-    # scripted set_fields reproduces expected.diff and the capture is a `pass` (any id would do for parity alone)
-    pick_id, chosen = "toolu_lab_1", None
-    for i in range(1, 100):
-        pick_id = "toolu_lab_1" if i == 1 else f"toolu_lab_pick{i}"
-        chosen = C.pick_asset_for(assets, {"toolCallId": pick_id, "assetType": p_op.get("asset_type") or "image"}, str(pick["id"]))
-        if chosen["public_url"] == s_op["values"][key]:
-            break
+    pick_id = "toolu_lab_1"
+    chosen = C.pick_asset_for(assets, {"toolCallId": pick_id, "assetType": p_op.get("asset_type") or "image"}, str(pick["id"]))
+    if chosen["public_url"] != s_op["values"][key]:
+        raise SystemExit(f"{pick['id']}: the collector's pick ({chosen['public_url']}) is not the asset the case expects "
+                         f"({s_op['values'][key]}) — the case predates the shared fixture_asset_for; regenerate it "
+                         f"(souschef_lab.cases --kinds image, then `cases remeasure`) before capturing")
     with_asset = {"target": s_op["target"], "values": {key: chosen["public_url"]},
                   "assets": {key: {k: v for k, v in chosen.items() if k in ("alt", "srcset") and v is not None}}}
     plan.append({"name": "pick_asset.image.gallery.bgImage", "shape": "pick_asset → api.Asset; then ok/written", "case": pick, "steps": [

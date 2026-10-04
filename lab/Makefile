@@ -4,13 +4,29 @@
 #
 #   make -C lab venv test              # create lab/.venv, run pytest
 #   make -C lab cases                  # generate + measure cases into lab/data
+#   make -C lab train-env train-dry    # lab/.venv-train ([train] extra) + the three --dry-run plans
 #   ENGINE=... COOKIE_CUTTER_DIR=...   # where the browser engine lives
+#
+# Training (docs/TRAIN-WORKSTATION.md): train / dpo / export run with TRAINPY,
+# which is lab/.venv-train's python when `make train-env` has built it and
+# lab/.venv's otherwise (good enough for DRY=1 — a dry run imports no torch).
 
 PY            ?= python3
 VENV          := .venv
 BIN           := $(VENV)/bin
 PYTEST        := $(BIN)/pytest
 LABPY         := $(BIN)/python
+
+# The training environment: Python 3.12 via uv, the [train] extra pinned by
+# train-constraints.txt (the thermometer venv's measured set), torch from
+# PyTorch's cu130 index. TRAINPY=/path/to/python overrides (e.g. the
+# thermometer kit's own venv, ../../breadstack-thermometer/lab/in-house-model/.venv/bin/python).
+TRAIN_VENV        := .venv-train
+TRAINPY           ?= $(if $(wildcard $(TRAIN_VENV)/bin/python),$(TRAIN_VENV)/bin/python,$(LABPY))
+UV                ?= uv
+TRAIN_PYTHON      ?= 3.12
+TORCH_INDEX       ?= https://download.pytorch.org/whl/cu130
+TRAIN_CONSTRAINTS ?= train-constraints.txt
 
 COOKIE_CUTTER_DIR ?= $(abspath ../../breadstack-cookie-cutter)
 ENGINE            ?= $(COOKIE_CUTTER_DIR)/launcher/client/src/sousChef/ops/headless.mjs
@@ -29,7 +45,7 @@ SOUS_CHEF_KEY     ?= test-key
 
 export COOKIE_CUTTER_DIR ENGINE SOUS_CHEF_ENGINE=$(ENGINE)
 
-.PHONY: help venv test test-engine cases cases-dry cases-remeasure engine-fingerprint collect dataset pairs eval passk retrain-check train dpo export fake-service fake-model clean
+.PHONY: help venv test test-engine cases cases-dry cases-remeasure engine-fingerprint collect dataset pairs eval passk retrain-check train-env train-dry train-gpu-check train dpo export fake-service fake-model clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -72,12 +88,22 @@ passk: ## pass@k over several eval runs (RUNS=space-separated runs/eval-*.json)
 	$(LABPY) -m souschef_lab.passk $(RUNS)
 retrain-check: ## manifest drift / real-kept pass / age triggers (exit 0/1/2)
 	$(LABPY) -m souschef_lab.retrain_check --manifest $(MANIFEST)
-train: ## SFT (needs [train]); DRY=1 for --dry-run; NAME=run name (adapter → runs/adapters/$(NAME)-sft)
-	$(LABPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft $(if $(DRY),--dry-run,)
-dpo: ## DPO against the frozen SFT adapter (needs [train]); SFT=adapter dir, NAME=run name
-	$(LABPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo $(if $(DRY),--dry-run,)
-export: ## GGUF q4_k_m / q8_0 + Ollama Modelfile (num_ctx 65536); ADAPTER=adapter dir, NAME=Ollama model name
-	$(LABPY) -m souschef_lab.export --adapter $(ADAPTER) --name $(NAME) $(if $(BASE_MODELFILE),--base-modelfile $(BASE_MODELFILE),) $(if $(DRY),--dry-run,)
+train-env: ## create lab/.venv-train (Python $(TRAIN_PYTHON) via uv) with the [train] extra pinned to the thermometer's measured set — a CPU install (5.2 GB; 4 s from a warm uv cache, several GB of downloads from a cold one)
+	test -x $(TRAIN_VENV)/bin/python || $(UV) venv --python $(TRAIN_PYTHON) $(TRAIN_VENV)
+	$(UV) pip install --python $(TRAIN_VENV)/bin/python --index $(TORCH_INDEX) --index-strategy unsafe-best-match -c $(TRAIN_CONSTRAINTS) -e '.[train]'
+	CUDA_VISIBLE_DEVICES= $(TRAIN_VENV)/bin/python -W ignore -c 'import torch, trl, peft, transformers, fla; print("train-env ok: python", __import__("sys").version.split()[0], "torch", torch.__version__, "trl", trl.__version__, "peft", peft.__version__, "transformers", transformers.__version__, "fla", fla.__version__)'
+train-dry: ## the three --dry-run plans (SFT, DPO, export) against $(DATA) with TRAINPY; imports no torch, touches no GPU
+	$(TRAINPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft --dry-run
+	$(TRAINPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo --dry-run
+	$(TRAINPY) -m souschef_lab.export --adapter $(ADAPTER) --name $(NAME) $(if $(BASE_MODELFILE),--base-modelfile $(BASE_MODELFILE),) --dry-run
+train-gpu-check: ## `import unsloth, trl, peft` + the GPU's name (unsloth refuses to import without a GPU; this opens a CUDA context — run it only when Ollama is idle)
+	$(TRAINPY) -W ignore -c 'import unsloth, trl, peft, torch; print("unsloth", unsloth.__version__, "trl", trl.__version__, "peft", peft.__version__, "gpu", torch.cuda.get_device_name(0), "bf16", torch.cuda.is_bf16_supported())'
+train: ## SFT with TRAINPY (make train-env first); DRY=1 for --dry-run; NAME=run name (adapter → runs/adapters/$(NAME)-sft)
+	$(TRAINPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft $(if $(DRY),--dry-run,)
+dpo: ## DPO against the frozen SFT adapter (TRAINPY); SFT=adapter dir, NAME=run name
+	$(TRAINPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo $(if $(DRY),--dry-run,)
+export: ## GGUF q4_k_m / q8_0 + Ollama Modelfile (num_ctx 65536); ADAPTER=adapter dir, NAME=Ollama model name; CREATE=1 runs `ollama create` (OLLAMA_HOST + LAB_OLLAMA_BIN from the environment)
+	$(TRAINPY) -m souschef_lab.export --adapter $(ADAPTER) --name $(NAME) $(if $(BASE_MODELFILE),--base-modelfile $(BASE_MODELFILE),) $(if $(CREATE),--create,) $(if $(DRY),--dry-run,)
 fake-service: ## run the tests' fake Sous Chef service on 127.0.0.1:8089 (SCRIPTS=dir of <case id>.json)
 	$(LABPY) -m tests.fake_service --port 8089 --manifest $(MANIFEST) --key '$(SOUS_CHEF_KEY)' $(if $(SCRIPTS),--scripts $(SCRIPTS),)
 fake-model: ## run the tests' fake /v1/messages model on 127.0.0.1:8091 (STEPS=steps.json; for the real service binary)

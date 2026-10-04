@@ -23,6 +23,7 @@ if str(LAB) not in sys.path:
 from souschef_lab import collect as C  # noqa: E402
 from souschef_lab import dataset as D  # noqa: E402
 from souschef_lab import render as R  # noqa: E402
+from souschef_lab import state as S  # noqa: E402
 
 FIX = LAB / "fixtures" / "prompt" / "real"
 DATA = LAB / "data" / "e2e" / "real"
@@ -236,8 +237,10 @@ def test_real_capture_pick_asset_shape():
     asset, written = _results(reqs)
     picked = row["picked_assets"][0]
     assert json.loads(asset["content"][0]["text"]) == picked and asset["is_error"] is False
-    assert asset["content"][0]["text"].startswith('{"public_url":"https://cdn.int.breadstack.io/gal/lab/paper-texture-1200x1200.webp"')
-    assert '"srcset":{"600":' in asset["content"][0]["text"]
+    # the asset is state.fixture_asset_for(assets, case id, "image") — the generator's and the collector's shared pick
+    assert asset["content"][0]["text"].startswith(
+        '{"public_url":"https://cdn.int.breadstack.io/gal/lab/hero-field-1600x900.webp","alt":"Sunlit field at harvest","srcset":{"800":')
+    assert picked["public_url"] == S.fixture_asset_for(S.load_assets_fixture(), case["id"], "image")["public_url"]
     assert json.loads(written["content"][0]["text"]) == {"ok": True, "written": ["homeSections[7].settings.bgImage",
                                                                                  "homeSections[7].settings.bgImageSrcSet"]}
     uses = [b for m in reqs[-1]["messages"] if m["role"] == "assistant" for b in m["content"] if b["type"] == "tool_use"]

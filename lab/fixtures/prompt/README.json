@@ -1,7 +1,7 @@
 {
- "_source": "captured 2026-10-01 from the real service binary (service/cmd/sous-chef built from the working tree, BUILD_ID lab-e2e) by tests/fake_model.py via a messages-compatible route; the first POST /v1/messages of case set_field.contentBlock-1.title. Re-verified 2026-10-01 (second capture, tests/capture_real.py): every model call of the four captures under real/ carries these exact system[0]/system[1]/tools bytes (tests/test_render.py).",
+ "_source": "captured 2026-10-01 from the real service binary (service/cmd/sous-chef built from the working tree, BUILD_ID lab-e2e) by tests/fake_model.py via a messages-compatible route; the first POST /v1/messages of case set_field.contentBlock-1.title. Re-verified 2026-10-01 (second capture, tests/capture_real.py): every model call of the four captures under real/ carries these exact system[0]/system[1]/tools bytes (tests/test_render.py). RE-CAPTURED 2026-10-04 (tests/capture_real.py, both fixtures/prompt/real and data/e2e/real) from the working-tree binary after the keys-required reset/restore_default change (rules.go reset line + toolgen descriptions, strict:false on lookup_fields/describe_target, edit_list `order` rewrite): system0.rules.txt, tools.json and the four captures refreshed from the wire bytes; system1 unchanged. The pick_asset capture was then re-captured from a REGENERATED image/gallery/gallery/bgImage/pick case (expected asset = state.fixture_asset_for, shared by generator and collector since 377cefa: hero-field, not the 2026-10-01 cases.jsonl's paper-texture) so case/steps/expected agree and the verdict is pass.",
  "manifest_hash": "727d151b5d6b04cd68b73199ab0b3bdf061263f9623f4f6eda00a79137c06f38",
- "system0_chars": 4527,
+ "system0_chars": 4730,
  "system1_chars": 11546,
  "tools": [
   "set_fields",
@@ -15,7 +15,7 @@
   "describe_target",
   "report_unsupported"
  ],
- "system0_sha256": "8823d519f9b71901ea9beff4ebb4a28827968cbef2c5dc23e93e66716ae32f9e",
+ "system0_sha256": "671635cdb24bbc07a9e435180a065129a5684e97f65025d0bb8c6617641ec635",
  "system1_sha256": "afc1cda228da07efd61231a234d8a1798ee2014305f1dfb28c2124b75683e655",
  "request_keys": [
   "max_tokens",

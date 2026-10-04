@@ -428,11 +428,11 @@ def main(argv: list[str] | None = None) -> int:
         say(f"note: {args.sft_adapter} has no adapter_config.json yet (train.py writes it); the run would stop here.")
     if args.dry_run:
         if importlib.util.find_spec("unsloth") is None:
-            say("The [train] extra is not installed: pip install -e 'lab[train]' before training.")
+            say("The [train] extra is not installed: run 'make -C lab train-env' before training.")
         say("Dry run: the pairs are well-formed. Drop --dry-run to train.")
         return 0
     if importlib.util.find_spec("unsloth") is None:
-        die("the [train] extra is not installed — pip install -e 'lab[train]' first")
+        die("the [train] extra is not installed — run 'make -C lab train-env' first")
     return run(args, p, sft, train_rows, val_rows)
 
 

@@ -1,0 +1,22 @@
+2026/10/03 23:37:49 sous-chef: migrated to schema version 5
+2026/10/03 23:37:49 sous-chef lab-e2e listening on :46877 (routes: [lab-fake], default: lab-fake, keys: 1, usage shipping: false)
+2026/10/03 23:37:49 api: GET /version 200 61B 0s
+2026/10/03 23:37:49 api: POST /v1/manifests 200 293B 94ms
+2026/10/03 23:37:49 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.title 204 0B 5ms
+2026/10/03 23:37:49 api: POST /v1/turns 200 573B 18ms
+2026/10/03 23:37:54 api: POST /v1/turns/8b575dc1-f3fc-426b-b31c-ab1b317cee7c/tool-results 200 476B 18ms
+2026/10/03 23:37:54 api: POST /v1/manifests 200 293B 108ms
+2026/10/03 23:37:54 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.tagline 204 0B 3ms
+2026/10/03 23:37:54 api: POST /v1/turns 200 537B 12ms
+2026/10/03 23:37:59 api: POST /v1/turns/bd3e21f1-3b79-4524-b4cf-0f14490d1867/tool-results 200 591B 9ms
+2026/10/03 23:38:04 api: POST /v1/turns/bd3e21f1-3b79-4524-b4cf-0f14490d1867/tool-results 200 471B 11ms
+2026/10/03 23:38:09 api: POST /v1/manifests 200 293B 82ms
+2026/10/03 23:38:09 api: DELETE /v1/conversations/lab-list_add/page/home/sections/loyaltyForm 204 0B 2ms
+2026/10/03 23:38:09 api: POST /v1/turns 200 830B 9ms
+2026/10/03 23:38:14 api: POST /v1/turns/e6041aae-54fd-44fa-ac4d-f4053514b778/tool-results 200 512B 10ms
+2026/10/03 23:38:19 api: POST /v1/manifests 200 293B 87ms
+2026/10/03 23:38:19 api: DELETE /v1/conversations/lab-image/gallery/gallery/bgImage/pick 204 0B 2ms
+2026/10/03 23:38:19 api: POST /v1/turns 200 427B 13ms
+2026/10/03 23:38:19 api: POST /v1/turns/ff10920e-61e5-4124-b02d-a1a60f9cd63f/tool-results 200 792B 50ms
+2026/10/03 23:38:25 api: POST /v1/turns/ff10920e-61e5-4124-b02d-a1a60f9cd63f/tool-results 200 489B 16ms
+2026/10/03 23:38:30 sous-chef: shutting down

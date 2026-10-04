@@ -21,7 +21,7 @@ thermometer's to_hf shape (trainkit.check_rows). Settings: flags, or
   python -m souschef_lab.train --config lab/train.yaml --max-steps 4 --name smoke
 
 --dry-run never imports torch (tests/test_train_dry.py checks). Training
-needs the [train] extra: pip install -e 'lab[train]' (several GB, once); the
+needs the [train] extra: `make -C lab train-env` (uv, pinned to the thermometer's measured set, cu130 wheels; several GB, once); the
 first run downloads the base from Hugging Face.
 
 Afterwards: runs/adapters/<name>/adapter (the LoRA), run.json (settings,
@@ -232,11 +232,11 @@ def main(argv: list[str] | None = None) -> int:
         say(f"{p['rows']['followups']} rows are follow-ups: their earlier replies are masked out of the loss.")
     if args.dry_run:
         if importlib.util.find_spec("unsloth") is None:
-            say("The [train] extra is not installed: pip install -e 'lab[train]' (several GB) before training.")
+            say("The [train] extra is not installed: run 'make -C lab train-env' (several GB, once) before training.")
         say("Dry run: the data is well-formed. Drop --dry-run to train.")
         return 0
     if importlib.util.find_spec("unsloth") is None:
-        die("the [train] extra is not installed — pip install -e 'lab[train]' first (several GB, once)")
+        die("the [train] extra is not installed — run 'make -C lab train-env' first (several GB, once)")
     return train(args, p, train_rows, val_rows)
 
 

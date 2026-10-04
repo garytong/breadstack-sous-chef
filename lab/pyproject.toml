@@ -9,8 +9,13 @@
 #            export.py import them inside run() only; `--dry-run` never does.
 #            Versions follow the thermometer kit's measured set
 #            (breadstack-thermometer/lab/in-house-model/pyproject.toml,
-#            Unsloth 2026.9.11 / Transformers 5.5.0 / Torch 2.12.1+cu130)
-#            and are a recipe, not a lock: nothing here was installed or run.
+#            Unsloth 2026.9.11 / Transformers 5.5.0 / Torch 2.12.1+cu130).
+#            `make -C lab train-env` installs them into lab/.venv-train
+#            (Python 3.12 via uv) pinned by train-constraints.txt — the
+#            `uv pip freeze` of the thermometer venv that trained the 9B on
+#            this workstation's RTX 5090 — with torch from PyTorch's cu130
+#            index (PyPI's default torch wheel is not the measured build).
+#            See docs/TRAIN-WORKSTATION.md.
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -28,12 +33,18 @@ train = [
     "unsloth==2026.9.11",
     "unsloth-zoo==2026.9.7",
     "torch==2.12.1",
+    "torchvision==0.27.1",
     "transformers==5.5.0",
     "trl==0.24.0",
     "datasets>=4.2,<4.4",
     "peft>=0.18.0",
     "accelerate>=1.10.0",
     "bitsandbytes>=0.47.0",
+    "xformers>=0.0.35",
+    # Gated DeltaNet fast kernels (pure Triton); the thermometer's measured
+    # venv had 0.5.2 installed — without it Unsloth injects its vendored fla
+    # 0.5.1 snapshot and transformers falls back to PyTorch for the rest.
+    "flash-linear-attention==0.5.2",
 ]
 
 [project.scripts]

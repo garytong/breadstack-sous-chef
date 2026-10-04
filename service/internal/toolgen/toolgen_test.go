@@ -493,6 +493,42 @@ func TestDataOpSchemasMirrorEngineOps(t *testing.T) {
 	}
 }
 
+// int-run2 (300 cases): the only E_ORDER refusals were a partial order ([1, 0]
+// on a 3-row footerCustomColumns[].links, "permutation of 0..2") and indexes
+// on the id-keyed filterOrder ("unknown id(s) 1, 0"). The `order` member must
+// state both rules the engine enforces (validate.js reorder / orderIdsError).
+func TestEditListOrderDescription(t *testing.T) {
+	for _, m := range []*manifest.Manifest{snapshot(t), nil} {
+		el := toolByName(t, Tools(m), EditList)
+		order := props(t, el.InputSchema)["order"].(map[string]any)
+		desc := order["description"].(string)
+		for _, want := range []string{
+			"EVERY current row exactly once", // complete permutation
+			"3-row list needs 3 entries",     // the run-2 shape, concretely
+			"[1, 0, 2]",                      // move one row = full order
+			"NEVER indexes",                  // id-keyed lists
+			"`orders`",                       // how the manifest marks them (describe_target / lookup_fields)
+			"describe_target",
+			"filterOrder",                   // the list run-2 broke
+			"sections list",                 // the page's own list is id-keyed too
+			`["brand", "category", "price"`, // an id array, spelled out
+			"E_ORDER",
+		} {
+			if !strings.Contains(desc, want) {
+				t.Errorf("edit_list.order must say %q: %s", want, desc)
+			}
+		}
+		// The shape is unchanged: an array of integer | string (indexes or ids).
+		items := order["items"].(map[string]any)["anyOf"].([]any)
+		if len(items) != 2 || items[0].(map[string]any)["type"] != "integer" || items[1].(map[string]any)["type"] != "string" {
+			t.Fatalf("order items = %v", items)
+		}
+		if !strings.Contains(el.Description, "`reorder` writes the COMPLETE new order (see `order`)") {
+			t.Errorf("edit_list description must point reorder at `order`: %s", el.Description)
+		}
+	}
+}
+
 func TestResetPinnedSectionEnums(t *testing.T) {
 	tl := toolByName(t, Tools(snapshot(t)), ResetPinnedSection)
 	p := props(t, tl.InputSchema)

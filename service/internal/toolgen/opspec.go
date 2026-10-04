@@ -102,6 +102,19 @@ func targetSchema(ctx schemaContext) map[string]any {
 
 // ─── The ten tools ───────────────────────────────────────────────────────────
 
+// orderDesc is edit_list's `order` member. It spells out the two engine rules
+// (validate.js reorder, engine README rule 7) the model broke in int-run2
+// (3 of 300 cases, all E_ORDER): a PARTIAL order — [1, 0] for a 3-row list,
+// "order must be a permutation of 0..2" — and INDEXES on an id-keyed list —
+// [1, 0] on filterOrder, "unknown id(s) 1, 0; order must be a permutation of
+// the list's ids (category, brand, price, …)". Id-keyed lists are the ones
+// the manifest marks with `orders` (filterOrder, headerNavOrder,
+// paymentMethodsOrder, …; describe_target / lookup_fields show the flag) plus
+// a page's `sections` list; the service holds no site state, so the current
+// rows themselves are only known from the turn context (sections) or from
+// the engine's E_ORDER reply, which names the valid ids / row count.
+const orderDesc = "reorder only: the COMPLETE new order — list EVERY current row exactly once (a 3-row list needs 3 entries; to move one row, write the full new order, e.g. [1, 0, 2] — a partial order such as [1, 0] is refused, E_ORDER). Plain lists take 0-based indexes into the current rows. ID-KEYED lists take the row ids, NEVER indexes: a list that describe_target / lookup_fields shows with `orders` (filterOrder, headerNavOrder, footerNavOrder, paymentMethodsOrder, cardChipOrder, sortOptionsOrder, …) e.g. [\"brand\", \"category\", \"price\", …] with every current id, and a page's sections list (section ids). An E_ORDER reply names the valid ids / the row count: resend the full order."
+
 var opSpecs = map[string]opSpec{
 	SetFields: {
 		runs: RunsBrowser, strict: false,
@@ -119,7 +132,7 @@ var opSpecs = map[string]opSpec{
 	EditList: {
 		runs: RunsBrowser, strict: false,
 		desc: func(ctx schemaContext) string {
-			return "Edit one list on a target: add a row, remove / duplicate a row, reorder rows, or update one row's fields (how detail panels — reviews, FAQ items, hero bullets, posts, footer columns — are edited). ONE structural change (add/remove/reorder/duplicate) per call. Nested lists use the dotted key (slides[].bullets) and an index array [parentIdx, childIdx]; `add` on a nested list takes the parent index only. On a page target the list \"sections\" is the page's own section rows {id,type,enabled}: add takes item {id: <sectionType>} (the item's id IS the section type to add; the host assigns the row's instance id), update only {enabled}, duplicate copies a row, and built-in __pinned_* rows cannot be added, removed or reordered (E_PINNED). Lists and their allowed ops come from describe_target or lookup_fields {list}. Known lists — " + ctx.listsByCont + ". Section types for sections.add: " + strings.Join(ctx.sectionTypes, ", ") + "."
+			return "Edit one list on a target: add a row, remove / duplicate a row, reorder rows, or update one row's fields (how detail panels — reviews, FAQ items, hero bullets, posts, footer columns — are edited). ONE structural change (add/remove/reorder/duplicate) per call; `reorder` writes the COMPLETE new order (see `order`). Nested lists use the dotted key (slides[].bullets) and an index array [parentIdx, childIdx]; `add` on a nested list takes the parent index only. On a page target the list \"sections\" is the page's own section rows {id,type,enabled}: add takes item {id: <sectionType>} (the item's id IS the section type to add; the host assigns the row's instance id), update only {enabled}, duplicate copies a row, and built-in __pinned_* rows cannot be added, removed or reordered (E_PINNED). Lists and their allowed ops come from describe_target or lookup_fields {list}. Known lists — " + ctx.listsByCont + ". Section types for sections.add: " + strings.Join(ctx.sectionTypes, ", ") + "."
 		},
 		schema: func(ctx schemaContext) map[string]any {
 			return obj("", map[string]any{
@@ -128,7 +141,7 @@ var opSpecs = map[string]opSpec{
 				"action":    enumStr("add | remove | reorder | update | duplicate. `update` is allowed on every list; `duplicate` only on a page's sections list.", manifest.ListActions),
 				"index":     anyOf("Row index (0-based) for remove/update/duplicate, or the parent index for add on a nested list. Nested lists take [parentIdx, childIdx].", integer(""), arr("", integer(""))),
 				"item":      openObj("add: the new row's fields (missing keys take the list's defaults). update: only the fields to change — the row's other fields are kept."),
-				"order":     arr("reorder: the complete new order as indexes into the current list (or section ids for the sections list); must be a permutation of the current rows.", anyOf("", integer(""), str(""))),
+				"order":     arr(orderDesc, anyOf("", integer(""), str(""))),
 				"sectionId": str("sections list only: address the row by its id instead of index (remove/update/duplicate)."),
 			}, "target", "list", "action")
 		},

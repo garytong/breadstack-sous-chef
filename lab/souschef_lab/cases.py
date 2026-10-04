@@ -296,17 +296,60 @@ def _ordinal(n: int) -> str:
 
 TYPE_WORDS = {"color": "color", "text": "text", "richtext": "text", "bool": "toggle", "image": "image",
               "range": "size", "number": "size", "select": "selection", "enum": "option", "ref": "selection"}
+# Label residue that names nothing (refuter B, 2026-10-04): `Tagline Image (optional)` → `Tagline Image`;
+# `Or pick from locations` (contentBlock.mapLocationIndex) → the key's words.
+LABEL_RESIDUE = re.compile(r"\s*\(optional\)", re.I)
+RESIDUE_ONLY_LABELS = {"or pick from locations"}
+# The snapshot's FooterSection `pageVisibility.<page>.inFooterNav` labels were captured as `Hide Probe text 2 from
+# footer` (the probe's own display name leaked into the aria-label): the probe text stands for `{item}`.
+PROBE_RESIDUE = re.compile(r"Probe text \d+")
+KEY_ABBREVIATIONS = {"btn": "button", "bg": "background", "img": "image", "nav": "navigation", "desc": "description"}
 
 
-def label_text(f: Field, key: str | None = None) -> str:
-    """The manifest label verbatim (`A › B` groups kept, parentheticals kept); an empty label or a
-    `{item}` placeholder (`Hide {item}`, `{item} Color`) falls back to the key's words."""
+def _display(slug_or_id: str, ctxf: dict | None = None) -> str:
+    """`our-story` → `Our Story`; a fixture custom page / location / category is named by its title."""
+    for pool, idk, namek in (("customPages", "slug", "title"), ("locations", "id", "name"), ("categories", "slug", "name")):
+        for row in (ctxf or {}).get(pool, []) or []:
+            if row.get(idk) == slug_or_id and row.get(namek):
+                return str(row[namek])
+    return " ".join(w.upper() if w in ("faq",) else w[:1].upper() + w[1:] for w in re.split(r"[-_\s]+", slug_or_id) if w)
+
+
+def item_display(key: str, label: str, *, item: str | None = None, ctxf: dict | None = None) -> str:
+    """What `{item}` in a label stands for (refuter B, D2). A keyed key names its KEYED segment
+    (`pageVisibility.our-story.inHeaderNav` → `Our Story`, `pageHeaderHiddenPages.press` → `Press`); a
+    `{locationId}` placeholder segment → its noun (`location`); a list row field takes the caller's item
+    noun (`item=` — `Hide {item}` on `promotion.items[].enabled` → `Hide tier`); a flat key takes the key's
+    words that the label does not already say (`btnColor` + `{item} Color` → `Button`; `overlayColor` +
+    `Overlay {item}` → `color`). Never the leaf's words when the leaf is not the item."""
+    segs = key.split(".")
+    if len(segs) >= 2:
+        seg = segs[1]
+        if seg.startswith("{") and seg.endswith("}"):
+            if len(segs) >= 3:  # `locationOverrides.{locationId}.address` + '{item}': the item IS the leaf (`address`)
+                return _words(key)
+            return re.sub(r"(Id|Slug|Key)$", "", seg[1:-1]).lower() or "item"
+        return _display(seg, ctxf)
+    if item:
+        return item
+    said = {w.lower() for w in re.sub(r"\{[^}]*\}", " ", label).split()}
+    words = [KEY_ABBREVIATIONS.get(w, w) for w in _words(key).split() if w not in said]
+    words = words or _words(key).split()
+    if label.lstrip().startswith("{"):  # a leading item reads as a name: `Button Text Color`
+        return " ".join(w[:1].upper() + w[1:] for w in words)
+    return " ".join(words)
+
+
+def label_text(f: Field, key: str | None = None, *, item: str | None = None, ctxf: dict | None = None) -> str:
+    """The manifest label verbatim (`A › B` groups kept, parentheticals kept — except the `(optional)`
+    residue); an empty or residue-only label falls back to the key's words; a `{item}` placeholder takes
+    the item's display name (`item_display`): `Hide {item}` → `Hide Our Story`, `{item} Color` → `Button Color`."""
     key = key or f.key
-    label = f.spec.get("label") or ""
-    if not label.strip():
+    label = PROBE_RESIDUE.sub("{item}", LABEL_RESIDUE.sub("", f.spec.get("label") or ""))
+    if not label.strip() or label.strip().lower() in RESIDUE_ONLY_LABELS:
         return _words(key)
-    if "{" in label:  # `Hide {item}` → `Hide our-story`; `Overlay {item}` + overlayColor → `Overlay color`
-        words = re.sub(r"\{[^}]*\}", _words(key), label).split()
+    if "{" in label:
+        words = re.sub(r"\{[^}]*\}", item_display(key, label, item=item, ctxf=ctxf), label).split()
         label = " ".join(w for i, w in enumerate(words) if i == 0 or w.lower() != words[i - 1].lower())
     return re.sub(r"\s+", " ", label).strip()
 
@@ -316,23 +359,170 @@ def _parent_key(key: str) -> str:
     return ".".join(segs[:-1])
 
 
-def phrase_candidates(f: Field, key: str | None = None) -> list[str]:
-    """Least to most qualified: label, label + type word, label (parent), label + type word (parent)."""
+def _bool_qualifier(key: str) -> str:
+    """`titleUppercase` → `uppercase`: the key's last camel word, the bit the shared label leaves out."""
+    words = _words(key).split()
+    return words[-1] if words else key
+
+
+# ── generic labels are always located (int-run2 finding B, 2026-10-03) ──────
+#
+# int-run2 (Claude Sonnet, 300 × 4, pass@1 91.8%): "Reset the Text of the header" meant
+# `HeaderSection.headerMegaMenuTextColor` (label `Text`, under the editor's Mega menu group) — the only `Text`
+# in the header, so the ambiguity guard handed the label out bare — and the model, like any human, reset
+# `headerTextColor` ('Text Color'). Same shape: "Change the Background on the header" (`headerMegaMenuBg` →
+# `headerBgColor`), "Layout should be Grid View" on the blog page (`layout` → `set_page_layout`). A one-word
+# label from this set names a PROPERTY, not a thing, so uniqueness in the manifest is not uniqueness in a
+# reader's head: it is never handed out bare. It is qualified by its group label when the label has one
+# (`Pill Hover Colors › Text` is already located — `label_text` keeps the group), else by the dotted parent
+# (`Color (sectionStyle)`), else — a flat key with no group in the manifest — by the key's other words, the
+# nearest thing the manifest has to the editor's group heading (`Text (header mega menu)`,
+# `Background (header mega menu)`), falling back to the key itself when the label already says them all
+# (`Headline (headline)`, `Layout (layout)`). Non-generic labels keep the old chain (bare first).
+GENERIC_LABELS = frozenset({
+    "text", "color", "colour", "image", "background", "font", "size", "title", "headline", "heading", "body", "link",
+    "icon", "border", "radius", "padding", "spacing", "width", "height", "alignment", "style", "hover", "placement",
+    "layout", "name", "label", "tagline", "description", "message", "footnote", "logo", "arrow", "shape", "position",
+    "divider", "columns", "placeholder", "url", "answer", "overlay", "opacity", "shadow", "gap", "mode",
+})
+
+
+def label_leaf(f: Field) -> str:
+    """The label's last group segment, trailing parenthetical dropped, lowercased: `Pill Hover Colors › Text` → `text`."""
+    leaf = (f.spec.get("label") or "").split("›")[-1].strip()
+    return re.sub(r"\s*\(.*?\)\s*$", "", leaf).strip().lower()
+
+
+def is_generic_label(f: Field, key: str | None = None) -> bool:
+    """One generic word, and no group segment to locate it (`Text`, `Background`, `Layout`; not `Default colors › Text`).
+    An unlabelled field is read by the key's words it falls back to (loyaltyForm `title` → `title`)."""
+    label = f.spec.get("label") or ""
+    leaf = label_leaf(f) if label.strip() else _words(key or f.key)
+    return "›" not in label and leaf in GENERIC_LABELS
+
+
+def pseudo_group(f: Field, key: str) -> str:
+    """A flat key's other words, as a group heading would read: `headerMegaMenuTextColor` + `Text` → `header mega menu`
+    (abbreviations expanded, the label's words and the type word dropped); '' when the label says them all."""
+    said = {w.lower() for w in re.sub(r"[^A-Za-z0-9 ]", " ", f.spec.get("label") or "").split()} | {TYPE_WORDS.get(f.type, f.type)}
+
+    def is_said(w: str) -> bool:  # `align` ~ `alignment`, `colour` ~ `color`: a shared 4+ letter stem either way
+        return w in said or any(len(w) >= 4 and len(s) >= 4 and (s.startswith(w) or w.startswith(s)) for s in said)
+    words = [KEY_ABBREVIATIONS.get(w, w) for w in _words(key.split(".")[-1]).split()]
+    return " ".join(w for w in words if not is_said(w))
+
+
+def phrase_candidates(f: Field, key: str | None = None, *, item: str | None = None) -> list[str]:
+    """Least to most qualified: label, label + type word, label (parent), label + type word (parent).
+    A bool sharing its label with a non-bool sibling (`titleUppercase` 'Headline Font' beside the font select;
+    the legal pages' `headingUppercase` mislabelled 'Headline Color') is qualified by its key words instead
+    of a type word — `Headline Font — uppercase (titleUppercase)` — never `Headline Font toggle` (refuter B, D3).
+    A generic one-word label (`GENERIC_LABELS`) has no bare candidates: parent-qualified ones when the key is
+    dotted, else pseudo-group / key-qualified ones (`Text (header mega menu)`, then `Text (headerMegaMenuTextColor)`)."""
     key = key or f.key
-    base = label_text(f, key)
+    base = label_text(f, key, item=item)
     tw = TYPE_WORDS.get(f.type, f.type)
     parent = _parent_key(key)
     bare = bool(re.fullmatch(r"\s*(\{[^}]*\})?\s*", f.spec.get("label") or ""))  # no label, or `{item}` alone
-    out = [] if bare and parent else [base, f"{base} {tw}"]  # `our-story` alone says nothing: start at the parent
+    clean_key = ".".join(s for s in key.split(".") if not (s.startswith("{") and s.endswith("}")))
+    generic = is_generic_label(f, key)
+    if f.type == "bool":
+        qualified = f"{base} — {_bool_qualifier(key)} ({clean_key})"
+        if generic:
+            return [qualified]
+        return [f"{base} ({parent})", qualified] if bare and parent else [base, qualified]
+    out = [] if (bare and parent) or generic else [base, f"{base} {tw}"]  # `our-story` alone says nothing: start at the parent
     if parent:
         out += [f"{base} ({parent})", f"{base} {tw} ({parent})"]
+    elif generic:
+        pg = pseudo_group(f, key)
+        if pg:
+            out += [f"{base} ({pg})", f"{base} {tw} ({pg})"]
+        out += [f"{base} ({clean_key})", f"{base} {tw} ({clean_key})"]
     return out
 
 
-def name_fields(scope: dict[str, Field]) -> dict[str, str | None]:
+# ── toggles phrased by effect (refuter B, D1) ────────────────────────────────
+#
+# 10 of 3,078 generated cases read "Turn off Hide Shop from header nav for the header." with expected
+# {inHeaderNav: false}. The manifest label of a nav toggle is the state-dependent aria-label snapshotted in the
+# visible state (HeaderNavigationEditor.jsx:164: 'Hide X from header nav' when visible, 'Show X in header nav'
+# otherwise) while the engine's value is true = visible (:222-229) — so "turn off Hide Shop" means SHOW = true,
+# and the case expected false. A bool whose label starts with a visibility verb (Hide / Show / Don't / Disable /
+# Remove …) is therefore phrased by its EFFECT, tied to the expected value: value false → "Hide Shop from the
+# header nav", value true → "Show Shop in the header nav"; the value's meaning comes from the KEY's polarity
+# (`inHeaderNav`, `cardShowTHC`, `enabled`: true = shown; `hideImageEmptyBg`, `shopMenuHideBorderTop`: true =
+# hidden). Never "turn on/off <negated label>".
+
+NEGATED_LABEL = re.compile(r"^(hide|show|don'?t|disable|remove|exclude|skip)\b\s*", re.I)
+NEGATIVE_KEY_WORDS = {"hide", "hidden", "disable", "disabled", "without", "off"}
+EFFECT_VERBS = {"hide": ("hide", "show"), "show": ("hide", "show"), "disable": ("disable", "enable"), "don't": ("don't", "do"),
+                "dont": ("don't", "do"), "remove": ("remove", "keep"), "exclude": ("exclude", "include"), "skip": ("skip", "keep")}
+NAV_PLACE = re.compile(r"^(?P<what>.+?)\s+(?:from|in)\s+(?:the\s+)?(?P<place>header nav|footer nav|footer bottom|footer|header)$", re.I)
+NO_ARTICLE_STARTS = {"the", "a", "an", "in", "on", "at", "as", "for", "with", "when", "after", "before", "only", "all", "any", "to", "by", "from"}
+EFFECT_TOGGLE_TEMPLATES = ["{effect} — {where}.", "In {where}, {effect_l}.", "{where}: {effect_l}.", "Please {effect_l} ({where})."]
+
+
+def key_is_negative(key: str) -> bool:
+    """`hideImageEmptyBg`, `shopMenuHideBorderTop`, `pageHeaderHiddenPages.x`: true = hidden / off."""
+    return bool(NEGATIVE_KEY_WORDS & set(_words(key).split()) | NEGATIVE_KEY_WORDS & set(_words(key.split(".")[0]).split()))
+
+
+def label_is_negated(f: Field) -> bool:
+    leaf = (f.spec.get("label") or "").split("›")[-1].strip()
+    return f.type == "bool" and bool(NEGATED_LABEL.match(leaf))
+
+
+def toggle_effect(f: Field, key: str, value: bool, *, item: str | None = None, ctxf: dict | None = None) -> str | None:
+    """The imperative that makes the engine write `value` to a negated-label bool, or None for an ordinary
+    bool (the caller says turn on / turn off). `Hide Shop from header nav` + true → `Show Shop in the header
+    nav`; + false → `Hide Shop from the header nav`; `Hide THC pill` + false → `Hide the THC pill`."""
+    if not label_is_negated(f):
+        return None
+    leaf = label_text(f, key, item=item, ctxf=ctxf).split("›")[-1].strip()
+    m = NEGATED_LABEL.match(leaf)
+    verb = m.group(1).lower().replace("'", "") if m else "hide"
+    verb = "dont" if verb == "dont" else verb
+    neg, pos = EFFECT_VERBS.get(verb, ("hide", "show"))
+    rest = leaf[m.end():].strip() if m else leaf
+    off = bool(value) if key_is_negative(key) else not bool(value)  # off = the negative effect happens
+    nav = NAV_PLACE.match(rest)
+    if nav and neg == "hide":
+        what, place = nav.group("what"), nav.group("place").lower()
+        return f"Hide {what} from the {place}" if off else f"Show {what} in the {place}"
+    first = rest.split()[0].lower() if rest.split() else ""
+    bare_name = rest[:1] in "\"'“" or (rest[:1].isupper() and " " not in rest) or first in NO_ARTICLE_STARTS
+    article = "" if bare_name else "the "
+    word = neg if off else pos
+    return f"{word[:1].upper()}{word[1:]} {article}{rest}"
+
+
+def effect_phrase(f: Field, key: str, field_phrase: str, value: bool, *, item: str | None = None, ctxf: dict | None = None) -> str | None:
+    """`toggle_effect` carrying the ambiguity guard's qualifier tail (` (pageVisibility.products)`), if any."""
+    eff = toggle_effect(f, key, value, item=item, ctxf=ctxf)
+    if eff is None:
+        return None
+    base = label_text(f, key, item=item, ctxf=ctxf)
+    tail = field_phrase[len(base):] if field_phrase.lower().startswith(base.lower()) else ""
+    return eff + tail
+
+
+def toggle_request(f: Field, key: str, field_phrase: str, value: bool, where: str, rng: random.Random, *, item: str | None = None,
+                   ctxf: dict | None = None) -> tuple[str, str]:
+    """(request, the field phrase the request carries). Ordinary bools: turn on / turn off + the label;
+    negated-label bools: the effect imperative (`Show Shop in the header nav`)."""
+    eff = effect_phrase(f, key, field_phrase, value, item=item, ctxf=ctxf)
+    if eff is None:
+        tmpl = rng.choice(TOGGLE_ON_TEMPLATES if value else TOGGLE_OFF_TEMPLATES)
+        return render(tmpl, where=where, field=field_phrase), field_phrase
+    tmpl = rng.choice(EFFECT_TOGGLE_TEMPLATES)
+    return render(tmpl, where=where, effect=eff, effect_l=eff[:1].lower() + eff[1:]), eff
+
+
+def name_fields(scope: dict[str, Field], *, item: str | None = None) -> dict[str, str | None]:
     """key → the first candidate no OTHER field of `scope` could also be called (case-insensitive, against
     every candidate of every other field), or None when none is — the ambiguity guard."""
-    cands = {k: phrase_candidates(f, k) for k, f in scope.items()}
+    cands = {k: phrase_candidates(f, k, item=item) for k, f in scope.items()}
     lower = {k: {c.lower() for c in v} for k, v in cands.items()}
     out: dict[str, str | None] = {}
     for k, cs in cands.items():
@@ -357,6 +547,105 @@ def scope_fields(manifest: Manifest, c: Container, page: str | None = None) -> d
         for k, f in manifest.common_page_fields(page or c.name).items():
             out.setdefault(k, f)
     return out
+
+
+# ── a phrase that names ANOTHER container is pinned to its own (int-run2 finding B, 2026-10-03) ──
+#
+# "Branding: reset the Shop button placement (clear it)." → the model cleared `ShopMenuSection.shopMenuLocationAlign`
+# ("the only placement control I found for the Shop button … sits in the global Shop Menu panel, not Branding");
+# "In the site branding, make the Shop button Border Color …" → `shopMenuLocationButtonBorderColor`. The phrase's
+# own words name the shop menu, and that outranked the container the request stated. So when a phrase's content
+# words (stopwords, generic words and type words dropped) ALL belong to another container's vocabulary — its name
+# words ∪ its labels' words ∪ its keys' words — and at least one of them is a DISTINCTIVE name word of that
+# container (`shop`, `brand`, `footer`, `cart`: a word in the vocabulary of at most `NAME_WORD_MAX_SHARE` of the
+# containers; `button`, `card`, `layout`, `content` are in half of them and name nothing), the phrase carries
+# its own container's short name: `Shop button placement (branding)`, `Footer Logo (branding settings)`,
+# `Show Cart Icon (header)`. 52 of 1,784 phrases on the snapshot. Not applied to list-row fields (a row is
+# addressed by its list and index) nor to keyed phrases (they already carry the location's name and id).
+
+CONTENT_STOPWORDS = frozenset({"the", "a", "an", "of", "in", "on", "for", "to", "and", "with", "from", "when", "no", "is",
+                               "show", "hide", "per", "or", "by", "at", "as", "its", "it", "this", "that", "each", "all",
+                               "any", "only", "not", "off", "up", "down", "bar", "area"})
+NAME_WORD_MAX_SHARE = 1 / 8  # a container-name word in more than this share of the containers' vocabularies is not distinctive
+
+
+def _vocab_words(text: str) -> list[str]:
+    """Lower-case, abbreviation-expanded, naively singular words of a label, key or container name
+    (camelCase and `-` split): `headerMegaMenuBg` → header mega menu background; `Cards Per Row` → card per row."""
+    out = []
+    for w in re.findall(r"[A-Za-z][a-z0-9]*|[A-Z]+(?![a-z])", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text.replace("-", " "))):
+        w = KEY_ABBREVIATIONS.get(w.lower(), w.lower())
+        if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        out.append(w)
+    return out
+
+
+def container_name_words(c: Container) -> set[str]:
+    if c.kind == "branding":
+        return {"branding", "brand"}
+    if c.kind == "global":
+        return set(_vocab_words(c.name.removesuffix("Section")))
+    return set(_vocab_words(c.name))  # section type id, page id
+
+
+def container_vocab(c: Container) -> set[str]:
+    v = set(container_name_words(c))
+    for k, f in c.fields.items():
+        v |= set(_vocab_words(f.spec.get("label") or ""))
+        v |= set(_vocab_words(k))
+    return v
+
+
+def short_container_name(c: Container, page: str | None = None) -> str:
+    """`branding`, `header` (PANEL_LABELS minus the article), `content block`, `blog page`."""
+    if c.kind == "branding":
+        return "branding"
+    if c.kind == "global":
+        return re.sub(r"^the\s+", "", PANEL_LABELS.get(c.name, f"{c.name} settings"))
+    if c.kind == "page":
+        return f"{page or c.name} page"
+    return SECTION_LABELS.get(c.name, c.name)
+
+
+def phrase_content_words(phrase: str) -> list[str]:
+    """The words of a phrase that could name a thing: qualifier tails (`(sectionStyle)`, `— uppercase (…)`)
+    stripped, then stopwords, generic label words and type words dropped."""
+    core = re.sub(r"\s*\(.*?\)", "", phrase).split(" — ")[0].replace("›", " ")
+    skip = CONTENT_STOPWORDS | GENERIC_LABELS | set(TYPE_WORDS.values())
+    return [w for w in _vocab_words(core) if w not in skip]
+
+
+class ContainerIndex:
+    """Per-manifest vocabularies for the cross-container rule (built once per Generator)."""
+
+    def __init__(self, manifest: Manifest):
+        self.containers = [c for c in manifest.containers() if c.kind in ("section", "global", "branding", "page")]
+        self.vocab = {c.name: container_vocab(c) for c in self.containers}
+        self.names = {c.name: container_name_words(c) for c in self.containers}
+        freq: dict[str, int] = {}
+        for v in self.vocab.values():
+            for w in v:
+                freq[w] = freq.get(w, 0) + 1
+        limit = len(self.containers) * NAME_WORD_MAX_SHARE
+        self.distinctive = {w for w in freq if freq[w] <= limit}
+
+    def collides_with(self, c: Container, phrase: str) -> Container | None:
+        """The first OTHER container the phrase's content words name (see the rule above), or None."""
+        words = phrase_content_words(phrase)
+        if not words:
+            return None
+        for o in self.containers:
+            if o.name == c.name:
+                continue
+            names, vocab = self.names[o.name], self.vocab[o.name]
+            if any(w in names and w in self.distinctive for w in words) and all(w in vocab for w in words):
+                return o
+        return None
+
+    def pin(self, c: Container, phrase: str, page: str | None = None) -> str:
+        """`phrase` + ` (<own container>)` when it names another container, else `phrase`."""
+        return f"{phrase} ({short_container_name(c, page)})" if self.collides_with(c, phrase) else phrase
 
 
 def keyed_phrase(f: Field, key: str, ctxf: dict) -> str:
@@ -482,18 +771,21 @@ class Generator:
         self.skipped_ambiguous: list[str] = []  # `<container>.<key>` of every field the ambiguity guard dropped
         self._ids: set[str] = set()
         self._names: dict[tuple[str, str, str | None], dict[str, str | None]] = {}
+        self.index = ContainerIndex(manifest)  # cross-container rule
 
     # helpers
     def _bump(self, k: str) -> None:
         self.stats[k] = self.stats.get(k, 0) + 1
 
     def _field_name(self, c: Container, key: str, page: str | None = None) -> str | None:
-        """The unambiguous phrase for `key` in container `c` (name_fields over scope_fields), None when the
-        ambiguity guard rejects it — the caller bumps `skip:ambiguous-label` and skips the case."""
+        """The unambiguous phrase for `key` in container `c` (name_fields over scope_fields, then pinned to `c`
+        when it names another container — `Shop button placement (branding)`), None when the ambiguity guard
+        rejects it — the caller bumps `skip:ambiguous-label` and skips the case."""
         scope_key = (c.kind, c.name, page if c.kind == "page" else None)
         names = self._names.get(scope_key)
         if names is None:
-            names = self._names[scope_key] = name_fields(scope_fields(self.m, c, page))
+            names = self._names[scope_key] = {k: self.index.pin(c, v, page) if v else v
+                                              for k, v in name_fields(scope_fields(self.m, c, page)).items()}
         return names.get(key)
 
     def _skip_ambiguous(self, c: Container, key: str) -> None:
@@ -561,6 +853,13 @@ class Generator:
             if f.read_only:
                 self._bump("skip:derived")
                 continue
+            if f.key.startswith("pageHeaderHiddenPages."):
+                # LayoutSection stores true = page header HIDDEN while the UI's "on" means
+                # shown (LayoutSection.jsx:32-42); the label is the bare page name, so the
+                # effect phrasing cannot see the negation. 19/3,084 cases — skipped until
+                # the generator phrases by the parent key (refuter, 2026-10-04).
+                self._bump("skip:inverted-polarity-residual")
+                continue
             kind = {"bool": "toggle", "enum": "set_enum", "select": "set_enum", "range": "set_range", "number": "set_range",
                     "image": "image"}.get(f.type, "set_field")
             if f.type == "select" and len(f.enum) < 2:
@@ -625,8 +924,8 @@ class Generator:
                 continue
             op = self._set_op(t, key, value)
             if f.type == "bool":
-                tmpl = rng.choice(TOGGLE_ON_TEMPLATES if value else TOGGLE_OFF_TEMPLATES)
-                request = render(tmpl, where=where_phrase, field=field_phrase)
+                request, used = toggle_request(f, key, field_phrase, value, where_phrase, rng, ctxf=self.ctxf)
+                meta = {**meta, "field_phrase": used, "label_phrase": field_phrase, "effect_phrased": used != field_phrase}
             else:
                 request = render(rng.choice(SET_TEMPLATES), where=where_phrase, field=field_phrase,
                                  value=value_phrase(f, value, rng, self.ctxf, self.assets))
@@ -776,7 +1075,7 @@ class Generator:
                              "orders": l.orders, "item_ref": l.item_ref, "container_kind": c.kind, "depth": l.depth}
 
                 parent_list = c.lists.get(l.key.split("[]")[0]) if l.depth == 2 else None
-                item_names = name_fields(l.item_fields)  # the ambiguity guard over the row's fields
+                item_names = name_fields(l.item_fields, item=noun)  # the ambiguity guard over the row's fields
 
                 def prep(cid: str) -> tuple[random.Random, dict, str, list]:
                     rng = case_rng(self.seed, cid)
@@ -847,14 +1146,16 @@ class Generator:
                             self._bump("skip:list-update-value")
                             continue
                         op = {"op": "edit_list", "target": target, "list": l.key, "action": "update", "index": parents + [idx] if l.depth == 2 else idx, "item": {f.key: value}}
+                        used = field_phrase
                         if f.type == "bool":
-                            tmpl = rng.choice(TOGGLE_ON_TEMPLATES if value else TOGGLE_OFF_TEMPLATES)
-                            req = render(tmpl, where=f"the {_ordinal(idx)} {noun} of {where_phrase(state, rng)}", field=field_phrase)
+                            row_where = f"the {_ordinal(idx)} {noun} of {where_phrase(state, rng)}"
+                            req, used = toggle_request(f, f.key, field_phrase, value, row_where, rng, item=noun, ctxf=self.ctxf)
                         else:
                             req = render(rng.choice(LIST_UPDATE_TEMPLATES), where=where_phrase(state, rng), item=noun,
                                          ordinal=_ordinal(idx), field=field_phrase, value=value_phrase(f, value, rng, self.ctxf, self.assets))
                         yield self._case(cid, "list_update", target, [f"{l.key}[].{f.key}"], state, page, req, [op], f"{hold_key}[].{f.key}",
-                                         {**base_meta, "index": idx, "field_type": f.type, "value": value, "field_phrase": field_phrase})
+                                         {**base_meta, "index": idx, "field_type": f.type, "value": value, "field_phrase": used,
+                                          "label_phrase": field_phrase, "effect_phrased": used != field_phrase})
 
     def section_list_cases(self, page: str = "home") -> Iterator[Case]:
         """The page's own `sections` list: add / remove / reorder / duplicate / update{enabled}."""
@@ -961,7 +1262,8 @@ class Generator:
                 where = section_phrase(state, sid, rng, t.page)
                 fl = self._field_name(t.container, t.field.key, t.page)
                 if t.field.type == "bool":
-                    parts.append(("turn on " if value else "turn off ") + f"{fl} for {where}")
+                    eff = effect_phrase(t.field, t.field.key, fl, value, ctxf=self.ctxf)
+                    parts.append(f"{eff[:1].lower()}{eff[1:]} in {where}" if eff else ("turn on " if value else "turn off ") + f"{fl} for {where}")
                 else:
                     parts.append(f"set the {fl} of {where} to {value_phrase(t.field, value, rng, self.ctxf, self.assets)}")
             if len(ops) < 2:

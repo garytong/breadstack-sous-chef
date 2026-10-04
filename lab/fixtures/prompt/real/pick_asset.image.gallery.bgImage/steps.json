@@ -8,10 +8,10 @@
     },
     {
      "type": "tool_use",
-     "id": "toolu_lab_pick2",
+     "id": "toolu_lab_1",
      "name": "pick_asset",
      "input": {
-      "purpose": "background image for the gallery titled 'Follow along'",
+      "purpose": "Background Image for the 'Follow along' section",
       "asset_type": "image"
      }
     }
@@ -40,13 +40,14 @@
        "sectionId": "gallery"
       },
       "values": {
-       "bgImage": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200x1200.webp"
+       "bgImage": "https://cdn.int.breadstack.io/gal/lab/hero-field-1600x900.webp"
       },
       "assets": {
        "bgImage": {
+        "alt": "Sunlit field at harvest",
         "srcset": {
-         "600": "https://cdn.int.breadstack.io/gal/lab/paper-texture-600.webp",
-         "1200": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200.webp"
+         "800": "https://cdn.int.breadstack.io/gal/lab/hero-field-800.webp",
+         "1600": "https://cdn.int.breadstack.io/gal/lab/hero-field-1600.webp"
         }
        }
       }

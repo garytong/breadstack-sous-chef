@@ -396,14 +396,22 @@ def is_clarifying(text: str, candidates: list[tuple[str, ...]], minimum: int = 2
 
 def ctx_of(case: dict) -> dict:
     """The replay ctx: the case template (``site_state.template.id``, else
-    ``case.template``, else editorial) plus GOLDEN_CTX and the context's
-    locations."""
+    ``case.template``, else editorial) plus GOLDEN_CTX, the context's
+    locations and — as ``collect.ctx_for`` sends it live — ``currentPage`` =
+    the case's ``context.page``. The engine fills a section/page target that
+    omits ``page`` from ``currentPage`` (headless.mjs, like the browser host,
+    since 2026-10-03); without it here a bare target the collector's engine
+    accepted would be refused E_TARGET on replay and a correct turn would
+    read ``invalid_op``."""
     state = case.get("site_state") or {}
     tid = ((state.get("template") or {}).get("id")) or case.get("template") or DEFAULT_TEMPLATE
     ctx = {"templateId": tid, **GOLDEN_CTX}
-    locs = (case.get("context") or {}).get("locations")
+    context = case.get("context") or {}
+    locs = context.get("locations")
     if locs:
         ctx["locations"] = [{"id": str(l.get("id"))} for l in locs if isinstance(l, dict) and l.get("id")]
+    if context.get("page"):
+        ctx["currentPage"] = context["page"]
     return ctx
 
 

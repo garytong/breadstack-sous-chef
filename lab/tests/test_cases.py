@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import re
 
 import pytest
 
@@ -429,7 +430,8 @@ def test_remeasure_cli_rewrites_in_place(tmp_path, cases, monkeypatch):
 
 def test_name_fields_qualifies_shared_labels_or_refuses(m):
     cb = C.name_fields(C.scope_fields(m, m.section("contentBlock")))
-    assert cb["title"] == "Headline text" and cb["titleColor"] == "Headline color"  # one label, two types → type word
+    # one label, two types → type word; 'Headline' is generic, so the flat key rides along too (int-run2 B, below)
+    assert cb["title"] == "Headline text (title)" and cb["titleColor"] == "Headline color (title)"
     assert cb["taglineFontSize"] == "Tagline › Text size in pixels"  # the group is part of the label, kept verbatim
     assert cb["bgImageMobile"] == "Background Image (Mobile)"  # the parenthetical is what tells it from 'Background Image'
     assert cb["textAlign"] is None and cb["splitContentAlign"] is None and cb["contentTextAlign"] is None  # 3 enums, 1 label
@@ -453,8 +455,8 @@ def test_ambiguous_fields_are_skipped_not_asked_for(gen, cases):
     assert {"contentBlock.splitContentAlign", "product-details.globalSettings.cardTagsChipColor", "productCarousel.buttonText"} <= skipped
     positive = [c for c in cases if c.kind in C.SET_KINDS + ("reset", "list_update", "clarify") and c.meta.get("list") != "sections"]
     assert not any(c.fields == ["splitContentAlign"] for c in positive)
-    for c in positive:
-        assert c.meta["field_phrase"] and c.meta["field_phrase"] in c.request, (c.id, c.request)
+    for c in positive:  # case-insensitive: an effect-phrased toggle lowercases its verb mid-sentence ("…, show the …")
+        assert c.meta["field_phrase"] and c.meta["field_phrase"].lower() in c.request.lower(), (c.id, c.request)
     assert all(c.meta["field_phrase"] for c in cases if c.kind == "image")  # both variants carry the phrase
 
 
@@ -522,12 +524,220 @@ def test_label_text_and_candidates():
     assert C.label_text(f) == "Tagline › Text size in pixels"
     assert C.phrase_candidates(f) == ["Tagline › Text size in pixels", "Tagline › Text size in pixels size"]
     nested = M.Field("sectionStyle.color", {"label": "Color", "type": "color"})
-    assert C.phrase_candidates(nested) == ["Color", "Color color", "Color (sectionStyle)", "Color color (sectionStyle)"]
+    assert C.phrase_candidates(nested) == ["Color (sectionStyle)", "Color color (sectionStyle)"]  # generic: no bare candidates
+    plain = M.Field("sectionStyle.accent", {"label": "Accent", "type": "color"})
+    assert C.phrase_candidates(plain) == ["Accent", "Accent color", "Accent (sectionStyle)", "Accent color (sectionStyle)"]
     placeholder = M.Field("pageHeaderHiddenPages.our-story", {"label": "Hide {item}", "type": "bool"})
-    assert C.label_text(placeholder) == "Hide our-story"  # `{item}` takes the key's words (the UI label)
+    assert C.label_text(placeholder) == "Hide Our Story"  # `{item}` = the keyed segment's display name (refuter B, D2)
     assert C.label_text(M.Field("overlayColor", {"label": "Overlay {item}", "type": "color"})) == "Overlay color"
     assert C.label_text(M.Field("bgColor", {"type": "color"})) == "bg color"
-    two = {"a": M.Field("a", {"label": "Title", "type": "text"}), "b": M.Field("b", {"label": "Title", "type": "text"})}
+    two = {"a": M.Field("a", {"label": "Caption", "type": "text"}), "b": M.Field("b", {"label": "Caption", "type": "text"})}
     assert C.name_fields(two) == {"a": None, "b": None}
-    three = {**two, "c": M.Field("c", {"label": "Title", "type": "color"})}
-    assert C.name_fields(three)["c"] == "Title color"
+    three = {**two, "c": M.Field("c", {"label": "Caption", "type": "color"})}
+    assert C.name_fields(three)["c"] == "Caption color"
+    # a generic label is told apart by its key, so two flat `Title` fields are no longer unresolvable
+    assert C.name_fields({"a": M.Field("a", {"label": "Title", "type": "text"}), "b": M.Field("b", {"label": "Title", "type": "text"})}) == {"a": "Title (a)", "b": "Title (b)"}
+
+
+# ── int-run2 finding B (2026-10-03): generic labels are located, foreign names are pinned ────────
+
+GENERIC_PHRASE = re.compile(r"^(" + "|".join(sorted(C.GENERIC_LABELS)) + r")$", re.I)
+
+
+def _label_phrase(c):
+    return c.meta.get("label_phrase") or c.meta.get("field_phrase") or ""
+
+
+def test_b_generic_labels_are_never_handed_out_bare(m, gen):
+    header = next(c for c in m.containers("global") if c.name == "HeaderSection")
+    names = C.name_fields(C.scope_fields(m, header))
+    assert names["headerMegaMenuTextColor"] == "Text (header mega menu)"  # int-run2: "Reset the Text of the header" → headerTextColor
+    assert names["headerMegaMenuBg"] == "Background (header mega menu)"  # "Change the Background on the header" → headerBgColor
+    assert names["announcementBar.message"] == "Message (announcementBar)"  # dotted key: the parent, as before, but never bare
+    assert names["headerTextColor"] is None  # three flat `Text Color` colours stay unresolvable — not a generic label, old rule
+    assert C.name_fields(C.scope_fields(m, m.page("blog"), "blog"))["layout"] == "Layout (layout)"  # "Layout should be Grid View" → set_page_layout
+    assert C.name_fields(C.scope_fields(m, m.page("checkout")))["sectionStyle.color"] == "Color (sectionStyle)"
+    cards = next(c for c in m.containers("global") if c.name == "ProductCardSection")
+    pc = C.name_fields(C.scope_fields(m, cards))
+    assert pc["cardPillHoverColor"] == "Pill Hover Colors › Text"  # a group segment already locates it: not generic
+    assert pc["cardThcChipColor"] == "Text (card thc chip)" and pc["cardThcChipBg"] == "Background (card thc chip)"  # un-skipped: the key locates them
+    sm = next(c for c in m.containers("global") if c.name == "ShopMenuSection")
+    assert C.name_fields(C.scope_fields(m, sm))["shopMenuLocationAlign"] == "Alignment (shop menu location)"  # `align` ~ `alignment` dropped
+    hero = C.name_fields(C.scope_fields(m, m.section("heroBanner")))
+    assert hero["headline"] == "Headline (headline)" and hero["headlineColor"] == "Headline (headlineColor)"  # label says it all → the key
+    assert C.is_generic_label(M.Field("x", {"label": "Text", "type": "color"})) and not C.is_generic_label(M.Field("x", {"label": "Text Color", "type": "color"}))
+    assert not C.is_generic_label(M.Field("x", {"label": "Default colors › Text", "type": "color"}))
+    assert C.pseudo_group(M.Field("headerMegaMenuBg", {"label": "Background", "type": "color"}), "headerMegaMenuBg") == "header mega menu"
+    assert C.pseudo_group(M.Field("layout", {"label": "Layout", "type": "enum"}), "layout") == ""
+    for c in m.containers():
+        for k, v in C.name_fields(C.scope_fields(m, c)).items():
+            assert not (v and GENERIC_PHRASE.match(v.strip())), (c.name, k, v)
+
+
+def test_b_generated_requests_never_carry_a_bare_generic_label(cases):
+    seen = 0
+    for c in cases:
+        if c.kind in C.SET_KINDS + ("reset", "list_update", "clarify") and c.meta.get("list") != "sections":
+            phrase = _label_phrase(c)
+            assert phrase and not GENERIC_PHRASE.match(phrase.strip()), (c.id, c.request)
+            if "(header mega menu)" in phrase or phrase.startswith("Layout (layout)"):
+                seen += 1
+                assert phrase in c.request, (c.id, c.request)
+    assert seen >= 3  # the int-run2 residual fields are generated and carry the located phrase
+
+
+def test_b_phrases_naming_another_container_are_pinned_to_their_own(m, gen, cases):
+    assert gen._field_name(m.branding, "locationPickerCtaPlacement") == "Shop button placement (branding)"  # int-run2 → shopMenuLocationAlign
+    assert gen._field_name(m.branding, "locationPickerCtaBorderColor") == "Shop button Border Color (branding)"  # → shopMenuLocationButtonBorderColor
+    header = next(c for c in m.containers("global") if c.name == "HeaderSection")
+    assert gen._field_name(header, "headerShowCart") == "Show Cart Icon (header)"  # `cart` names the sidebar cart panel
+    branding_panel = next(c for c in m.containers("global") if c.name == "BrandingSection")
+    assert gen._field_name(branding_panel, "footerLogo") == "Footer Logo (branding settings)"
+    assert gen._field_name(m.section("contentBlock"), "buttonText") == "Button Text"  # `button` is in half the containers: names nothing
+    assert gen._field_name(m.section("heroBanner"), "btnColor") == "Button Color"
+    idx = gen.index
+    assert idx.collides_with(m.branding, "Shop button placement").name == "ShopMenuSection"
+    assert idx.collides_with(m.branding, "Border Radius") is None  # generic words only → no content words → no collision
+    assert "shop" in idx.distinctive and "button" not in idx.distinctive and "card" not in idx.distinctive
+    assert C.phrase_content_words("Headline Font — uppercase (titleUppercase)") == []
+    assert C.phrase_content_words("Shop button placement (branding)") == ["shop", "button"]
+    assert C.short_container_name(m.branding) == "branding" and C.short_container_name(header) == "header"
+    assert C.short_container_name(m.page("blog"), "blog") == "blog page" and C.short_container_name(m.section("contentBlock")) == "content block"
+    pinned = [c for c in cases if c.fields == ["locationPickerCtaPlacement"]]
+    assert pinned and all("Shop button placement (branding)" in c.request for c in pinned), [c.request for c in pinned]
+    eff = [c for c in cases if c.fields == ["headerShowCart"] and c.meta.get("effect_phrased")]
+    assert eff and all(c.request.lower().count("(header)") == 1 for c in eff), [c.request for c in eff]  # the tail survives effect phrasing
+    # the rule is rare by design: a handful of phrases per manifest, not a suffix on everything
+    total = fired = 0
+    for c in idx.containers:
+        for v in C.name_fields(C.scope_fields(m, c)).values():
+            if v:
+                total += 1
+                fired += idx.collides_with(c, v) is not None
+    assert 20 <= fired <= total * 0.05, (fired, total)
+
+
+# ── refuter B (2026-10-04): toggle polarity, `{item}` substitution, bool legibility ──────────────
+
+def _toggle_value(c):
+    op = c.expected["ops"][0]
+    (key, value), = (op.get("values") or op["item"]).items()
+    return key, value
+
+
+def _first_toggle(cases, key):
+    return next(c for c in cases if c.kind == "toggle" and c.fields == [key])
+
+
+def test_d1_nav_toggles_are_phrased_by_effect_in_both_polarities(m):
+    """`Hide Shop from header nav` is the aria-label snapshotted in the VISIBLE state; the engine's value is
+    true = visible. The request says what should happen, never "turn on/off <negated label>"."""
+    hs = m.panel("HeaderSection")
+    f = hs.fields["pageVisibility.products.inHeaderNav"]
+    assert f.spec["label"] == "Hide Shop from header nav" and C.label_is_negated(f)
+    assert C.toggle_effect(f, f.key, True) == "Show Shop in the header nav"
+    assert C.toggle_effect(f, f.key, False) == "Hide Shop from the header nav"
+    fs = m.panel("FooterSection")
+    g = fs.fields["pageVisibility.products.inFooterNav"]
+    assert C.toggle_effect(g, g.key, True) == "Show Products in the footer"
+    assert C.toggle_effect(g, g.key, False) == "Hide Products from the footer"
+    assert "Probe text" not in C.label_text(g)  # the snapshot's probe residue stands for {item}
+    # negative KEYS keep their meaning: true = hidden
+    h = m.section("contentBlock").fields["hideImageEmptyBg"]
+    assert C.key_is_negative(h.key) and not C.key_is_negative(f.key)
+    assert C.toggle_effect(h, h.key, True) == "Hide the empty image background"
+    assert C.toggle_effect(h, h.key, False) == "Show the empty image background"
+    # positive `show*` keys under a `Hide …` label (ProductCardSection's snapshotted pill labels)
+    p = m.panel("ProductCardSection").fields["cardShowTHC"]
+    assert p.spec["label"] == "Hide THC pill" and C.toggle_effect(p, p.key, False) == "Hide the THC pill"
+    assert C.toggle_effect(p, p.key, True) == "Show the THC pill"
+    # an ordinary bool is left to turn on / turn off
+    assert C.toggle_effect(m.section("productCarousel").fields["alwaysShowArrows"], "alwaysShowArrows", True) is None
+
+
+def test_d1_generated_toggle_requests_never_turn_a_negated_label_on_or_off(m, cases):
+    toggles = [c for c in cases if c.kind == "toggle" or (c.kind == "list_update" and c.meta.get("field_type") == "bool")]
+    assert toggles
+    for c in toggles:
+        low = c.request.lower()
+        assert not any(f"turn {w} hide" in low or f"turn {w} show" in low or f"switch hide" in low for w in ("on", "off")), c.request
+        assert c.meta["field_phrase"].lower() in low, (c.id, c.request)
+        key, value = _toggle_value(c)
+        if c.meta.get("effect_phrased"):
+            # the request's verb and the expected value agree with the KEY's polarity
+            verb = re.search(r"\b(hide|show)\b", low)  # the effect verb is the first such word in the request
+            assert verb, c.request
+            hidden = value if C.key_is_negative(key) else not value
+            assert (verb.group(1) == "hide") == hidden, (c.id, c.request, key, value)
+    both = {_toggle_value(c)[1] for c in toggles if c.fields[0].endswith(".inHeaderNav")}
+    assert both == {True, False}, "the seeded header nav has shown and hidden pages, so both polarities are generated"
+    both_footer = {_toggle_value(c)[1] for c in toggles if c.fields[0].endswith(".inFooterNav")}
+    assert both_footer == {True, False}
+    shop = _first_toggle(cases, "pageVisibility.products.inHeaderNav")
+    key, value = _toggle_value(shop)
+    assert value is False and "hide shop from the header nav" in shop.request.lower(), shop.request
+    story = _first_toggle(cases, "pageVisibility.our-story.inHeaderNav")
+    assert _toggle_value(story)[1] is True and "show our story in the header nav" in story.request.lower(), story.request
+
+
+def test_d1_multi_parts_phrase_negated_bools_by_effect(by_kind):
+    parts = [c for c in by_kind["multi"] if any(k.endswith(".hidePaddingTop") for k in c.fields)]
+    for c in parts:
+        op = next(o for o in c.expected["ops"] if "hidePaddingTop" in o["values"])
+        verb = "hide the padding top" if op["values"]["hidePaddingTop"] else "show the padding top"
+        assert verb in c.request.lower(), c.request
+        assert "turn on hide" not in c.request.lower() and "turn off hide" not in c.request.lower()
+
+
+def test_d2_item_placeholder_takes_the_keyed_segment_or_item_noun(m):
+    hs = m.panel("HeaderSection")
+    f = hs.fields["pageVisibility.our-story.inHeaderNav"]
+    assert f.spec["label"] == "Show {item} in header nav"
+    assert C.label_text(f) == "Show Our Story in header nav"  # never `Show in header nav in header nav`
+    assert C.item_display("pageVisibility.our-story.inHeaderNav", "Show {item} in header nav") == "Our Story"
+    assert C.item_display("pageVisibility.about.inHeaderNav", "x {item}", ctxf=S.load_context_fixture()) == "About Us"  # fixture title
+    assert C.item_display("footerLocationEnabled.{locationId}", "Hide {item}") == "location"
+    assert C.item_display("locationOverrides.{locationId}.address", "{item}") == "address"  # the placeholder is not the item
+    hero = C.scope_fields(m, m.section("heroBanner"))
+    assert hero["btnColor"].spec["label"] == "{item} Color"
+    assert C.label_text(hero["btnColor"], "btnColor") == "Button Color"  # never `btn color`
+    assert C.label_text(hero["btnTextColor"], "btnTextColor") == "Button Text Color"
+    assert C.label_text(hero["overlayColor"], "overlayColor") == "Overlay color"
+    assert C.label_text(M.Field("enabled", {"label": "Hide {item}", "type": "bool"}), item="tier") == "Hide tier"
+    ls = C.name_fields(C.scope_fields(m, m.panel("LayoutSection")))
+    assert ls["pageHeaderHiddenPages.our-story"] == "Our Story (pageHeaderHiddenPages)"
+
+
+def test_d2_generated_requests_carry_the_display_names(cases):
+    story = _first_toggle(cases, "pageVisibility.our-story.inHeaderNav")
+    assert "our story" in story.request.lower() and "in header nav in header nav" not in story.request.lower()
+    btn = [c for c in cases if c.kind == "set_field" and c.fields == ["btnColor"]]
+    assert btn and all("Button Color" in c.request and "btn" not in c.request.lower() for c in btn), [c.request for c in btn]
+    assert not any(re.search(r"\bbtn\b", c.request) for c in cases), "no request names a field by its abbreviated key"
+
+
+def test_d3_bools_sharing_a_label_are_qualified_by_their_key_words(m):
+    cb = C.name_fields(C.scope_fields(m, m.section("contentBlock")))
+    assert cb["titleUppercase"] == "Headline Font — uppercase (titleUppercase)"
+    assert cb["titleFontFamily"] == "Headline Font selection"
+    for page in ("privacy-policy", "terms-of-service", "return-refund"):
+        names = C.name_fields(C.scope_fields(m, m.page(page)))
+        assert names["headingUppercase"] == "Headline Color — uppercase (headingUppercase)", page  # mislabelled in the editor
+    pd = C.name_fields(C.scope_fields(m, m.page("product-details")))
+    assert pd["productDetail.productNameUppercase"] == "Product Name Font — uppercase (productDetail.productNameUppercase)"
+    assert not any(v and v.endswith(" toggle") for c in m.containers() for v in C.name_fields(C.scope_fields(m, c)).values())
+
+
+def test_d3_label_residue_is_stripped(m):
+    cb = C.name_fields(C.scope_fields(m, m.section("contentBlock")))
+    assert cb["taglineImage"] == "Tagline Image" and cb["footnote"] == "Footnote (footnote)"  # generic one-word label → + key (int-run2 B)
+    assert cb["mapLocationIndex"] == "map location index"  # 'Or pick from locations' names nothing
+    assert cb["bgImageMobile"] == "Background Image (Mobile)"  # other parentheticals stay
+    assert C.label_text(M.Field("cardSideImage", {"label": "Side image (optional)", "type": "image"})) == "Side image"
+
+
+def test_d3_no_residue_or_leaf_echo_in_any_request(cases):
+    for c in cases:
+        low = c.request.lower()
+        assert "(optional)" not in low and "or pick from locations" not in low and "probe text" not in low, (c.id, c.request)
+        assert not re.search(r"\b(font|color|style) toggle\b", low), (c.id, c.request)  # the old type-word qualifier

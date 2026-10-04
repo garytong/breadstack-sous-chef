@@ -236,6 +236,28 @@ def test_e_target_with_default_template_on_sections_add(eng, base):
 
 
 @engine_test
+def test_bare_section_target_is_filled_from_ctx_current_page(eng, base):
+    """The tool description lets the model omit `target.page` ("the host fills
+    it in"); the browser host does it with previewApi.withTargetDefaults(ops,
+    ctx) and, since 2026-10-03, so does headless.mjs — the collector passes
+    `currentPage` in ctx (collect.ctx_for) and int-run2 lost 16 rows to
+    `E_TARGET "section target needs a page"` + a retry before it did. Without
+    `currentPage` nothing is filled and the op still fails E_TARGET."""
+    bare = {"kind": "section", "sectionId": "contentBlock-1"}  # CB1 minus page
+    ops = [{"op": "set_fields", "target": bare, "values": {"tagline": "No page given"}},
+           {"op": "reset", "target": bare, "keys": ["tagline"]}]
+    filled = eng.run(base, ops, {**E.GOLDEN_CTX, "currentPage": "home"})
+    assert filled.ok and filled.returncode == 0 and all(r["ok"] for r in filled.results)
+    assert [r["op"]["target"] for r in filled.results] == [{**bare, "page": "home"}] * 2  # the engine saw filled targets
+    assert set(filled.written) == {"homeSections[5].settings.tagline"}
+    assert [d["path"] for d in filled.diff()] == ["homeSections[5].settings.tagline"]
+    unfilled = eng.run(base, ops[:1])  # GOLDEN_CTX has no currentPage
+    assert not unfilled.ok and unfilled.returncode == 2 and unfilled.error_codes == ["E_TARGET"]
+    assert "needs a page" in unfilled.errors[0]["message"] and unfilled.results[0]["op"]["target"] == bare
+    assert unfilled.diff() == []
+
+
+@engine_test
 def test_file_mode_and_out_file(eng, base, tmp_path):
     ops = [{"op": "set_page_layout", "page": "products", "layout": "filter-right"},
            {"op": "reset_pinned_section", "page": "products", "sectionId": "__pinned_product_list"}]

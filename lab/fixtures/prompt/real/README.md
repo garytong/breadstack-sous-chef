@@ -41,8 +41,14 @@ route, `BUILD_ID=lab-e2e`); per capture, append the steps, `POST /v1/manifests` 
 `run_case` (which first `DELETE`s the site's open conversation — a turn without `conversationId` continues it, README §1.1,
 and the lab's `siteId` is `lab-<case id>` for every sample), then write the four files. The default plan takes the cases
 from `data/e2e/cases.jsonl` (+ `fixtures/traces/` for the two `set_field.contentBlock-1.*` cases); the `pick_asset` plan
-searches the call id whose deterministic pick (`collect.pick_asset_for`) is the asset the case expects, so the scripted
-`set_fields` reproduces `expected.diff`. Wall ≈ 30 s for the four (one warm engine boot per batch).
+scripts the `set_fields` with the asset the collector's fake picker answers (`collect.pick_asset_for` →
+`state.fixture_asset_for`, keyed by the case id alone — the same function the generator used for the case's expected
+ops, so the scripted write reproduces `expected.diff`), and refuses a case whose expected asset is not that pick: such a
+case predates the shared function (the 2026-10-01 `cases.jsonl` expected `paper-texture` for
+`image/gallery/gallery/bgImage/pick`; since 377cefa the pick for that id is `hero-field`) — regenerate it
+(`souschef_lab.cases --kinds image --no-measure`, then `cases remeasure` on the row) before capturing. The
+`pick_asset` capture was re-captured that way 2026-10-04 (verdict `pass`; the call id `toolu_lab_1`). Wall ≈ 30 s for
+the four (one warm engine boot per batch).
 
 The pre-renderer capture of 2026-10-01 (one `set_field` turn, bytes from before `render.py`) was removed: its
 `collect-real.jsonl` carried `messages` the service never sends (`<context>{…}</context>` without inner newlines,
