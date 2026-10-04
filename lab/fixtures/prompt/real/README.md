@@ -1,0 +1,50 @@
+# fixtures/prompt/real — the real service binary's model requests, captured
+
+One directory per captured turn, each the REAL `sous-chef` binary (built from `service/cmd/sous-chef`, `BUILD_ID lab-e2e`)
+talking to `tests/fake_model.py` over a `messages-compatible` route (`auth: none`, `stream: false`), with the lab's own
+collector (`souschef_lab.collect.run_case`) as the browser and the real engine (`headless.mjs`) applying the ops.
+No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_real.py`.
+
+```
+<capture>/
+  case.json             the LAB.md §2 case the turn was asked
+  steps.json            the fake model's scripted replies (tests/fake_model.py step shape)
+  collect-real.jsonl    the collector row: context, text, messages, events (incl. tool.result), engine_results, verdict
+  model-requests.jsonl  every POST /v1/messages body the service sent, in order ({path, headers, body, stream, raw_len})
+```
+
+| capture | tool_result shape (loop.browserResult) | model calls | verdict |
+|---|---|---|---|
+| `ok.set_field.contentBlock-1.title` | `{"ok":true,"written":[…]}` | 2 | pass |
+| `error.set_field.contentBlock-1.tagline` | `{"code":"E_FIELD","message":…,"key":"showButton"}` with `is_error`, then the retry's ok | 3 | invalid_op (the scripted bad op) |
+| `warnings-sectionid.list_add.home.sections.loyaltyForm` | `{"ok":true,"sectionId":"loyaltyForm","written":[…]}` and `{"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":[…]}` — two results in ONE user message | 2 | extra_writes (the scripted gated write) |
+| `pick_asset.image.gallery.bgImage` | `turn.suspended` → the bare `api.Asset` `{"public_url":…,"srcset":{…}}`, then the set_fields' ok | 3 | pass |
+
+`tests/test_render.py` asserts, for every capture: the row's `messages` == `render.messages_from_events(row.events)` ==
+the wire, request after request (each request is the prefix of the turn up to that model reply); `system[0]`,
+`system[1]` and `tools` equal `../system0.rules.txt`, `../system1.index.txt`, `../tools.json` byte for byte on every call
+(`../README.json` has the hashes); `dataset.to_hf` reads those bytes. Shape-specific assertions pin each row of the table.
+
+## Recipe (re-capture when the service's prompt or result rendering changes)
+
+```sh
+cd lab
+docker compose -f ../docker-compose.yml up -d postgres           # or: make -C .. db-up (Postgres 16 on 5433)
+.venv/bin/python tests/capture_real.py --default-plan data/e2e/cases.jsonl --out fixtures/prompt/real
+#   --from fixtures/prompt/real --out <dir>   re-runs the stored case.json + steps.json instead of the default plan
+#   --binary <path>                           skip the `go build`; --db-url, --engine, --manifest, --port, --model-port
+```
+
+What the script does: `go build` the binary into a temp dir; start `FakeModel` (free port) and the binary
+(`DATABASE_URL` = `…/souschef_lab`, `MIGRATE_AT_BOOT=on`, `SERVICE_KEYS=test-key`, `MODEL_ROUTES` = the one `lab-fake`
+route, `BUILD_ID=lab-e2e`); per capture, append the steps, `POST /v1/manifests` (`fixtures/manifest.snapshot.json`),
+`run_case` (which first `DELETE`s the site's open conversation — a turn without `conversationId` continues it, README §1.1,
+and the lab's `siteId` is `lab-<case id>` for every sample), then write the four files. The default plan takes the cases
+from `data/e2e/cases.jsonl` (+ `fixtures/traces/` for the two `set_field.contentBlock-1.*` cases); the `pick_asset` plan
+searches the call id whose deterministic pick (`collect.pick_asset_for`) is the asset the case expects, so the scripted
+`set_fields` reproduces `expected.diff`. Wall ≈ 30 s for the four (one warm engine boot per batch).
+
+The pre-renderer capture of 2026-10-01 (one `set_field` turn, bytes from before `render.py`) was removed: its
+`collect-real.jsonl` carried `messages` the service never sends (`<context>{…}</context>` without inner newlines,
+Python-spaced tool results), which `dataset.to_hf` used to prefer over the rebuild. `to_hf` now always rebuilds from
+events and rejects such a row `messages_mismatch` (LAB.md §5).

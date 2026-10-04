@@ -1,0 +1,10 @@
+# What `gcloud builds submit .` uploads: cloudbuild.yaml needs only service/.
+# (Without this file gcloud would fall back to .gitignore and still ship lab/,
+# infra/ and docs/.)
+*
+!cloudbuild.yaml
+!service/
+!service/**
+service/bin/
+service/**/*_test.go
+service/testdata/

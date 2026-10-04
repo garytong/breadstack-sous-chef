@@ -1,0 +1,404 @@
+"""cases.py — schema, determinism, holdout, per-kind invariants, io, measure."""
+
+import copy
+import json
+import os
+
+import pytest
+
+from souschef_lab import FIXTURES_DIR
+from souschef_lab import cases as C
+from souschef_lab import engine as E
+from souschef_lab import manifest as M
+from souschef_lab import state as S
+
+REQUIRE = os.environ.get("SOUS_CHEF_LAB_REQUIRE_ENGINE") == "1"
+
+
+@pytest.fixture(scope="module")
+def m():
+    return M.load(FIXTURES_DIR / "manifest.snapshot.json")
+
+
+@pytest.fixture(scope="module")
+def gen(m):
+    return C.Generator(m, seed=0)
+
+
+@pytest.fixture(scope="module")
+def cases(gen):
+    return list(gen.all_cases())
+
+
+@pytest.fixture(scope="module")
+def by_kind(cases):
+    out = {}
+    for c in cases:
+        out.setdefault(c.kind, []).append(c)
+    return out
+
+
+def test_every_kind_is_generated(by_kind):
+    assert set(by_kind) == set(C.KINDS)
+
+
+def test_row_schema_and_roundtrip(cases, tmp_path):
+    c = cases[0]
+    row = c.to_row()
+    assert set(row) == {"id", "kind", "target", "fields", "site_state", "context", "request", "expected", "holdout", "manifest_hash", "template", "meta", "engine_fingerprint"}
+    assert set(row["expected"]) >= {"ops", "diff"}
+    assert row["template"] == "editorial" and row["manifest_hash"] == c.manifest_hash == M.load(FIXTURES_DIR / "manifest.snapshot.json").hash
+    p = tmp_path / "c.jsonl"
+    assert C.write_jsonl(p, cases[:5]) == 5
+    back = C.read_cases(p)
+    assert [b.to_row() for b in back] == [x.to_row() for x in cases[:5]]
+
+
+def test_ids_unique_and_free_of_hash(cases):
+    ids = [c.id for c in cases]
+    assert len(ids) == len(set(ids))
+    assert all("#" not in i and " " not in i for i in ids)
+    assert all(i.split("/")[0] in C.KINDS or i.startswith("reset/") for i in ids)
+
+
+def test_deterministic_for_a_seed(m, cases):
+    again = list(C.Generator(m, seed=0).all_cases())
+    assert [(c.id, c.request, c.expected["ops"], c.holdout) for c in again] == [(c.id, c.request, c.expected["ops"], c.holdout) for c in cases]
+    other = list(C.Generator(m, seed=1).all_cases(kinds=["set_field"]))
+    mine = {c.id: c for c in cases if c.kind == "set_field"}
+    same_ids = {c.id for c in other} & set(mine)
+    assert len(same_ids) > 0.9 * len(mine)
+    changed = sum(1 for c in other if c.id in mine and c.request != mine[c.id].request)
+    assert changed > 0  # wording follows the seed
+    assert all(c.holdout == mine[c.id].holdout for c in other if c.id in mine)  # holdout does not
+
+
+def test_holdout_band_and_independence_from_wording(cases):
+    pct = 100 * sum(c.holdout for c in cases) / len(cases)
+    assert 17 <= pct <= 23, pct
+    # the same holdout key → the same bucket, whatever the section row / wording
+    by_key = {}
+    for c in cases:
+        by_key.setdefault(c.meta["holdout_key"], set()).add(c.holdout)
+    assert all(len(v) == 1 for k, v in by_key.items() if not k.startswith("multi"))
+
+
+def test_no_unfilled_slots_or_doubled_nouns(cases):
+    bad = [c.id for c in cases if "{" in c.request or "}" in c.request or " section section" in c.request]
+    assert bad == []
+    assert all(c.request.strip() for c in cases)
+
+
+def test_no_derived_or_json_targets_in_positive_cases(cases, m):
+    for c in cases:
+        if c.kind == "unsupported":
+            continue
+        for op in c.expected["ops"]:
+            for key in (op.get("values") or {}):
+                f = m.resolve_field(_container(m, op), key) or S.resolve_key(m, _container(m, op), key)
+                assert f is not None and not f.read_only and f.type != "json", (c.id, key)
+
+
+def _container(m, op):
+    t = op["target"]
+    if t["kind"] == "section":
+        return m.section(t["sectionId"])
+    if t["kind"] == "global":
+        return m.panel(t.get("panel"))
+    if t["kind"] == "branding":
+        return m.branding
+    return m.page(t["page"])
+
+
+def test_toggle_flips_the_seeded_current(by_kind):
+    for c in by_kind["toggle"]:
+        op = c.expected["ops"][0]
+        (key, value), = (op.get("values") or op["item"]).items()
+        assert isinstance(value, bool)
+        assert c.meta["current"] in (True, False, None)
+        assert value != bool(c.meta["current"])
+
+
+def test_set_enum_values_are_members_not_current(by_kind, m):
+    for c in by_kind["set_enum"]:
+        op = c.expected["ops"][0]
+        (key, value), = (op.get("values") or op["item"]).items()
+        f = S.resolve_key(m, _container(m, op), key)
+        assert value in f.enum and value != c.meta["current"]
+        if f.enum_labels:
+            assert str(f.enum_labels.get(str(value), value)) in c.request or str(value) in c.request
+
+
+def test_set_range_values_within_bounds_on_step(by_kind, m):
+    for c in by_kind["set_range"]:
+        op = c.expected["ops"][0]
+        (key, value), = (op.get("values") or op["item"]).items()
+        f = S.resolve_key(m, _container(m, op), key)
+        assert isinstance(value, (int, float)) and value != c.meta["current"]
+        if f.min is not None and f.max is not None:
+            assert f.min <= value <= f.max
+            step = f.step or 1
+            assert abs(((value - f.min) / step) - round((value - f.min) / step)) < 1e-9
+        else:
+            assert 1 <= value <= 100
+
+
+def test_image_cases_have_assets_and_pick_variant(by_kind):
+    url = [c for c in by_kind["image"] if c.meta["variant"] == "url"]
+    pick = [c for c in by_kind["image"] if c.meta["variant"] == "pick_asset"]
+    assert len(url) == len(pick) > 0
+    for c in url:
+        op = c.expected["ops"][0]
+        if op["op"] == "set_fields":
+            (key, val), = op["values"].items()
+            assert val.startswith("https://cdn.int.breadstack.io/gal/")
+            assert set(op["assets"][key]) == {"alt", "srcset"}
+    for c in pick:
+        assert c.expected["ops"][0]["op"] == "pick_asset" and c.expected["ops"][0]["asset_type"] == "image"
+        assert c.expected["ops"][1]["op"] in ("set_fields", "edit_list")
+        assert c.browser_ops == c.expected["ops"][1:]
+
+
+def test_hero_mirror_keys_use_edit_list_update_slide_0(cases):
+    mirror = [c for c in cases if c.meta.get("mirror")]
+    assert mirror
+    for c in mirror:
+        op = c.expected["ops"][-1]
+        assert op["op"] == "edit_list" and op["list"] == "slides" and op["action"] == "update" and op["index"] == 0
+        assert op["target"]["sectionId"] == "heroBanner"
+        assert c.site_state["homeSections"][0]["settings"]["slides"]  # slide 0 exists
+
+
+def test_gates_are_open_in_site_state(cases, m):
+    gated = [c for c in cases if c.meta.get("gated") and not c.meta.get("gate_closed") and c.kind in C.SET_KINDS + ("reset",)]
+    assert gated
+    for c in gated:
+        assert c.meta["gate_writes"], c.id
+        op = c.expected["ops"][-1]
+        cont = _container(m, op)
+        sid = op["target"].get("sectionId")
+        for gk, gv in c.meta["gate_writes"].items():
+            if "[]" in gk:
+                list_key, _, item_key = gk.rpartition("[].")
+                idx = S.find_section_index(c.site_state, sid)
+                assert S.get_path(c.site_state, f"homeSections[{idx}].{cont.lists[list_key].path}[0].{item_key}") == gv
+            else:
+                f = S.resolve_key(m, cont, gk)
+                assert S.read_field(cont, f, c.site_state, section_id=sid, page=op["target"].get("page", "home"), key=gk if f.keyed_by else None) == gv
+    closed = [c for c in cases if c.meta.get("gate_closed")]
+    assert closed and all(c.meta["expect_warning"] == "W_HIDDEN" and not c.meta["gate_writes"] for c in closed)
+
+
+def test_keyed_fields_use_fixture_ids(cases):
+    keyed = [c for c in cases if c.meta.get("keyed_by")]
+    assert keyed
+    ids = {l["id"] for l in S.load_context_fixture()["locations"]}
+    for c in keyed:
+        key = c.fields[0]
+        assert "{" not in key and key.split(".")[1] in ids
+        assert C.keyed_supported(M.load(FIXTURES_DIR / "manifest.snapshot.json"), _container(M.load(FIXTURES_DIR / "manifest.snapshot.json"), c.expected["ops"][0]), key)
+    assert {c.fields[0].split(".")[-1] for c in keyed} == {"address"}  # the only keyed field the engine resolves (measured)
+
+
+def test_reset_cases_seed_a_value_that_differs_from_the_expected_leaf(by_kind, m):
+    modes = {c.meta["mode"] for c in by_kind["reset"]}
+    assert modes == {"unset", "default"}
+    for c in by_kind["reset"]:
+        op = c.expected["ops"][0]
+        assert op["op"] == ("reset" if c.meta["mode"] == "unset" else "restore_default")
+        f = S.resolve_key(m, _container(m, op), op["keys"][0])
+        assert (f.has_unset if c.meta["mode"] == "unset" else f.has_default)
+        assert c.meta["seeded"] != c.meta["expected_leaf"]
+        current = S.read_field(_container(m, op), f, c.site_state, section_id=op["target"].get("sectionId"), page=op["target"].get("page", "home"))
+        assert current == c.meta["seeded"]
+
+
+def test_list_cases_cover_every_declared_op(by_kind, m):
+    seen = {}
+    for kind in ("list_add", "list_remove", "list_reorder", "list_update"):
+        for c in by_kind[kind]:
+            op = c.expected["ops"][0]
+            assert op["op"] == "edit_list"
+            seen.setdefault(op["list"], set()).add(op["action"])
+            if op["list"] == "sections":
+                continue
+            l = _container(m, op).lists[op["list"]]
+            assert l.allows(op["action"]), c.id
+            if l.depth == 2:
+                assert isinstance(op.get("index"), list), c.id
+            if op["action"] == "reorder":
+                assert sorted(op["order"]) != [] and len(set(map(str, op["order"]))) == len(op["order"])
+    assert seen["sections"] == {"add", "remove", "reorder", "duplicate", "update"}
+    assert "add" in seen["slides"] and "update" in seen["slides[].bullets"]
+    assert seen["pageVisibility.products.categoryOrder"] == {"reorder"}  # orders lists: no update (id arrays)
+    on_home = {S.type_of_section(r["id"]) for r in S.DEFAULT_HOME_SECTIONS}
+    for c, l in m.iter_lists():
+        if c.kind == "details" or (c.kind == "section" and c.name not in on_home):
+            continue  # details lists are reached through their owner; sections not on the home rows have no state
+        if l.depth <= 2 and l.ops and l.item_fields:  # companion parallels (empty `item`) have nothing to write
+            assert l.key in seen, f"no case for list {l.key}"
+
+
+def test_list_add_carries_an_item_with_leaves(by_kind):
+    for c in by_kind["list_add"]:
+        op = c.expected["ops"][0]
+        if op["list"] == "sections":
+            assert op["action"] == "duplicate" or op["item"]["id"] in C.SECTION_LABELS
+            continue
+        assert "item" in op, c.id  # an appended `{}` has no leaves → empty diff (measured 2026-10-01)
+        assert op["item"] == c.meta["item"]
+
+
+def test_list_state_is_seeded_long_enough(by_kind):
+    for c in by_kind["list_remove"] + by_kind["list_reorder"]:
+        op = c.expected["ops"][0]
+        if op["list"] == "sections":
+            continue
+        assert c.meta.get("len_before", 2) >= 2 or op["action"] == "reorder"
+
+
+def test_layout_cases(by_kind):
+    ops = [c.expected["ops"][0] for c in by_kind["layout"]]
+    kinds = {o["op"] for o in ops}
+    assert kinds == {"set_page_layout", "reset_pinned_section"}
+    layouts = S.load_layouts_fixture()
+    for c in by_kind["layout"]:
+        o = c.expected["ops"][0]
+        if o["op"] == "set_page_layout":
+            assert o["layout"] in layouts["page_layouts"][o["page"]]
+            assert o["layout"] != layouts["default_layouts"].get(o["page"])
+        else:
+            assert o == {"op": "reset_pinned_section", "page": "products", "sectionId": "__pinned_product_list"}
+            assert c.site_state["pageSectionsAll"]["products"][0]["enabled"] is False
+
+
+def test_multi_cases_have_two_or_three_independent_ops(by_kind):
+    for c in by_kind["multi"]:
+        ops = c.expected["ops"]
+        assert 2 <= len(ops) <= 3
+        assert len({o["target"]["sectionId"] for o in ops}) == len(ops)
+        assert c.holdout == any(M.is_holdout(k) for k in c.meta["hold_keys"])
+        assert c.target is None
+
+
+def test_clarify_cases_have_two_candidates_and_no_ops(by_kind):
+    for c in by_kind["clarify"]:
+        assert c.expected["ops"] == [] and len(c.expected["candidates"]) >= 2
+        assert all(S.find_section(c.site_state, sid) for sid in c.expected["candidates"])
+        label = C.SECTION_LABELS[c.meta["section_type"]]
+        assert label in c.request.lower()
+        assert not any(sid in c.request for sid in c.expected["candidates"])  # names only the type
+
+
+def test_unsupported_cases(by_kind):
+    assert all(c.expected["ops"] == [] and c.expected["report_unsupported"] for c in by_kind["unsupported"])
+    reasons = {c.meta["reason"] for c in by_kind["unsupported"]}
+    assert "derived_from" in reasons and len(reasons) >= 10
+    assert all(c.browser_ops == [] for c in by_kind["unsupported"])
+
+
+def test_context_matches_site_state(cases):
+    for c in cases[::50]:
+        page = c.context["page"]
+        assert c.context == S.context_of(c.site_state, page, S.load_context_fixture())
+
+
+def test_generate_limit_and_kinds(m):
+    few = C.generate(m, kinds=["toggle"], limit=7)
+    assert len(few) == 7 and all(c.kind == "toggle" for c in few)
+
+
+def test_summarize_and_stats(cases, gen):
+    s = C.summarize(cases)
+    assert s["cases"] == len(cases) and set(s["by_kind"]) == set(C.KINDS)
+    assert gen.stats.get("skip:type:json", 0) == 5  # the five json fields on the default rows
+    assert gen.stats.get("skip:derived", 0) == 0     # enumerate_targets already dropped them
+
+
+def test_main_no_measure(tmp_path, capsys):
+    out = tmp_path / "cases.jsonl"
+    assert C.main(["--out", str(out), "--no-measure", "--kinds", "layout,clarify", "--limit", "10"]) == 0
+    res = json.loads(capsys.readouterr().out)
+    assert res["written"] == 10 and res["rejects"] == 0
+    assert out.exists() and (tmp_path / "cases-rejects.jsonl").exists()
+
+
+def test_measure_rejects_refused_ops_with_a_fake_engine(cases):
+    class FakeEngine:
+        def run(self, state, ops, ctx=None):
+            ok = all(o.get("op") != "reset" for o in ops)
+            out = {"ok": ok, "results": [{"op": o, "ok": ok, "warnings": [], "written": ["x"], **({} if ok else {"error": {"code": "E_FIELD"}})} for o in ops],
+                   "changes": [{"slice": "homeSections", "written": ["x"], "diff": [{"path": "x", "after": 1}]}] if ok else []}
+            return E.EngineResult.from_output(out, returncode=0 if ok else 2, elapsed_s=0.0)
+    sample = [next(c for c in cases if c.kind == "set_field"), next(c for c in cases if c.kind == "reset"),
+              next(c for c in cases if c.kind == "clarify"), next(c for c in cases if c.kind == "image" and c.meta["variant"] == "pick_asset")]
+    accepted, rejects = C.measure(sample, FakeEngine())
+    assert [c.kind for c in accepted] == ["set_field", "clarify", "image"]
+    assert rejects[0]["reason"] == "op_refused" and rejects[0]["kind"] == "reset"
+    assert accepted[0].expected["diff"] == [{"path": "x", "after": 1}]
+    assert accepted[1].expected["diff"] == []  # clarify never goes through the engine
+
+
+@pytest.mark.engine
+def test_measure_sample_through_the_real_engine(cases):
+    if not E.engine_available():
+        if REQUIRE:
+            pytest.fail("SOUS_CHEF_LAB_REQUIRE_ENGINE=1 but the engine is unavailable: " + E.unavailable_reason())
+        pytest.skip("engine unavailable: " + E.unavailable_reason())
+    eng = E.Engine(cache_dir=E.default_cache_dir())
+    picks = []
+    for kind in ("set_field", "toggle", "set_enum", "list_update", "reset", "layout"):
+        picks.append(next(c for c in cases if c.kind == kind))
+    picks.append(next(c for c in cases if c.meta.get("mirror")))
+    accepted, rejects = C.measure(picks, eng, log=lambda cid, ok, info: print(cid, ok, info.get("reason", ""), info.get("errors", "")))
+    assert rejects == [], rejects
+    assert all(c.expected["diff"] for c in accepted)
+    print("[engine]", eng.stats())
+
+
+# ── engine fingerprint on cases (LAB.md §2) ─────────────────────────────────
+
+class _StampingEngine:
+    """A stand-in that answers every op and carries an identity."""
+
+    def __init__(self, fingerprint, after=1):
+        self.fingerprint, self.commit, self.after = fingerprint, "c0ffee", after
+
+    def run(self, state, ops, ctx=None):
+        out = {"ok": True, "results": [{"op": o, "ok": True, "warnings": [], "written": ["x"]} for o in ops],
+               "changes": [{"slice": "homeSections", "written": ["x"], "diff": [{"path": "x", "after": self.after}]}]}
+        return E.EngineResult.from_output(out, returncode=0, elapsed_s=0.0)
+
+
+def test_measure_stamps_the_engine_fingerprint(cases):
+    c = copy.deepcopy(next(x for x in cases if x.kind == "set_field"))
+    c.engine_fingerprint = None  # the module-scoped fixture may already carry the real engine's stamp
+    accepted, rejects = C.measure([c], _StampingEngine("fp-1"))
+    assert rejects == [] and accepted[0].engine_fingerprint == "fp-1"
+    assert accepted[0].meta["measured"]["engine_commit"] == "c0ffee"
+    row = accepted[0].to_row()
+    assert row["engine_fingerprint"] == "fp-1" and C.Case.from_row(row).engine_fingerprint == "fp-1"
+    legacy = {k: v for k, v in row.items() if k != "engine_fingerprint"}  # rows written before the stamp
+    assert C.Case.from_row(legacy).engine_fingerprint is None
+
+
+def test_remeasure_reports_changed_diffs_and_stale_fingerprints(cases):
+    picks = [copy.deepcopy(x) for x in cases if x.kind in ("set_field", "toggle")][:3]
+    first, _ = C.measure(picks, _StampingEngine("fp-1", after=1))
+    res = C.remeasure(first, _StampingEngine("fp-2", after=2))
+    assert res["fingerprint"] == "fp-2" and res["stale"] == 3 and res["rejects"] == []
+    assert sorted(res["changed"]) == sorted(c.id for c in picks) and res["unchanged"] == 0
+    assert all(c.engine_fingerprint == "fp-2" and c.expected["diff"] == [{"path": "x", "after": 2}] for c in res["accepted"])
+    again = C.remeasure(res["accepted"], _StampingEngine("fp-2", after=2))
+    assert again["stale"] == 0 and again["changed"] == [] and again["unchanged"] == 3
+
+
+def test_remeasure_cli_rewrites_in_place(tmp_path, cases, monkeypatch):
+    picks = [copy.deepcopy(x) for x in cases if x.kind == "set_field"][:2]
+    C.measure(picks, _StampingEngine("fp-1", after=1))
+    path = tmp_path / "cases.jsonl"
+    C.write_jsonl(path, picks)
+    monkeypatch.setattr(E, "Engine", lambda *a, **k: _StampingEngine("fp-2", after=2))
+    assert C.main(["remeasure", "--cases", str(path), "--workers", "1"]) == 0
+    rows = list(C.read_jsonl(path))
+    assert len(rows) == 2 and all(r["engine_fingerprint"] == "fp-2" and r["expected"]["diff"] == [{"path": "x", "after": 2}] for r in rows)

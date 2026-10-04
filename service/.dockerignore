@@ -1,0 +1,7 @@
+# Keep the build context to the module sources. Tests and testdata are not
+# needed to compile cmd/sous-chef; bin/ is the local build output.
+bin/
+coverage.out
+coverage.html
+*_test.go
+testdata/

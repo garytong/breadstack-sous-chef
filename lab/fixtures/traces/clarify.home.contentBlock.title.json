@@ -1,0 +1,209 @@
+{
+ "schema": 1,
+ "note": "two contentBlock sections on the page; the model asks which, naming both; no ops",
+ "at": "2026-10-01T00:00:00Z",
+ "buildId": "lab-fixture",
+ "case": {
+  "id": "clarify.home.contentBlock.title",
+  "kind": "clarify",
+  "target": {
+   "kind": "page",
+   "page": "home"
+  },
+  "fields": [],
+  "site_state": {
+   "template": {
+    "id": "editorial"
+   },
+   "homeSections": [
+    {
+     "id": "heroBanner",
+     "enabled": true,
+     "settings": {
+      "headline": "Old headline",
+      "slides": [
+       {
+        "headline": "Old headline",
+        "layout": "classic",
+        "backgroundImage": ""
+       }
+      ]
+     }
+    },
+    {
+     "id": "contentBlock-1",
+     "enabled": true,
+     "settings": {
+      "title": "<p>Our story</p>",
+      "paddingY": 32,
+      "taglineColor": "#ff0000",
+      "bgImage": "",
+      "bullets": [
+       {
+        "icon": "star",
+        "title": "Fresh",
+        "subtitle": "Daily"
+       }
+      ]
+     }
+    },
+    {
+     "id": "productCarousel-1",
+     "enabled": true,
+     "settings": {
+      "title": "<p>Bestsellers</p>",
+      "productCount": "3",
+      "contentAlign": "left"
+     }
+    },
+    {
+     "id": "contentBlock-2",
+     "enabled": true,
+     "settings": {
+      "title": "<p>Visit us</p>"
+     }
+    },
+    {
+     "id": "gallery",
+     "enabled": true,
+     "settings": {
+      "title": "Gallery",
+      "images": [
+       "https://cdn.int.breadstack.io/gal/a.jpg"
+      ],
+      "imagesAlt": [
+       "a"
+      ],
+      "imagesSrcSet": [
+       null
+      ]
+     }
+    }
+   ],
+   "pageSectionsAll": {},
+   "locationDetailsOverrides": {},
+   "globalSettings": {},
+   "branding": {},
+   "pageVisibility": {},
+   "layouts": {},
+   "customPages": [],
+   "seo": {},
+   "faqCategories": [],
+   "terms": [],
+   "privacy": [],
+   "returnRefund": [],
+   "disclaimer": [],
+   "eula": [],
+   "cookiePolicy": []
+  },
+  "context": {
+   "page": "home",
+   "template": "editorial",
+   "layout": "default",
+   "sections": [
+    {
+     "id": "heroBanner",
+     "type": "heroBanner",
+     "title": "Hero banner",
+     "enabled": true
+    },
+    {
+     "id": "contentBlock-1",
+     "type": "contentBlock",
+     "title": "Our story",
+     "enabled": true
+    },
+    {
+     "id": "productCarousel-1",
+     "type": "productCarousel",
+     "title": "Bestsellers",
+     "enabled": true
+    },
+    {
+     "id": "contentBlock-2",
+     "type": "contentBlock",
+     "title": "Visit us",
+     "enabled": true
+    },
+    {
+     "id": "gallery",
+     "type": "gallery",
+     "title": "Gallery",
+     "enabled": true
+    }
+   ],
+   "categories": [
+    {
+     "slug": "cookies",
+     "name": "Cookies"
+    }
+   ],
+   "customPages": [],
+   "nav": [
+    {
+     "label": "Home",
+     "href": "/"
+    }
+   ],
+   "locations": []
+  },
+  "request": "Change the content block title to “Fresh from the oven”",
+  "expected": {
+   "ops": [],
+   "diff": []
+  },
+  "holdout": false,
+  "manifest_hash": "727d151b5d6b04cd68b73199ab0b3bdf061263f9623f4f6eda00a79137c06f38",
+  "template": "editorial",
+  "meta": {
+   "section_type": null,
+   "field_type": "clarify",
+   "field_key": "home.clarify.contentBlock",
+   "generator": "fixtures/traces hand-written 2026-10-01",
+   "seed": 0,
+   "candidates": [
+    [
+     "contentBlock-1",
+     "Our story"
+    ],
+    [
+     "contentBlock-2",
+     "Visit us"
+    ]
+   ]
+  }
+ },
+ "streams": [
+  [
+   {
+    "event": "text.delta",
+    "data": {
+     "text": "Which content block should I update — contentBlock-1 (“Our story”) or contentBlock-2 (“Visit us”)?"
+    },
+    "turnId": "turn-0006",
+    "seq": 1
+   },
+   {
+    "event": "turn.done",
+    "data": {
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "calls": 1
+     },
+     "stop": "end_turn"
+    },
+    "turnId": "turn-0006",
+    "seq": 2
+   }
+  ]
+ ],
+ "tool_results": [],
+ "tools": [],
+ "expected_verdict": "clarify_ok",
+ "expected_reasons": [
+  "clarify_ok"
+ ]
+}

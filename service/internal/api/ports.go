@@ -1,0 +1,282 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+)
+
+// This file defines the interfaces the HTTP layer depends on. Other
+// packages (internal/manifest, internal/loop, internal/store, internal/trace)
+// implement them; the api package never imports those packages, so it can
+// be tested with fakes and the other packages can be built in parallel.
+//
+// Any method may return *Error (errors.go) to pick the HTTP status and
+// error code; any other error becomes 500 `internal`.
+
+// Emitter receives the events of one turn (README §1.2). The SSE writer and
+// the JSON collector both implement it. Emit returns an error once the
+// client has gone away; callers should stop the turn then.
+type Emitter interface {
+	Emit(ev Event) error
+}
+
+// Event is one turn event. TurnID and Seq are added to the data object on
+// the wire (`{...data, "turnId": ..., "seq": ...}`); Data must marshal to a
+// JSON object (a struct or map), or nil for `{}`.
+type Event struct {
+	Type   string
+	TurnID string
+	Seq    int
+	Data   any
+}
+
+// Event type names (README §1.2).
+const (
+	EventTextDelta     = "text.delta"
+	EventToolCall      = "tool.call"
+	EventTurnSuspended = "turn.suspended"
+	EventTurnWaiting   = "turn.waiting"
+	EventTurnDone      = "turn.done"
+	EventTurnError     = "turn.error"
+	EventHeartbeat     = "heartbeat"
+)
+
+// ManifestRegistry is the content-addressed manifest store (README §1, §1.1).
+//
+// POST /v1/manifests (hash computed server-side) uses ComputeRegistrar when
+// the registry implements it, and otherwise Deps.HashManifest + Register.
+type ManifestRegistry interface {
+	// Register stores body under hash. It recomputes the hash and returns
+	// *Error{Code: "hash_mismatch"} on disagreement. created is true the
+	// first time a hash is seen (201 vs 200).
+	Register(ctx context.Context, hash string, body []byte, launcherBuild string) (res RegisterResult, created bool, err error)
+	// Get returns the manifest's metadata, plus the raw body when withBody.
+	// Unknown hash → *Error{Code: "unknown_manifest", Status: 404}.
+	Get(ctx context.Context, hash string, withBody bool) (ManifestInfo, error)
+}
+
+// ComputeRegistrar is the optional registry extension behind POST
+// /v1/manifests: compute the hash of body, then register it exactly as
+// Register does. created is true the first time the hash is seen.
+type ComputeRegistrar interface {
+	ComputeAndRegister(ctx context.Context, body []byte, launcherBuild string) (res RegisterResult, created bool, err error)
+}
+
+// ManifestHasher computes the manifest hash of a raw body (the canonical
+// recipe in internal/manifest: HashBytes). Deps.HashManifest is the fallback
+// for POST /v1/manifests when the registry is not a ComputeRegistrar.
+type ManifestHasher func(body []byte) (string, error)
+
+// RegisterResult is the PUT /v1/manifests/{hash} and POST /v1/manifests
+// response body.
+type RegisterResult struct {
+	Hash          string          `json:"hash"`
+	Fields        int             `json:"fields"`
+	Lists         int             `json:"lists"`
+	Sections      int             `json:"sections"`
+	GlobalPanels  int             `json:"globalPanels"`
+	Pages         int             `json:"pages"`
+	Details       int             `json:"details"`
+	GeneratedFrom json.RawMessage `json:"generated_from,omitempty"`
+	Diff          *ManifestDiff   `json:"diff"`
+}
+
+// ManifestDiff compares a manifest with the previous one of its build line.
+type ManifestDiff struct {
+	PrevHash      string   `json:"prev_hash"`
+	AddedFields   []string `json:"added_fields"`
+	RemovedFields []string `json:"removed_fields"`
+	AddedLists    []string `json:"added_lists"`
+	RemovedLists  []string `json:"removed_lists"`
+}
+
+// ManifestInfo is the GET /v1/manifests/{hash} response body.
+type ManifestInfo struct {
+	Hash          string          `json:"hash"`
+	GeneratedFrom json.RawMessage `json:"generated_from,omitempty"`
+	Counts        map[string]int  `json:"counts"`
+	FirstSeen     time.Time       `json:"first_seen"`
+	Index         string          `json:"index"`
+	Body          json.RawMessage `json:"body,omitempty"`
+}
+
+// TurnRequest is the POST /v1/turns body (README §1.2). Context is kept
+// opaque here; internal/prompt parses it. StoreID is required: the trace
+// opt-out is keyed by store, so a turn without one would silently defeat it.
+type TurnRequest struct {
+	ConversationID string          `json:"conversationId,omitempty"`
+	SiteID         string          `json:"siteId"`
+	StoreID        string          `json:"storeId"`
+	ManifestHash   string          `json:"manifestHash"`
+	BuildID        string          `json:"buildId"`
+	Context        json.RawMessage `json:"context"`
+	Text           string          `json:"text"`
+	Model          string          `json:"model,omitempty"`
+	// UserEmail is filled by the HTTP layer from X-User-Email (attribution).
+	UserEmail string `json:"-"`
+}
+
+// ToolResult is one entry of POST /v1/turns/{turnId}/tool-results.
+type ToolResult struct {
+	ToolCallID string          `json:"toolCallId"`
+	OK         bool            `json:"ok"`
+	Error      *ToolError      `json:"error,omitempty"`
+	Warnings   []string        `json:"warnings,omitempty"`
+	Written    []string        `json:"written,omitempty"`
+	SectionID  string          `json:"sectionId,omitempty"`
+	Asset      *Asset          `json:"asset,omitempty"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+// ToolError is the ops engine's `{code, message, key}` failure shape.
+type ToolError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Key     string `json:"key,omitempty"`
+}
+
+// Asset is the pick_asset resume payload. It is the single source of the
+// asset shape: the loop marshals it verbatim as the model's tool_result, and
+// the model copies alt/srcset into set_fields `assets[key]`.
+//
+// Srcset is passed through as raw JSON because the browser picker emits an
+// OBJECT — `{"<width>": "<url>", ...}` (launcher compactSrcsetObject), which
+// the ops engine reads back as a map — not an HTML srcset string. Validate
+// accepts that object (string values) or, for older callers, a plain string.
+type Asset struct {
+	PublicURL string          `json:"public_url"`
+	Alt       string          `json:"alt,omitempty"`
+	Srcset    json.RawMessage `json:"srcset,omitempty"`
+}
+
+// Validate checks the shape of a decoded asset; the message is suitable for
+// a 400 bad_request. A JSON null srcset is normalised to absent.
+func (a *Asset) Validate() error {
+	if a == nil || len(a.Srcset) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(a.Srcset, &v); err != nil {
+		return errors.New("asset.srcset: invalid JSON")
+	}
+	switch s := v.(type) {
+	case nil:
+		a.Srcset = nil
+		return nil
+	case string:
+		return nil
+	case map[string]any:
+		for k, val := range s {
+			if _, ok := val.(string); !ok {
+				return errors.New("asset.srcset." + k + " must be a URL string")
+			}
+		}
+		return nil
+	default:
+		return errors.New("asset.srcset must be an object {width: url} or a string")
+	}
+}
+
+// SrcsetMap returns the srcset as a width → URL map when it is an object,
+// or nil when absent or a string.
+func (a *Asset) SrcsetMap() map[string]string {
+	if a == nil || len(a.Srcset) == 0 {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(a.Srcset, &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+// ToolResultsRequest is the POST /v1/turns/{turnId}/tool-results body.
+// SiteID/StoreID are optional tenant assertions from the launcher proxy
+// (README §1, §11): when present, the runner verifies that the turn's
+// conversation belongs to them and answers 404 turn_not_found otherwise,
+// without revealing whether the turn exists.
+type ToolResultsRequest struct {
+	SiteID  string       `json:"siteId,omitempty"`
+	StoreID string       `json:"storeId,omitempty"`
+	Results []ToolResult `json:"results"`
+}
+
+// TurnRunner is the agent loop (README §4), split in two phases so the HTTP
+// layer can answer cheap pre-checks with a status code and only then open
+// the event stream (where heartbeats start):
+//
+//   - Start / Continue validate and persist (manifest known? turn waiting?
+//     instance busy?) and return a Turn or an *Error — 409 unknown_manifest,
+//     409 turn_not_waiting, 404 turn_not_found, 503 busy, 503
+//     store_unavailable, 400 bad_request.
+//     No events are emitted in this phase.
+//   - Turn.Run drives the model until this request's stream is complete
+//     (turn.waiting / turn.suspended / turn.done / turn.error emitted). It
+//     must emit turn.error itself on failure; a returned error is only
+//     logged. It must stop when ctx is cancelled or Emit returns an error.
+type TurnRunner interface {
+	Start(ctx context.Context, req TurnRequest) (Turn, error)
+	Continue(ctx context.Context, turnID string, results ToolResultsRequest) (Turn, error)
+}
+
+// Turn is one started (or resumed) turn ready to stream.
+type Turn interface {
+	ID() string
+	Run(ctx context.Context, em Emitter) error
+}
+
+// Conversation is the GET /v1/conversations/{siteId} body.
+type Conversation struct {
+	ConversationID string            `json:"conversationId"`
+	StoreID        string            `json:"storeId,omitempty"`
+	Messages       []StoredMessage   `json:"messages"`
+	Turns          []json.RawMessage `json:"turns"`
+}
+
+// StoredMessage is one row of `messages`.
+type StoredMessage struct {
+	Seq     int             `json:"seq"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+// ConversationStore reads and ends the per-site conversation.
+type ConversationStore interface {
+	// Get returns the site's open conversation with its last 200 messages,
+	// or those before `before` when before > 0.
+	Get(ctx context.Context, siteID string, before int) (Conversation, error)
+	// End sets ended_at on the open conversation; no-op when none is open.
+	End(ctx context.Context, siteID string) error
+}
+
+// Feedback is the POST /v1/feedback body. SiteID/StoreID are the same
+// optional tenant assertions as on tool-results: when present, the sink
+// verifies the turn's conversation matches and answers 404 turn_not_found
+// otherwise.
+type Feedback struct {
+	TurnID    string   `json:"turnId"`
+	SiteID    string   `json:"siteId,omitempty"`
+	StoreID   string   `json:"storeId,omitempty"`
+	KeptPaths []string `json:"kept_paths,omitempty"`
+	Undone    *bool    `json:"undone,omitempty"`
+	Saved     *bool    `json:"saved,omitempty"`
+	Note      string   `json:"note,omitempty"`
+}
+
+// FeedbackSink merges feedback into traces.feedback.
+type FeedbackSink interface {
+	Record(ctx context.Context, fb Feedback) error
+}
+
+// OptOutStore is the per-store trace opt-out flag.
+type OptOutStore interface {
+	Set(ctx context.Context, storeID, byEmail string) error
+	Clear(ctx context.Context, storeID string) error
+}
+
+// Pinger is anything /readyz must be able to reach (the Postgres pool).
+type Pinger interface {
+	Ping(ctx context.Context) error
+}

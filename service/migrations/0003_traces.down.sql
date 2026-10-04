@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS store_optout;
+DROP TABLE IF EXISTS traces;

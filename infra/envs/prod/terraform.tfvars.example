@@ -1,0 +1,40 @@
+# prod — copy to terraform.tfvars (gitignored) and fill the project id.
+# `image` is normally passed by the deploy step with -var (a v* tag).
+project_id = "breadstack-sous-chef-prod"
+region     = "northamerica-northeast2"
+image      = "northamerica-northeast2-docker.pkg.dev/breadstack-sous-chef-prod/sous-chef/sous-chef:v0.1.0"
+
+# README section 9: a dedicated-core tier in prod (1 vCPU, 3.75 GB).
+db_tier       = "db-custom-1-3840"
+sql_disk_size = 20
+
+# Internal + load balancer only: the launcher reaches it over the internal
+# LB / same VPC; nothing public.
+ingress = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+
+# Cloud SQL network posture in prod: PRIVATE IP ONLY (no public IPv4).
+# The module peers the VPC to Service Networking and gives the Run service
+# and jobs direct VPC egress on the subnet, so both must exist in `region`
+# before the first apply (the default VPC + its regional subnet work).
+# ssl_mode is ENCRYPTED_ONLY in the module regardless of this flag.
+sql_private_ip         = true
+sql_private_network    = "projects/breadstack-sous-chef-prod/global/networks/default"
+sql_private_subnetwork = "default"
+
+# IAM-gated: no allUsers invoker in prod. The launcher must send a Google ID
+# token (X-Serverless-Authorization) from an identity listed here, or reach
+# the service through an internal LB (docs/DEPLOY-INT.md "Reachability").
+public_invoker = false
+
+# The pantry launcher's prod runtime SA (placeholder until known).
+launcher_service_account = ""
+
+# Cloud Build's default SA in prod-devops-core-project (the v* tag trigger).
+ci_service_account = "52346985251@cloudbuild.gserviceaccount.com"
+
+# Usage shipping to the prod thermometer; add the
+# sous-chef-thermometer-api-key secret version BEFORE setting this.
+thermometer_api_url = ""
+
+# Phase 5 GPU model: off until the lab produces an image.
+gpu_model_enabled = false

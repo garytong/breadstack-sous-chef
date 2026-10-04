@@ -1,0 +1,76 @@
+[
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Let's pick an image for the gallery background."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_pick2",
+     "name": "pick_asset",
+     "input": {
+      "purpose": "background image for the gallery titled 'Follow along'",
+      "asset_type": "image"
+     }
+    }
+   ],
+   "usage": {
+    "input_tokens": 120,
+    "output_tokens": 30
+   }
+  }
+ },
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Applying it to the gallery."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_2",
+     "name": "set_fields",
+     "input": {
+      "target": {
+       "kind": "section",
+       "page": "home",
+       "sectionId": "gallery"
+      },
+      "values": {
+       "bgImage": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200x1200.webp"
+      },
+      "assets": {
+       "bgImage": {
+        "srcset": {
+         "600": "https://cdn.int.breadstack.io/gal/lab/paper-texture-600.webp",
+         "1200": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200.webp"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "usage": {
+    "input_tokens": 180,
+    "output_tokens": 60
+   }
+  }
+ },
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Done — the gallery has its new background image."
+    }
+   ],
+   "usage": {
+    "input_tokens": 230,
+    "output_tokens": 12
+   }
+  }
+ }
+]

@@ -1,0 +1,667 @@
+[
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "assets": {
+     "description": "Optional per-image-key metadata from pick_asset: field key → {alt?: string, srcset?: object {\"<width>\": \"<url>\"} exactly as pick_asset returned it, mobile?}. Only for keys whose value is an image URL.",
+     "type": "object"
+    },
+    "target": {
+     "additionalProperties": false,
+     "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
+     "properties": {
+      "kind": {
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "enum": [
+        "section",
+        "global",
+        "branding",
+        "page"
+       ],
+       "type": "string"
+      },
+      "page": {
+       "description": "Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service; custom pages use their slug from the context.",
+       "type": "string"
+      },
+      "panel": {
+       "description": "kind global, optional: narrow to one panel (BrandingSection, ButtonsSection, FooterSection, HeaderSection, InsiderBannerSection, LayoutSection, NotificationSection, ProductCardSection, ShopMenuSection, SidebarCartSection, SocialMediaSection, TypographyColorsSection). Omit to address every global setting at once.",
+       "type": "string"
+      },
+      "sectionId": {
+       "description": "kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options.",
+       "type": "string"
+      },
+      "storeId": {
+       "description": "kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "type": "object"
+    },
+    "values": {
+     "description": "Field key → new value. Use null to clear a field (writes its unset_value).",
+     "type": "object"
+    }
+   },
+   "required": [
+    "target",
+    "values"
+   ],
+   "type": "object"
+  },
+  "name": "set_fields",
+  "description": "Write one or more fields on a target. Keys are manifest field keys (never storage paths); values are typed per the field (color hex, number, bool, enum member, text/richtext HTML, image = CDN token or absolute URL, null = clear). Call lookup_fields first for any key you have not confirmed in this conversation; never invent keys. Dotted keys address keyed fields (locationOverrides.<locId>.<f>, categories.<slug>.<f>) and SEO keys (pages.<page>.title). On hero sections the flat keys mirror slides[0] — prefer edit_list update on slides index 0. After pick_asset put the returned public_url in values and its alt/srcset in assets under the same key — srcset is an OBJECT {\"<width>\": \"<url>\"} and must be copied exactly as returned, never rewritten as a string. Fields flagged ro (derived) are read-only (E_READONLY)."
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "action": {
+     "description": "add | remove | reorder | update | duplicate. `update` is allowed on every list; `duplicate` only on a page's sections list.",
+     "enum": [
+      "add",
+      "remove",
+      "reorder",
+      "update",
+      "duplicate"
+     ],
+     "type": "string"
+    },
+    "index": {
+     "anyOf": [
+      {
+       "description": "",
+       "type": "integer"
+      },
+      {
+       "description": "",
+       "items": {
+        "description": "",
+        "type": "integer"
+       },
+       "type": "array"
+      }
+     ],
+     "description": "Row index (0-based) for remove/update/duplicate, or the parent index for add on a nested list. Nested lists take [parentIdx, childIdx]."
+    },
+    "item": {
+     "description": "add: the new row's fields (missing keys take the list's defaults). update: only the fields to change — the row's other fields are kept.",
+     "type": "object"
+    },
+    "list": {
+     "description": "The list key on the target (e.g. slides, slides[].bullets, reviews, faqCategories[].items, sections).",
+     "type": "string"
+    },
+    "order": {
+     "description": "reorder: the complete new order as indexes into the current list (or section ids for the sections list); must be a permutation of the current rows.",
+     "items": {
+      "anyOf": [
+       {
+        "description": "",
+        "type": "integer"
+       },
+       {
+        "description": "",
+        "type": "string"
+       }
+      ],
+      "description": ""
+     },
+     "type": "array"
+    },
+    "sectionId": {
+     "description": "sections list only: address the row by its id instead of index (remove/update/duplicate).",
+     "type": "string"
+    },
+    "target": {
+     "additionalProperties": false,
+     "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
+     "properties": {
+      "kind": {
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "enum": [
+        "section",
+        "global",
+        "branding",
+        "page"
+       ],
+       "type": "string"
+      },
+      "page": {
+       "description": "Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service; custom pages use their slug from the context.",
+       "type": "string"
+      },
+      "panel": {
+       "description": "kind global, optional: narrow to one panel (BrandingSection, ButtonsSection, FooterSection, HeaderSection, InsiderBannerSection, LayoutSection, NotificationSection, ProductCardSection, ShopMenuSection, SidebarCartSection, SocialMediaSection, TypographyColorsSection). Omit to address every global setting at once.",
+       "type": "string"
+      },
+      "sectionId": {
+       "description": "kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options.",
+       "type": "string"
+      },
+      "storeId": {
+       "description": "kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target",
+    "list",
+    "action"
+   ],
+   "type": "object"
+  },
+  "name": "edit_list",
+  "description": "Edit one list on a target: add a row, remove / duplicate a row, reorder rows, or update one row's fields (how detail panels — reviews, FAQ items, hero bullets, posts, footer columns — are edited). ONE structural change (add/remove/reorder/duplicate) per call. Nested lists use the dotted key (slides[].bullets) and an index array [parentIdx, childIdx]; `add` on a nested list takes the parent index only. On a page target the list \"sections\" is the page's own section rows {id,type,enabled}: add takes item {id: <sectionType>} (the item's id IS the section type to add; the host assigns the row's instance id), update only {enabled}, duplicate copies a row, and built-in __pinned_* rows cannot be added, removed or reordered (E_PINNED). Lists and their allowed ops come from describe_target or lookup_fields {list}. Known lists — sections.blog: pageVisibility.blog.posts; sections.blogSection: pageVisibility.blog.posts; sections.contentBlock: bullets, faqs, images, imagesAlt, imagesLink, items, milestones, tiers; sections.featuredCategories: pageVisibility.products.categoryOrder; sections.gallery: images; sections.hero: slides, slides[].bullets; sections.heroBanner: slides, slides[].bullets; sections.locations: disabledLocationIds, locationOrder; sections.loyaltyForm: infoSections; sections.milestones: faqs, milestones; sections.perksCards: bullets, faqs, images, imagesAlt, imagesLink, imagesSrcSet, items, milestones, tiers; sections.perksIcons: bullets, faqs, images, imagesAlt, imagesLink, imagesSrcSet, items, milestones, tiers; sections.promotion: items, weekdayItems; sections.reviews: reviews; sections.testimonials: reviews; globalPanels.FooterSection: footerCustomColumns, footerCustomColumns[].links, footerLocationOrder, pageVisibility._meta.footerBottomCustomLinks, pageVisibility._meta.footerBottomOrder, pageVisibility._meta.footerNavCustomLinks, pageVisibility._meta.footerNavOrder, paymentMethodsOrder; globalPanels.HeaderSection: pageVisibility._meta.headerNavCustomLinks, pageVisibility._meta.headerNavOrder; globalPanels.ProductCardSection: cardChipOrder, cardRibbonColorRules; globalPanels.ShopMenuSection: shopMenuItems; branding: certifications; pages.blog: posts; pages.blog-detail: blog.posts; pages.faq: faqCategories, faqCategories[].items; pages.privacy-policy: privacyContent; pages.product-details: productDetail.chipOrder; pages.products: filterOrder, productListCategoryOrder, sortOptionsOrder; pages.return-refund: returnRefundContent; pages.terms-of-service: termsContent; details.CategoryDetailsPanel: childCategoryOrder. Section types for sections.add: blog, blogSection, content, contentBlock, featuredCategories, gallery, hero, heroBanner, locations, loyaltyForm, milestones, newsletter, perksCards, perksIcons, productCarousel, promotion, reviews, sectionDivider, testimonials."
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "keys": {
+     "description": "Field keys to clear. Omit only to clear the whole target.",
+     "items": {
+      "description": "",
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "target": {
+     "additionalProperties": false,
+     "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
+     "properties": {
+      "kind": {
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "enum": [
+        "section",
+        "global",
+        "branding",
+        "page"
+       ],
+       "type": "string"
+      },
+      "page": {
+       "description": "Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service; custom pages use their slug from the context.",
+       "type": "string"
+      },
+      "panel": {
+       "description": "kind global, optional: narrow to one panel (BrandingSection, ButtonsSection, FooterSection, HeaderSection, InsiderBannerSection, LayoutSection, NotificationSection, ProductCardSection, ShopMenuSection, SidebarCartSection, SocialMediaSection, TypographyColorsSection). Omit to address every global setting at once.",
+       "type": "string"
+      },
+      "sectionId": {
+       "description": "kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options.",
+       "type": "string"
+      },
+      "storeId": {
+       "description": "kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object"
+  },
+  "name": "reset",
+  "description": "Clear fields back to their unset state (the editor's ↺ button): each key is written as its manifest unset_value — NOT the template default (use restore_default for that). Without keys the WHOLE target is cleared (a section loses every setting; a page loses its options including published), so always pass keys unless the merchant clearly asked to clear everything.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "keys": {
+     "description": "Field keys to restore. Omit only to restore the whole target.",
+     "items": {
+      "description": "",
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "target": {
+     "additionalProperties": false,
+     "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
+     "properties": {
+      "kind": {
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "enum": [
+        "section",
+        "global",
+        "branding",
+        "page"
+       ],
+       "type": "string"
+      },
+      "page": {
+       "description": "Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service; custom pages use their slug from the context.",
+       "type": "string"
+      },
+      "panel": {
+       "description": "kind global, optional: narrow to one panel (BrandingSection, ButtonsSection, FooterSection, HeaderSection, InsiderBannerSection, LayoutSection, NotificationSection, ProductCardSection, ShopMenuSection, SidebarCartSection, SocialMediaSection, TypographyColorsSection). Omit to address every global setting at once.",
+       "type": "string"
+      },
+      "sectionId": {
+       "description": "kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options.",
+       "type": "string"
+      },
+      "storeId": {
+       "description": "kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object"
+  },
+  "name": "restore_default",
+  "description": "Put fields back to the template's default value (the manifest `default`), going through the normal write path (companions, mirror, aliases). A key with no default is cleared instead. Without keys every field of the target is restored — pass keys unless the merchant asked for the whole thing.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "layout": {
+     "description": "The layout id for that page (e.g. filter-left, tab, summary-left, accordion, hero-featured).",
+     "type": "string"
+    },
+    "page": {
+     "description": "Page slug. Omit for the page the merchant is viewing. Pages: home, account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "layout"
+   ],
+   "type": "object"
+  },
+  "name": "set_page_layout",
+  "description": "Switch a page's layout preset (a different setting from per-page options). Layout ids per page come from the turn context (context.layout is the current one; the host rejects unknown ids and returns the valid ones). Changing the HOME layout also re-seeds the home sections to the preset — say so before doing it.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "page": {
+     "description": "The page whose built-in block is reset.",
+     "enum": [
+      "account",
+      "age-gate",
+      "blog",
+      "blog-detail",
+      "cart",
+      "checkout",
+      "faq",
+      "location-selection",
+      "login",
+      "order-confirmation",
+      "order-details",
+      "privacy-policy",
+      "product-details",
+      "products",
+      "return-refund",
+      "terms-of-service"
+     ],
+     "type": "string"
+    },
+    "sectionId": {
+     "description": "The page's pinned id (must belong to that page).",
+     "enum": [
+      "__pinned_account",
+      "__pinned_age_gate",
+      "__pinned_blog_list",
+      "__pinned_blog_detail",
+      "__pinned_cart",
+      "__pinned_checkout",
+      "__pinned_faq",
+      "__pinned_location_selection",
+      "__pinned_login",
+      "__pinned_order_confirmation",
+      "__pinned_order_details",
+      "__pinned_privacy",
+      "__pinned_product_detail",
+      "__pinned_product_list",
+      "__pinned_return_refund",
+      "__pinned_terms"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "page",
+    "sectionId"
+   ],
+   "type": "object"
+  },
+  "name": "reset_pinned_section",
+  "description": "Reset a page's built-in (pinned) block to its template defaults: re-enables it and clears any stored settings for it. Built-in blocks (FAQ, product list, cart, checkout, legal pages…) can only be reset — never added, removed, reordered or disabled.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "asset_type": {
+     "description": "Only images are supported.",
+     "enum": [
+      "image"
+     ],
+     "type": "string"
+    },
+    "purpose": {
+     "description": "One short sentence shown to the merchant: what the image is for (e.g. \"Hero banner background\").",
+     "type": "string"
+    }
+   },
+   "required": [
+    "purpose",
+    "asset_type"
+   ],
+   "type": "object"
+  },
+  "name": "pick_asset",
+  "description": "Ask the merchant to pick an image from their asset library. Call it ALONE (no other tool calls in the same response) and stop; the turn resumes with the picked asset {public_url, alt?, srcset?} as this call's result, where srcset is an object {\"<width>\": \"<url>\"}. Then write the URL with set_fields (values) and its alt/srcset (assets — copy the srcset object as-is). Never invent image URLs.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "container": {
+     "description": "Instead of target: a manifest container path (globalPanels = every panel merged).",
+     "enum": [
+      "branding",
+      "details.BlogPostDetailPanel",
+      "details.CategoryDetailsPanel",
+      "details.CertificationDetailsPanel",
+      "details.ColumnDetailsPanel",
+      "details.FaqDetailsPanel",
+      "details.HeroBulletDetailsPanel",
+      "details.LocationDetailsPanel",
+      "details.PromotionDetailsPanel",
+      "details.ReviewDetailsPanel",
+      "details.SeoPanel",
+      "details.TextSectionDetailPanel",
+      "globalPanels",
+      "globalPanels.BrandingSection",
+      "globalPanels.ButtonsSection",
+      "globalPanels.FooterSection",
+      "globalPanels.HeaderSection",
+      "globalPanels.InsiderBannerSection",
+      "globalPanels.LayoutSection",
+      "globalPanels.NotificationSection",
+      "globalPanels.ProductCardSection",
+      "globalPanels.ShopMenuSection",
+      "globalPanels.SidebarCartSection",
+      "globalPanels.SocialMediaSection",
+      "globalPanels.TypographyColorsSection",
+      "pages._common",
+      "pages.account",
+      "pages.age-gate",
+      "pages.blog",
+      "pages.blog-detail",
+      "pages.cart",
+      "pages.checkout",
+      "pages.faq",
+      "pages.location-selection",
+      "pages.login",
+      "pages.order-confirmation",
+      "pages.order-details",
+      "pages.privacy-policy",
+      "pages.product-details",
+      "pages.products",
+      "pages.return-refund",
+      "pages.terms-of-service",
+      "sections.blog",
+      "sections.blogSection",
+      "sections.content",
+      "sections.contentBlock",
+      "sections.featuredCategories",
+      "sections.gallery",
+      "sections.hero",
+      "sections.heroBanner",
+      "sections.locations",
+      "sections.loyaltyForm",
+      "sections.milestones",
+      "sections.newsletter",
+      "sections.perksCards",
+      "sections.perksIcons",
+      "sections.productCarousel",
+      "sections.promotion",
+      "sections.reviews",
+      "sections.sectionDivider",
+      "sections.testimonials"
+     ],
+     "type": "string"
+    },
+    "help": {
+     "description": "Include each field's help text (longer output).",
+     "type": "boolean"
+    },
+    "keys": {
+     "description": "Exact field keys to describe (mirror aliases such as ctaText and keyed keys such as locationOverrides.<locId>.address resolve too).",
+     "items": {
+      "description": "",
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "limit": {
+     "description": "Max fields to return, 1–120 (default 40).",
+     "type": "integer"
+    },
+    "list": {
+     "description": "Only this list's row fields (e.g. slides, reviews, faqCategories[].items, sections).",
+     "type": "string"
+    },
+    "query": {
+     "description": "Case-insensitive match on key prefix, camelCase word, label text or list key, e.g. \"headline\", \"color\", \"button\".",
+     "type": "string"
+    },
+    "target": {
+     "additionalProperties": false,
+     "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
+     "properties": {
+      "kind": {
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "enum": [
+        "section",
+        "global",
+        "branding",
+        "page"
+       ],
+       "type": "string"
+      },
+      "page": {
+       "description": "Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service; custom pages use their slug from the context.",
+       "type": "string"
+      },
+      "panel": {
+       "description": "kind global, optional: narrow to one panel (BrandingSection, ButtonsSection, FooterSection, HeaderSection, InsiderBannerSection, LayoutSection, NotificationSection, ProductCardSection, ShopMenuSection, SidebarCartSection, SocialMediaSection, TypographyColorsSection). Omit to address every global setting at once.",
+       "type": "string"
+      },
+      "sectionId": {
+       "description": "kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options.",
+       "type": "string"
+      },
+      "storeId": {
+       "description": "kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [],
+   "type": "object"
+  },
+  "name": "lookup_fields",
+  "description": "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, and the list it belongs to; plus the container's lists. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "container": {
+     "description": "Instead of target: a manifest container path.",
+     "enum": [
+      "branding",
+      "details.BlogPostDetailPanel",
+      "details.CategoryDetailsPanel",
+      "details.CertificationDetailsPanel",
+      "details.ColumnDetailsPanel",
+      "details.FaqDetailsPanel",
+      "details.HeroBulletDetailsPanel",
+      "details.LocationDetailsPanel",
+      "details.PromotionDetailsPanel",
+      "details.ReviewDetailsPanel",
+      "details.SeoPanel",
+      "details.TextSectionDetailPanel",
+      "globalPanels",
+      "globalPanels.BrandingSection",
+      "globalPanels.ButtonsSection",
+      "globalPanels.FooterSection",
+      "globalPanels.HeaderSection",
+      "globalPanels.InsiderBannerSection",
+      "globalPanels.LayoutSection",
+      "globalPanels.NotificationSection",
+      "globalPanels.ProductCardSection",
+      "globalPanels.ShopMenuSection",
+      "globalPanels.SidebarCartSection",
+      "globalPanels.SocialMediaSection",
+      "globalPanels.TypographyColorsSection",
+      "pages._common",
+      "pages.account",
+      "pages.age-gate",
+      "pages.blog",
+      "pages.blog-detail",
+      "pages.cart",
+      "pages.checkout",
+      "pages.faq",
+      "pages.location-selection",
+      "pages.login",
+      "pages.order-confirmation",
+      "pages.order-details",
+      "pages.privacy-policy",
+      "pages.product-details",
+      "pages.products",
+      "pages.return-refund",
+      "pages.terms-of-service",
+      "sections.blog",
+      "sections.blogSection",
+      "sections.content",
+      "sections.contentBlock",
+      "sections.featuredCategories",
+      "sections.gallery",
+      "sections.hero",
+      "sections.heroBanner",
+      "sections.locations",
+      "sections.loyaltyForm",
+      "sections.milestones",
+      "sections.newsletter",
+      "sections.perksCards",
+      "sections.perksIcons",
+      "sections.productCarousel",
+      "sections.promotion",
+      "sections.reviews",
+      "sections.sectionDivider",
+      "sections.testimonials"
+     ],
+     "type": "string"
+    },
+    "target": {
+     "additionalProperties": false,
+     "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
+     "properties": {
+      "kind": {
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "enum": [
+        "section",
+        "global",
+        "branding",
+        "page"
+       ],
+       "type": "string"
+      },
+      "page": {
+       "description": "Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: account, age-gate, blog, blog-detail, cart, checkout, faq, home, location-selection, login, order-confirmation, order-details, privacy-policy, product-details, products, return-refund, seo, terms-of-service; custom pages use their slug from the context.",
+       "type": "string"
+      },
+      "panel": {
+       "description": "kind global, optional: narrow to one panel (BrandingSection, ButtonsSection, FooterSection, HeaderSection, InsiderBannerSection, LayoutSection, NotificationSection, ProductCardSection, ShopMenuSection, SidebarCartSection, SocialMediaSection, TypographyColorsSection). Omit to address every global setting at once.",
+       "type": "string"
+      },
+      "sectionId": {
+       "description": "kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options.",
+       "type": "string"
+      },
+      "storeId": {
+       "description": "kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [],
+   "type": "object"
+  },
+  "name": "describe_target",
+  "description": "Describe a target (or container): its lists with allowed ops / orders / detail panel, its field key stems (or every key when few), the hero mirror, presets, keyed-key prefixes and — for a page — its built-in pinned section id. Cheap orientation before lookup_fields.",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "manual_hint": {
+     "description": "Optional: where in the editor the merchant could do it themselves, if you know.",
+     "type": "string"
+    },
+    "reason": {
+     "description": "Plain-language reason, one or two sentences, merchant-facing.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "reason"
+   ],
+   "type": "object"
+  },
+  "name": "report_unsupported",
+  "description": "Tell the merchant a request cannot be done by editing this site's configuration (no matching field or list after looking it up, or something outside the editor). Use it instead of guessing a key. The UI shows the reason; then say in one or two sentences that they can make the change in the editor or contact Breadstack support. Never fabricate an email address or claim to have sent anything.",
+  "strict": true
+ }
+]

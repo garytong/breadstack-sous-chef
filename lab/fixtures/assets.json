@@ -1,0 +1,9 @@
+{
+  "_source": "lab fixture: the media-API item shape ImageSelector.jsx:170 emits (public_url, alt, srcset {width: url}); URLs live under the golden ctx galleryFolder 'gal' on cdn.int.breadstack.io so compactAssetUrl turns them into BREADSTACK_CDN tokens",
+  "assets": [
+    {"id": "asset-hero-1", "public_url": "https://cdn.int.breadstack.io/gal/lab/hero-field-1600x900.webp", "alt": "Sunlit field at harvest", "srcset": {"800": "https://cdn.int.breadstack.io/gal/lab/hero-field-800.webp", "1600": "https://cdn.int.breadstack.io/gal/lab/hero-field-1600.webp"}, "asset_type": "image"},
+    {"id": "asset-logo-1", "public_url": "https://cdn.int.breadstack.io/gal/lab/logo-square-800x800.webp", "alt": "Lab Dispensary logo", "srcset": {"160": "https://cdn.int.breadstack.io/gal/lab/logo-square-160.webp", "800": "https://cdn.int.breadstack.io/gal/lab/logo-square-800.webp"}, "asset_type": "image"},
+    {"id": "asset-texture-1", "public_url": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200x1200.webp", "alt": "", "srcset": {"600": "https://cdn.int.breadstack.io/gal/lab/paper-texture-600.webp", "1200": "https://cdn.int.breadstack.io/gal/lab/paper-texture-1200.webp"}, "asset_type": "image"},
+    {"id": "asset-product-1", "public_url": "https://cdn.int.breadstack.io/gal/lab/product-jar-800x800.webp", "alt": "Glass jar of dried flower", "srcset": {"400": "https://cdn.int.breadstack.io/gal/lab/product-jar-400.webp", "800": "https://cdn.int.breadstack.io/gal/lab/product-jar-800.webp"}, "asset_type": "image"}
+  ]
+}

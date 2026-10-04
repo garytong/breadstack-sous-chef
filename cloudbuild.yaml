@@ -1,0 +1,228 @@
+# sous-chef CI/CD (docs/DEPLOY-INT.md). Same trigger shape as cookie-cutter's
+# pantry pipeline: one config, two triggers in prod-devops-core-project —
+#   push to main            -> int   (image tag = SHORT_SHA)
+#   tag v[0-9]+.[0-9]+.[0-9]+  -> prod  (image tag = TAG_NAME; the trigger sets
+#                                       _PROJECT_ID=breadstack-sous-chef-prod)
+#
+# Steps: test -> build + push to Artifact Registry -> re-point and execute the
+# sous-chef-migrate job -> roll the sous-chef service and the retention job to
+# the image. Terraform owns everything about the service and jobs EXCEPT the
+# image (lifecycle ignore_changes in infra/modules/sous-chef/{run,job}.tf), so
+# CI rolling images never shows up as drift.
+#
+# Identity: the trigger's default SA (<devops project number>@cloudbuild.
+# gserviceaccount.com) is granted what it needs in the target project by the
+# module's `ci_service_account` variable (iam.tf). The Terraform state bucket
+# is never touched here.
+#
+# Slack: failures post to #pantry-int-alert (branch) / #pantry-prod-alert
+# (tag), successes only for tags, through the same bot token pantry uses
+# (pantry-cloudbuild-slack-bot-token in prod-devops-core-project). The token
+# is fetched inside the first step, not via availableSecrets, so a build in a
+# project without that secret still runs: no token = no Slack, nothing else.
+#
+# Escaping: `$$` is a shell variable, single `$` a Cloud Build substitution.
+#
+# Manual run (first image, before the Run service exists):
+#   gcloud builds submit --project prod-devops-core-project --config cloudbuild.yaml \
+#     --substitutions=_PROJECT_ID=breadstack-sous-chef-int,_DEPLOY=false,_VERSION=$(git rev-parse --short HEAD) .
+
+substitutions:
+  _PROJECT_ID: breadstack-sous-chef-int # target project (the prod trigger overrides)
+  _REGION: northamerica-northeast2
+  _AR_REPO: sous-chef # Artifact Registry repository id (registry.tf)
+  _SERVICE: sous-chef
+  _MIGRATE_JOB: sous-chef-migrate
+  _RETENTION_JOB: sous-chef-retention
+  _DEPLOY: "true" # "false" = build + push only (first image; the jobs/service do not exist yet)
+  _VERSION: manual # image tag when neither TAG_NAME nor SHORT_SHA is set (gcloud builds submit)
+  _SLACK_PROJECT: prod-devops-core-project
+  _SLACK_SECRET: pantry-cloudbuild-slack-bot-token
+
+steps:
+  # ---- 1. prepare: build.env + the Slack helper ------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: prepare
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+
+        VERSION="$TAG_NAME"
+        [ -n "$$VERSION" ] || VERSION="$SHORT_SHA"
+        [ -n "$$VERSION" ] || VERSION="$_VERSION"
+        IMAGE="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/$_SERVICE:$$VERSION"
+
+        # A tag build must never land in int, whatever the trigger says.
+        if [ -n "$TAG_NAME" ] && [[ "$_PROJECT_ID" == *-int ]]; then
+          echo "refusing: tag build $TAG_NAME with _PROJECT_ID=$_PROJECT_ID (set _PROJECT_ID=breadstack-sous-chef-prod on the tag trigger)"
+          exit 1
+        fi
+
+        cat > /workspace/build.env <<EOF
+        VERSION=$$VERSION
+        IMAGE=$$IMAGE
+        DEPLOY=$_DEPLOY
+        EOF
+        echo "build.env:"; cat /workspace/build.env
+
+        # Slack token: optional. Missing secret / no access -> empty -> silent.
+        SLACK_BOT_TOKEN=$$(gcloud secrets versions access latest --secret="$_SLACK_SECRET" --project="$_SLACK_PROJECT" 2>/dev/null || true)
+        if [ -n "$$SLACK_BOT_TOKEN" ]; then echo "slack: token loaded from $_SLACK_PROJECT/$_SLACK_SECRET"; else echo "slack: no token (alerts off)"; fi
+        umask 077
+        printf '%s' "$$SLACK_BOT_TOKEN" > /workspace/slack.token
+
+        # ---- Slack CI notifier helper (sourced by later steps; cookie-cutter pattern) ----
+        cat > /workspace/slack.sh <<'SLACKEOF'
+        TAG="$TAG_NAME"
+        BRANCH="$BRANCH_NAME"
+        SHORT_SHA="$SHORT_SHA"
+        BUILD_ID="$BUILD_ID"
+        PROJECT_ID="$PROJECT_ID"
+        LOCATION="$LOCATION"
+        LOG_URL="https://console.cloud.google.com/cloud-build/builds;region=$${LOCATION}/$${BUILD_ID}?project=$${PROJECT_ID}"
+        if [ -n "$$TAG" ]; then REF="tag $$TAG"; FAIL_CHANNEL="#pantry-prod-alert"; else REF="branch $$BRANCH"; FAIL_CHANNEL="#pantry-int-alert"; fi
+        SLACK_BOT_TOKEN=$$(cat /workspace/slack.token 2>/dev/null || true)
+
+        slack_post() {
+          [ -n "$${SLACK_BOT_TOKEN}" ] || return 0
+          curl -s -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $${SLACK_BOT_TOKEN}" \
+            -H "Content-type: application/json; charset=utf-8" \
+            --data "$$1" >/dev/null 2>&1 || true
+        }
+
+        # slack_fail <step-name> <logfile> — quote the tail of the step log into Slack.
+        slack_fail() {
+          step="$$1"; logfile="$$2"
+          err=$$(tail -c 2000 "$$logfile" 2>/dev/null | tr -d '\r' | tr '\t' ' ' | LC_ALL=C tr -cd '\11\12\40-\176' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'BEGIN{ORS="\\n"} {print}')
+          text=":red_circle: *sous-chef Cloud Build FAILED* — step \`$${step}\`\\nref: $${REF}\\ncommit: $${SHORT_SHA}\\n\`\`\`$${err}\`\`\`\\n<$${LOG_URL}|View Cloud Build logs>"
+          slack_post "{\"channel\":\"$${FAIL_CHANNEL}\",\"text\":\"$${text}\"}"
+        }
+
+        # slack_success <image> <url> — prod (tag) image deployed.
+        slack_success() {
+          text=":white_check_mark: *sous-chef prod deploy succeeded* — tag \`$${TAG}\`\\ncommit: $${SHORT_SHA}\\nimage: $$1\\nservice: $$2\\n<$${LOG_URL}|View Cloud Build>"
+          slack_post "{\"channel\":\"#pantry-prod-alert\",\"text\":\"$${text}\"}"
+        }
+        SLACKEOF
+
+  # ---- 2. test ----------------------------------------------------------------
+  - name: 'golang:1.24'
+    id: test
+    waitFor: ['prepare']
+    entrypoint: bash
+    env: ['GOTOOLCHAIN=local']
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/test.log) 2>&1
+        trap 'slack_fail "test" /workspace/test.log' ERR
+        set -euo pipefail
+        cd service
+        go vet ./...
+        go test ./...
+
+  # ---- 3. build + push --------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-push
+    waitFor: ['test']
+    env: ['DOCKER_BUILDKIT=1']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/build-push.log) 2>&1
+        trap 'slack_fail "build-push" /workspace/build-push.log' ERR
+        set -euo pipefail
+        source /workspace/build.env
+        echo "building $$IMAGE"
+        docker build --platform linux/amd64 -f service/Dockerfile --build-arg BUILD_ID="$$VERSION" -t "$$IMAGE" service
+        docker push "$$IMAGE"
+
+  # ---- 4. migrate: re-point the job to the image and run it -----------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: migrate
+    waitFor: ['build-push']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/migrate.log) 2>&1
+        trap 'slack_fail "migrate" /workspace/migrate.log' ERR
+        set -euo pipefail
+        source /workspace/build.env
+        if [ "$$DEPLOY" != "true" ]; then echo "_DEPLOY=$$DEPLOY: image pushed, not deploying ($$IMAGE)"; exit 0; fi
+
+        if ! gcloud run jobs describe "$_MIGRATE_JOB" --region "$_REGION" --project "$_PROJECT_ID" --format='value(name)' >/dev/null 2>&1; then
+          echo "job $_MIGRATE_JOB does not exist in $_PROJECT_ID: create it with Terraform first (docs/DEPLOY-INT.md step 5), or run this build with _DEPLOY=false"
+          exit 1
+        fi
+        gcloud run jobs update "$_MIGRATE_JOB" --region "$_REGION" --project "$_PROJECT_ID" --image "$$IMAGE" --quiet
+        # max_retries = 0 on the job: a half-applied migration stops here and pages.
+        gcloud run jobs execute "$_MIGRATE_JOB" --region "$_REGION" --project "$_PROJECT_ID" --wait
+
+  # ---- 5. deploy: roll the service and the retention job -------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: deploy
+    waitFor: ['migrate']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/deploy.log) 2>&1
+        trap 'slack_fail "deploy" /workspace/deploy.log' ERR
+        set -euo pipefail
+        source /workspace/build.env
+        if [ "$$DEPLOY" != "true" ]; then echo "_DEPLOY=$$DEPLOY: skipping deploy"; exit 0; fi
+
+        gcloud run services update "$_SERVICE" --region "$_REGION" --project "$_PROJECT_ID" --image "$$IMAGE" --quiet
+        gcloud run jobs update "$_RETENTION_JOB" --region "$_REGION" --project "$_PROJECT_ID" --image "$$IMAGE" --quiet
+
+        # The newest revision must be the one serving (a revision that never
+        # became ready leaves the old one in place and `update` still exits 0
+        # in some failure modes).
+        read -r created ready <<<"$$(gcloud run services describe "$_SERVICE" --region "$_REGION" --project "$_PROJECT_ID" \
+          --format='value(status.latestCreatedRevisionName,status.latestReadyRevisionName)' | tr '\t' ' ')"
+        URL=$$(gcloud run services describe "$_SERVICE" --region "$_REGION" --project "$_PROJECT_ID" --format='value(status.url)')
+        echo "latestCreated=$$created latestReady=$$ready url=$$URL"
+        if [ "$$created" != "$$ready" ]; then
+          echo "revision $$created is not serving; read its log: gcloud run revisions describe $$created --region $_REGION --project $_PROJECT_ID"
+          exit 1
+        fi
+        printf '%s\n%s\n' "URL=$$URL" "REVISION=$$ready" >> /workspace/build.env
+
+        # /version is public only where allUsers has run.invoker (int); in
+        # prod it answers 403 and that is fine.
+        code=$$(curl -s -o /workspace/version.json -w '%{http_code}' "$$URL/version" || true)
+        echo "GET $$URL/version -> $$code $$(cat /workspace/version.json 2>/dev/null || true)"
+        if [ "$$code" = 200 ] && ! grep -q "\"build_id\":\"$$VERSION\"" /workspace/version.json; then
+          echo "serving build_id does not match $$VERSION"; exit 1
+        fi
+
+  # ---- 6. Slack success (tags only; int stays silent on success) ------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: notify-success
+    waitFor: ['deploy']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        source /workspace/build.env
+        if [ -n "$TAG_NAME" ] && [ "$$DEPLOY" = "true" ]; then
+          echo "prod tag deploy succeeded — notifying #pantry-prod-alert"
+          slack_success "$$IMAGE" "$${URL:-}"
+        else
+          echo "branch/int or non-deploy build — silent success"
+        fi
+
+timeout: 1200s
+
+options:
+  logging: CLOUD_LOGGING_ONLY

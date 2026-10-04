@@ -1,0 +1,29 @@
+# Go
+service/bin/
+service/**/*.test
+service/coverage.out
+service/coverage.html
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Terraform
+infra/**/.terraform/
+infra/**/.terraform.lock.hcl
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+infra/**/*.tfvars
+!infra/**/*.auto.tfvars.example
+infra/**/crash.log
+
+# Lab (Phase 5) data
+lab/data/
+lab/runs/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

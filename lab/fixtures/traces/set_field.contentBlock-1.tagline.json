@@ -1,0 +1,277 @@
+{
+ "schema": 1,
+ "note": "the model writes an unknown key (E_FIELD showButton); the browser reports ok:false",
+ "at": "2026-10-01T00:00:00Z",
+ "buildId": "lab-fixture",
+ "case": {
+  "id": "set_field.contentBlock-1.tagline",
+  "kind": "set_field",
+  "target": {
+   "kind": "section",
+   "page": "home",
+   "sectionId": "contentBlock-1"
+  },
+  "fields": [
+   "tagline"
+  ],
+  "site_state": {
+   "template": {
+    "id": "editorial"
+   },
+   "homeSections": [
+    {
+     "id": "heroBanner",
+     "enabled": true,
+     "settings": {
+      "headline": "Old headline",
+      "slides": [
+       {
+        "headline": "Old headline",
+        "layout": "classic",
+        "backgroundImage": ""
+       }
+      ]
+     }
+    },
+    {
+     "id": "contentBlock-1",
+     "enabled": true,
+     "settings": {
+      "title": "<p>Our story</p>",
+      "paddingY": 32,
+      "taglineColor": "#ff0000",
+      "bgImage": "",
+      "bullets": [
+       {
+        "icon": "star",
+        "title": "Fresh",
+        "subtitle": "Daily"
+       }
+      ]
+     }
+    },
+    {
+     "id": "productCarousel-1",
+     "enabled": true,
+     "settings": {
+      "title": "<p>Bestsellers</p>",
+      "productCount": "3",
+      "contentAlign": "left"
+     }
+    },
+    {
+     "id": "contentBlock-2",
+     "enabled": true,
+     "settings": {
+      "title": "<p>Visit us</p>"
+     }
+    },
+    {
+     "id": "gallery",
+     "enabled": true,
+     "settings": {
+      "title": "Gallery",
+      "images": [
+       "https://cdn.int.breadstack.io/gal/a.jpg"
+      ],
+      "imagesAlt": [
+       "a"
+      ],
+      "imagesSrcSet": [
+       null
+      ]
+     }
+    }
+   ],
+   "pageSectionsAll": {},
+   "locationDetailsOverrides": {},
+   "globalSettings": {},
+   "branding": {},
+   "pageVisibility": {},
+   "layouts": {},
+   "customPages": [],
+   "seo": {},
+   "faqCategories": [],
+   "terms": [],
+   "privacy": [],
+   "returnRefund": [],
+   "disclaimer": [],
+   "eula": [],
+   "cookiePolicy": []
+  },
+  "context": {
+   "page": "home",
+   "template": "editorial",
+   "layout": "default",
+   "sections": [
+    {
+     "id": "heroBanner",
+     "type": "heroBanner",
+     "title": "Hero banner",
+     "enabled": true
+    },
+    {
+     "id": "contentBlock-1",
+     "type": "contentBlock",
+     "title": "Our story",
+     "enabled": true
+    },
+    {
+     "id": "productCarousel-1",
+     "type": "productCarousel",
+     "title": "Bestsellers",
+     "enabled": true
+    },
+    {
+     "id": "contentBlock-2",
+     "type": "contentBlock",
+     "title": "Visit us",
+     "enabled": true
+    },
+    {
+     "id": "gallery",
+     "type": "gallery",
+     "title": "Gallery",
+     "enabled": true
+    }
+   ],
+   "categories": [
+    {
+     "slug": "cookies",
+     "name": "Cookies"
+    }
+   ],
+   "customPages": [],
+   "nav": [
+    {
+     "label": "Home",
+     "href": "/"
+    }
+   ],
+   "locations": []
+  },
+  "request": "Give the Our story block the tagline “Baked daily”",
+  "expected": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "tagline": "Baked daily"
+     }
+    }
+   ],
+   "diff": [
+    {
+     "path": "homeSections[1].settings.tagline",
+     "after": "Baked daily"
+    }
+   ]
+  },
+  "holdout": true,
+  "manifest_hash": "727d151b5d6b04cd68b73199ab0b3bdf061263f9623f4f6eda00a79137c06f38",
+  "template": "editorial",
+  "meta": {
+   "section_type": "contentBlock",
+   "field_type": "text",
+   "field_key": "contentBlock.tagline",
+   "generator": "fixtures/traces hand-written 2026-10-01",
+   "seed": 0
+  }
+ },
+ "streams": [
+  [
+   {
+    "event": "text.delta",
+    "data": {
+     "text": "Turning the button on."
+    },
+    "turnId": "turn-0005",
+    "seq": 1
+   },
+   {
+    "event": "tool.call",
+    "data": {
+     "id": "tc_1",
+     "name": "set_fields",
+     "input": {
+      "target": {
+       "kind": "section",
+       "page": "home",
+       "sectionId": "contentBlock-1"
+      },
+      "values": {
+       "showButton": true
+      }
+     }
+    },
+    "turnId": "turn-0005",
+    "seq": 2
+   },
+   {
+    "event": "turn.waiting",
+    "data": {
+     "toolCallIds": [
+      "tc_1"
+     ]
+    },
+    "turnId": "turn-0005",
+    "seq": 3
+   }
+  ],
+  [
+   {
+    "event": "text.delta",
+    "data": {
+     "text": "I couldn't find a “show button” control on this content block, so nothing was changed."
+    },
+    "turnId": "turn-0005",
+    "seq": 5
+   },
+   {
+    "event": "turn.done",
+    "data": {
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "calls": 2
+     },
+     "stop": "end_turn"
+    },
+    "turnId": "turn-0005",
+    "seq": 6
+   }
+  ]
+ ],
+ "tool_results": [
+  {
+   "siteId": "lab-set_field.contentBlock-1.tagline",
+   "storeId": "lab",
+   "results": [
+    {
+     "toolCallId": "tc_1",
+     "ok": false,
+     "warnings": [],
+     "written": [],
+     "error": {
+      "code": "E_FIELD",
+      "message": "unknown field showButton for target",
+      "key": "showButton"
+     }
+    }
+   ]
+  }
+ ],
+ "tools": [],
+ "expected_verdict": "invalid_op",
+ "expected_reasons": [
+  "invalid_op",
+  "missing_writes"
+ ]
+}

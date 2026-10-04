@@ -1,0 +1,940 @@
+{
+ "note": "headless.mjs output recorded 2026-10-01 (cookie-cutter sous-chef-v2, ops/__fixtures__/manifest.snapshot.json, golden ctx); keyed by canonical ops in souschef_lab.verify.RecordedEngine. Measured boot: 7.4-10.5 s cold, 3.2 s warm (Vite cache primed).",
+ "manifest_hash": "727d151b5d6b04cd68b73199ab0b3bdf061263f9623f4f6eda00a79137c06f38",
+ "state": {
+  "template": {
+   "id": "editorial"
+  },
+  "homeSections": [
+   {
+    "id": "heroBanner",
+    "enabled": true,
+    "settings": {
+     "headline": "Old headline",
+     "slides": [
+      {
+       "headline": "Old headline",
+       "layout": "classic",
+       "backgroundImage": ""
+      }
+     ]
+    }
+   },
+   {
+    "id": "contentBlock-1",
+    "enabled": true,
+    "settings": {
+     "title": "<p>Our story</p>",
+     "paddingY": 32,
+     "taglineColor": "#ff0000",
+     "bgImage": "",
+     "bullets": [
+      {
+       "icon": "star",
+       "title": "Fresh",
+       "subtitle": "Daily"
+      }
+     ]
+    }
+   },
+   {
+    "id": "productCarousel-1",
+    "enabled": true,
+    "settings": {
+     "title": "<p>Bestsellers</p>",
+     "productCount": "3",
+     "contentAlign": "left"
+    }
+   },
+   {
+    "id": "contentBlock-2",
+    "enabled": true,
+    "settings": {
+     "title": "<p>Visit us</p>"
+    }
+   },
+   {
+    "id": "gallery",
+    "enabled": true,
+    "settings": {
+     "title": "Gallery",
+     "images": [
+      "https://cdn.int.breadstack.io/gal/a.jpg"
+     ],
+     "imagesAlt": [
+      "a"
+     ],
+     "imagesSrcSet": [
+      null
+     ]
+    }
+   }
+  ],
+  "pageSectionsAll": {},
+  "locationDetailsOverrides": {},
+  "globalSettings": {},
+  "branding": {},
+  "pageVisibility": {},
+  "layouts": {},
+  "customPages": [],
+  "seo": {},
+  "faqCategories": [],
+  "terms": [],
+  "privacy": [],
+  "returnRefund": [],
+  "disclaimer": [],
+  "eula": [],
+  "cookiePolicy": []
+ },
+ "ctx": {
+  "templateId": "editorial",
+  "cdnUrl": "https://cdn.int.breadstack.io",
+  "galleryFolder": "gal",
+  "now": 1700000000000
+ },
+ "runs": {
+  "A_cb_title": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "title": "<p>Fresh from the oven</p>"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "title": "<p>Fresh from the oven</p>"
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.title"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.title"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.title",
+        "before": "<p>Our story</p>",
+        "after": "<p>Fresh from the oven</p>"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "B_pc_count4_align": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "productCarousel-1"
+     },
+     "values": {
+      "productCount": "4",
+      "contentAlign": "center"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "productCarousel-1"
+       },
+       "values": {
+        "productCount": "4",
+        "contentAlign": "center"
+       }
+      },
+      "ok": true,
+      "warnings": [
+       "W_HIDDEN:productCount"
+      ],
+      "written": [
+       "homeSections[2].settings.productCount",
+       "homeSections[2].settings.contentAlign"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[2].settings.productCount",
+       "homeSections[2].settings.contentAlign"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[2].settings.productCount",
+        "before": "3",
+        "after": 4
+       },
+       {
+        "path": "homeSections[2].settings.contentAlign",
+        "before": "left",
+        "after": "center"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "C_pc_count4": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "productCarousel-1"
+     },
+     "values": {
+      "productCount": "4"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "productCarousel-1"
+       },
+       "values": {
+        "productCount": "4"
+       }
+      },
+      "ok": true,
+      "warnings": [
+       "W_HIDDEN:productCount"
+      ],
+      "written": [
+       "homeSections[2].settings.productCount"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[2].settings.productCount"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[2].settings.productCount",
+        "before": "3",
+        "after": 4
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "D_multi": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "title": "<p>Fresh from the oven</p>"
+     }
+    },
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "productCarousel-1"
+     },
+     "values": {
+      "productCount": "4"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "title": "<p>Fresh from the oven</p>"
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.title"
+      ]
+     },
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "productCarousel-1"
+       },
+       "values": {
+        "productCount": "4"
+       }
+      },
+      "ok": true,
+      "warnings": [
+       "W_HIDDEN:productCount"
+      ],
+      "written": [
+       "homeSections[2].settings.productCount"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.title",
+       "homeSections[2].settings.productCount"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.title",
+        "before": "<p>Our story</p>",
+        "after": "<p>Fresh from the oven</p>"
+       },
+       {
+        "path": "homeSections[2].settings.productCount",
+        "before": "3",
+        "after": 4
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "E_pad48": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "paddingY": 48
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "paddingY": 48
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.paddingY"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.paddingY"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.paddingY",
+        "before": 32,
+        "after": 48
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "F_pad64": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "paddingY": 64
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "paddingY": 64
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.paddingY"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.paddingY"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.paddingY",
+        "before": 32,
+        "after": 64
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "G_invalid": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "showButton": true
+     }
+    }
+   ],
+   "output": {
+    "ok": false,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "showButton": true
+       }
+      },
+      "ok": false,
+      "error": {
+       "code": "E_FIELD",
+       "message": "unknown field showButton for target",
+       "key": "showButton"
+      },
+      "warnings": [],
+      "written": []
+     }
+    ],
+    "changes": [],
+    "exit_code": 2
+   }
+  },
+  "H1_hero_flat": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "heroBanner"
+     },
+     "values": {
+      "headline": "<p>Warm cookies, every day</p>"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "heroBanner"
+       },
+       "values": {
+        "headline": "<p>Warm cookies, every day</p>"
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[0].settings.slides[0].headline",
+       "homeSections[0].settings.headline"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[0].settings.slides[0].headline",
+       "homeSections[0].settings.headline"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[0].settings.headline",
+        "before": "Old headline",
+        "after": "<p>Warm cookies, every day</p>"
+       },
+       {
+        "path": "homeSections[0].settings.slides[0].headline",
+        "before": "Old headline",
+        "after": "<p>Warm cookies, every day</p>"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "H2_hero_list": {
+   "ops": [
+    {
+     "op": "edit_list",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "heroBanner"
+     },
+     "list": "slides",
+     "action": "update",
+     "index": 0,
+     "item": {
+      "headline": "<p>Warm cookies, every day</p>"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "edit_list",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "heroBanner"
+       },
+       "list": "slides",
+       "action": "update",
+       "index": 0,
+       "item": {
+        "headline": "<p>Warm cookies, every day</p>"
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[0].settings.slides[0].headline",
+       "homeSections[0].settings.headline"
+      ],
+      "index": 0
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[0].settings.slides[0].headline",
+       "homeSections[0].settings.headline"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[0].settings.headline",
+        "before": "Old headline",
+        "after": "<p>Warm cookies, every day</p>"
+       },
+       {
+        "path": "homeSections[0].settings.slides[0].headline",
+        "before": "Old headline",
+        "after": "<p>Warm cookies, every day</p>"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "I_image": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "bgImage": "https://cdn.int.breadstack.io/gal/oven.jpg"
+     },
+     "assets": {
+      "bgImage": {
+       "alt": "Oven",
+       "srcset": {
+        "480w": "https://cdn.int.breadstack.io/gal/oven-480.jpg",
+        "960w": "https://cdn.int.breadstack.io/gal/oven-960.jpg"
+       }
+      }
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "bgImage": "https://cdn.int.breadstack.io/gal/oven.jpg"
+       },
+       "assets": {
+        "bgImage": {
+         "alt": "Oven",
+         "srcset": {
+          "480w": "https://cdn.int.breadstack.io/gal/oven-480.jpg",
+          "960w": "https://cdn.int.breadstack.io/gal/oven-960.jpg"
+         }
+        }
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.bgImage",
+       "homeSections[1].settings.bgImageSrcSet"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.bgImage",
+       "homeSections[1].settings.bgImageSrcSet"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.bgImage",
+        "before": "",
+        "after": "BREADSTACK_CDN/oven.jpg"
+       },
+       {
+        "path": "homeSections[1].settings.bgImageSrcSet.480w",
+        "after": "BREADSTACK_CDN/oven-480.jpg"
+       },
+       {
+        "path": "homeSections[1].settings.bgImageSrcSet.960w",
+        "after": "BREADSTACK_CDN/oven-960.jpg"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "J_reset": {
+   "ops": [
+    {
+     "op": "reset",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "keys": [
+      "taglineColor"
+     ]
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "reset",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "keys": [
+        "taglineColor"
+       ]
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.taglineColor"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.taglineColor"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.taglineColor",
+        "before": "#ff0000",
+        "after": ""
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "K_bullets_add": {
+   "ops": [
+    {
+     "op": "edit_list",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "list": "bullets",
+     "action": "add"
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "edit_list",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "list": "bullets",
+       "action": "add"
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.bullets",
+       "homeSections[1].settings.bullets[1].icon"
+      ],
+      "index": 1
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.bullets",
+       "homeSections[1].settings.bullets[1].icon"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.bullets[1].icon",
+        "after": "__tick__"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "L_tagline": {
+   "ops": [
+    {
+     "op": "set_fields",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "values": {
+      "tagline": "Baked daily"
+     }
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "set_fields",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "values": {
+        "tagline": "Baked daily"
+       }
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.tagline"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.tagline"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.tagline",
+        "after": "Baked daily"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  },
+  "N_restore_title": {
+   "ops": [
+    {
+     "op": "restore_default",
+     "target": {
+      "kind": "section",
+      "page": "home",
+      "sectionId": "contentBlock-1"
+     },
+     "keys": [
+      "title"
+     ]
+    }
+   ],
+   "output": {
+    "ok": true,
+    "results": [
+     {
+      "op": {
+       "op": "restore_default",
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "contentBlock-1"
+       },
+       "keys": [
+        "title"
+       ]
+      },
+      "ok": true,
+      "warnings": [],
+      "written": [
+       "homeSections[1].settings.title"
+      ]
+     }
+    ],
+    "changes": [
+     {
+      "slice": "homeSections",
+      "written": [
+       "homeSections[1].settings.title"
+      ],
+      "diff": [
+       {
+        "path": "homeSections[1].settings.title",
+        "before": "<p>Our story</p>",
+        "after": "Your Rewards Journey"
+       }
+      ]
+     }
+    ],
+    "exit_code": 0
+   }
+  }
+ }
+}

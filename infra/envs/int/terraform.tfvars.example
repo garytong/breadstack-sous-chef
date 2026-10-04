@@ -1,0 +1,45 @@
+# int — copy to terraform.tfvars (gitignored) and fill the project id.
+# `image` is normally passed by the deploy step with -var; the placeholder
+# here lets `terraform validate -var-file=terraform.tfvars.example` run.
+project_id = "breadstack-sous-chef-int"
+region     = "northamerica-northeast2"
+image      = "northamerica-northeast2-docker.pkg.dev/breadstack-sous-chef-int/sous-chef/sous-chef:dev"
+
+# Smallest Postgres tier; int data is disposable but deletion protection
+# stays on (lift it with -var=sql_deletion_protection=false at destroy time).
+db_tier = "db-f1-micro"
+
+# Cloud SQL network posture in int: PUBLIC IPv4 + SSL. The module default
+# (sql_private_ip = false) keeps a public address with no authorized networks
+# and ssl_mode = ENCRYPTED_ONLY; the Run service connects only through the
+# Cloud SQL connector volume (IAM-authenticated, encrypted). This avoids any
+# VPC in int. To match prod instead, set the three private-IP values below.
+sql_private_ip = false
+# sql_private_network    = "projects/breadstack-sous-chef-int/global/networks/default"
+# sql_private_subnetwork = "default"
+
+# int receives the launcher from a different project (GKE int-breadstack,
+# project int-breadstack-services) and no internal LB exists, so the public
+# URL is the only path.
+ingress = "INGRESS_TRAFFIC_ALL"
+
+# The launcher sends only `Authorization: Bearer <service key>` (no Google ID
+# token: launcher/server/souschef_proxy.go TODO(iam)), so Cloud Run's own IAM
+# check would answer 403 to every call. allUsers run.invoker switches that
+# check off; SERVICE_KEYS stays the gate (docs/DEPLOY-INT.md "Reachability").
+public_invoker = true
+
+# The pantry launcher's runtime SA in int: none exists yet (no Workload
+# Identity GSA). Leave empty while public_invoker is true.
+launcher_service_account = ""
+
+# Cloud Build's default SA in prod-devops-core-project, where the pantry
+# triggers live and where the sous-chef triggers go (cloudbuild.yaml).
+ci_service_account = "52346985251@cloudbuild.gserviceaccount.com"
+
+# Usage shipping to the int thermometer — leave empty until the
+# sous-chef-thermometer-api-key secret has a version.
+thermometer_api_url = ""
+
+# Phase 5 GPU model: off.
+gpu_model_enabled = false

@@ -1,0 +1,160 @@
+{
+ "_source": "copied from launcher/client/src/data/pageSections.jsx PAGE_LAYOUTS (:516) and DEFAULT_LAYOUTS (:3906), breadstack-cookie-cutter sous-chef-v2 0f9fd067",
+ "page_layouts": {
+  "home": [
+   "hero-featured",
+   "hero-categories",
+   "minimal"
+  ],
+  "products": [
+   "filter-left",
+   "filter-right"
+  ],
+  "product-details": [
+   "tab",
+   "full"
+  ],
+  "checkout": [
+   "summary-right",
+   "summary-left"
+  ],
+  "cart": [
+   "summary-right",
+   "summary-left"
+  ],
+  "faq": [
+   "accordion",
+   "two-sections",
+   "two-column",
+   "flat"
+  ],
+  "blog": [
+   "list",
+   "grid"
+  ],
+  "blog-detail": [
+   "image-top",
+   "image-side"
+  ],
+  "locations": [
+   "grid",
+   "list"
+  ],
+  "location-details": [
+   "map-top",
+   "map-side",
+   "map-bottom",
+   "info-only"
+  ],
+  "delivery": [
+   "cards",
+   "list"
+  ],
+  "mail-order": [
+   "standard",
+   "compact",
+   "detailed"
+  ],
+  "account": [
+   "sidebar-left",
+   "sidebar-right",
+   "tabs"
+  ],
+  "order-details": [
+   "timeline-top",
+   "timeline-side"
+  ],
+  "login": [
+   "centered",
+   "split",
+   "minimal"
+  ]
+ },
+ "layout_names": {
+  "home": {
+   "hero-featured": "Hero + Carousels",
+   "hero-categories": "Hero + Categories",
+   "minimal": "Clean Grid"
+  },
+  "products": {
+   "filter-left": "Filter Left",
+   "filter-right": "Filter Right"
+  },
+  "product-details": {
+   "tab": "Tabbed",
+   "full": "Full"
+  },
+  "checkout": {
+   "summary-right": "Summary Right",
+   "summary-left": "Summary Left"
+  },
+  "cart": {
+   "summary-right": "Summary Right",
+   "summary-left": "Summary Left"
+  },
+  "faq": {
+   "accordion": "Accordion",
+   "two-sections": "2 Sections",
+   "two-column": "Two Column",
+   "flat": "Flat List"
+  },
+  "blog": {
+   "list": "List View",
+   "grid": "Grid View"
+  },
+  "blog-detail": {
+   "image-top": "Image Top",
+   "image-side": "Image Side"
+  },
+  "locations": {
+   "grid": "Grid View",
+   "list": "List View"
+  },
+  "location-details": {
+   "map-top": "Map Top",
+   "map-side": "Map Side",
+   "map-bottom": "Map Bottom",
+   "info-only": "Info Only"
+  },
+  "delivery": {
+   "cards": "Cards Grid",
+   "list": "Vertical List"
+  },
+  "mail-order": {
+   "standard": "Standard",
+   "compact": "Compact",
+   "detailed": "Detailed"
+  },
+  "account": {
+   "sidebar-left": "Sidebar Left",
+   "sidebar-right": "Sidebar Right",
+   "tabs": "Tabs"
+  },
+  "order-details": {
+   "timeline-top": "Timeline Top",
+   "timeline-side": "Timeline Side"
+  },
+  "login": {
+   "centered": "Centered",
+   "split": "Split",
+   "minimal": "Minimal"
+  }
+ },
+ "default_layouts": {
+  "home": "hero-featured",
+  "products": "filter-left",
+  "product-details": "image-left",
+  "checkout": "summary-right",
+  "cart": "summary-right",
+  "locations": "grid",
+  "location-details": "map-top",
+  "faq": "accordion",
+  "blog": "list",
+  "blog-detail": "image-top",
+  "delivery": "cards",
+  "mail-order": "standard",
+  "account": "sidebar-left",
+  "order-details": "timeline-top",
+  "login": "centered"
+ }
+}

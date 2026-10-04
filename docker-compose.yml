@@ -1,0 +1,27 @@
+# Local Postgres 16 for development and the e2e tests (README §6, §10).
+# Host port 5433 so it does not collide with a system Postgres on 5432.
+#
+#   make db-up      # start (waits for healthy)
+#   make db-down    # stop and drop the volume
+#
+# DATABASE_URL=postgres://souschef:souschef@localhost:5433/souschef?sslmode=disable
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sous-chef-postgres
+    environment:
+      POSTGRES_USER: souschef
+      POSTGRES_PASSWORD: souschef
+      POSTGRES_DB: souschef
+    ports:
+      - "5433:5432"
+    volumes:
+      - sous-chef-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U souschef -d souschef"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  sous-chef-pgdata:

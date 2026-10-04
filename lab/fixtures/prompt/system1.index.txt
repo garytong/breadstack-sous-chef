@@ -1,0 +1,91 @@
+# Manifest index
+One line per container: kind:id [pages=…] f=<fields> [lists=<list>[ops]{->DetailsPanel|;orders=<what>}…] [mirror=<from>] [presets=…] | keys: <stems> [| ro: <read-only keys>]
+A stem "head*(n)" stands for n keys sharing that prefix (headline, headlineColor, …); a bare key is itself. Lists print their item keys as stems after ":" unless a details panel owns the items. Keys are exact as written; use lookup_fields to see types, enums, defaults and gates before writing.
+
+## Section types (target kind "section"; sectionId = type + "-<n>")
+s:blogSection pages=home f=43 lists=pageVisibility.blog.posts[add|remove|reorder]->BlogPostDetailPanel | keys: card*(12) intro*(5) tagline*(5) title*(5) read*(4) bg*(2) cta*(2) backgroundColor cardsPerRow contentTextAlign count imageSide layout overlayColor paddingY
+s:content pages=home f=35 | keys: btn*(6) title*(6) button*(5) tagline*(5) subtitle*(4) bg*(2) cta*(2) backgroundColor layout overlayColor paddingY style | ro: buttonBgColor buttonBorderColor buttonLink buttonText buttonTextColor ctaLink ctaText style
+s:contentBlock pages=home f=126 lists=bullets[add|remove]:icon subtitle title faqs[add|remove|reorder]->FaqDetailsPanel images[add]:value imagesAlt[add] imagesLink[]:value items[add|remove|reorder]->ColumnDetailsPanel milestones[add|remove|reorder]:label points tiers[add|remove|reorder]:body title | keys: map*(9) still*(9) bullet*(8) locationOverrides.{locationId}.*(7) show*(7) image*(6) tagline*(6) title*(6) button*(5) secondary*(5) bg*(4) body*(4) item*(4) split*(4) col*(3) footnote*(3) live*(3) icon*(2) label*(2) location*(2) overlay*(2) primary*(2) service*(2) activeColor answerBgColor backgroundColor cardImageHeight columnVariant +16 | ro: mapLocationId
+s:featuredCategories pages=home f=52 lists=pageVisibility.products.categoryOrder[reorder;orders=categories]:enabled | keys: item*(9) tagline*(7) category*(5) sub*(5) title*(5) text*(3) tile*(3) bg*(2) image*(2) show*(2) backgroundColor contentAlign defaultCategoryBgColor itemsCount mobileRows overlayColor paddingY style totalItems
+s:gallery pages=home f=29 lists=images[add|remove]:value | keys: tagline*(6) cta*(5) title*(5) subtitle*(4) bg*(2) backgroundColor contentAlign imageFit imagesPerView layout overlayColor paddingY
+s:heroBanner pages=home f=2 lists=slides[add|remove]:bullet*(10) headline*(6) tagline*(6) btn*(5) body*(4) primary*(4) cert*(3) background*(2) bgColor imageSide +3 slides[].bullets[add|remove|reorder]->HeroBulletDetailsPanel mirror=slides[0](56 keys) | keys: maxWidth paddingY
+s:locations pages=home f=87 lists=disabledLocationIds[]:value locationOrder[reorder;orders=locations]:value | keys: map*(25) location*(13) tagline*(6) directions*(5) phone*(5) primary*(5) body*(4) button*(4) headline*(4) show*(3) bg*(2) stores*(2) backgroundColor cardsPosition contentAlign layout overlayColor paddingY textColor titleUppercase viewDetailsText
+s:loyaltyForm pages=home f=26 lists=infoSections[add|remove]:body label | keys: title*(4) background*(3) body*(3) submit*(3) tagline*(3) card*(2) consent*(2) headline*(2) bgColor contentAlign layout overlayColor | ro: bgColor headlineColor title
+s:milestones pages=home f=32 lists=faqs[add|remove]->FaqDetailsPanel milestones[add|remove|reorder]:label points | keys: tagline*(6) button*(5) body*(4) title*(4) bg*(3) label*(2) overlay*(2) activeColor backgroundColor inactiveColor paddingY style textAlign
+s:newsletter pages=home f=36 | keys: cta*(7) title*(6) form*(5) subtitle*(4) bg*(3) backgroundColor cardSideImage contentAlign hidePaddingTop inputWidth layout overlayColor paddingY placeholder splitImage verticalAlign
+s:perksCards pages=home f=126 lists=bullets[add|remove]:icon subtitle title faqs[add|remove|reorder]->FaqDetailsPanel images[add]:value imagesAlt[add] imagesLink[]:value imagesSrcSet[add]:value items[add|remove|reorder]->ColumnDetailsPanel milestones[add|remove|reorder]:label points tiers[add|remove|reorder]:body title | keys: map*(9) still*(9) bullet*(8) locationOverrides.{locationId}.*(7) show*(7) image*(6) tagline*(6) title*(6) button*(5) secondary*(5) bg*(4) body*(4) item*(4) split*(4) col*(3) footnote*(3) live*(3) icon*(2) label*(2) location*(2) overlay*(2) primary*(2) service*(2) activeColor answerBgColor backgroundColor cardImageHeight columnVariant +16 | ro: mapLocationId
+s:productCarousel pages=home,product-details f=49 | keys: button*(7) title*(5) content*(4) subtitle*(4) show*(3) tagline*(3) background*(2) brand*(2) cta*(2) overlay*(2) tag*(2) alwaysShowArrows bgImageMobile body cardsPerView categorySlug layout paddingY productCount rowsToShow sortBy subType textPosition totalItems | ro: brandId tagId
+s:promotion pages=home f=42 lists=items[add|remove|reorder]->PromotionDetailsPanel weekdayItems[]:enabled | keys: tagline*(7) body*(5) title*(5) weekday*(5) bg*(2) tile*(2) backgroundColor borderColor ctaFontSize descFontSize displayWeekday itemTextAlign itemsPerRow nameFontSize overlayColor paddingY pillImageBelow shape showBorder spacing textAlign totalRows
+s:sectionDivider pages=home f=14 | keys: pattern*(4) image*(2) shape*(2) bgColor bottomColor dividerType flip overlayPrevious topColor
+s:testimonials pages=home f=29 lists=reviews[add|remove|reorder]->ReviewDetailsPanel | keys: cta*(5) title*(5) card*(4) subtitle*(4) tagline*(3) bg*(2) backgroundColor contentAlign layout overlayColor paddingY starColor
+s:blog = blogSection
+s:hero = heroBanner
+s:perksIcons = perksCards
+s:reviews = testimonials
+
+## Global panels (target kind "global", optional panel)
+g:BrandingSection f=11 | keys: logo*(5) footer*(2) store*(2) favicon showLocationInHeader | ro: footerLayout showLocationInHeader
+g:ButtonsSection f=9 | keys: button*(6) borderRadius inputBorderRadius secondaryBtnStyle
+g:FooterSection f=70 lists=footerCustomColumns[add|remove|reorder]:title footerCustomColumns[].links[add|remove|reorder]:label newTab url footerLocationOrder[reorder;orders=locations]:value pageVisibility._meta.footerBottomCustomLinks[add]:label pageVisibility._meta.footerBottomOrder[reorder;orders=pages]:value pageVisibility._meta.footerNavCustomLinks[add]:label pageVisibility._meta.footerNavOrder[reorder;orders=pages]:value paymentMethodsOrder[reorder;orders=paymentMethods]:value | keys: footer*(34) page*(30) payment*(6) | ro: footerShowSingleLocation
+g:HeaderSection f=69 lists=pageVisibility._meta.headerNavCustomLinks[add|remove]:label url pageVisibility._meta.headerNavOrder[reorder;orders=pages]:value | keys: header*(32) page*(25) announcement*(8) show*(3) heroOverlayBuffer | ro: headerShowSearch pageVisibility.our-story.headerNavNewTab pageVisibility.products.headerNavNewTab
+g:InsiderBannerSection f=8 | keys: insider*(8)
+g:LayoutSection f=25 | keys: page*(21) containerPadding maxWidth sectionSpacing showLocationAfterAgeGate
+g:NotificationSection f=2 | keys: notification*(2)
+g:ProductCardSection f=103 lists=cardChipOrder[reorder;orders=cardChips]:value cardRibbonColorRules[add|remove]:bg color match presets=centered,compact,minimal,standard | keys: card*(75) product*(20) gram*(6) cardsPerRow rowsPerPage
+g:ShopMenuSection f=40 lists=shopMenuItems[reorder]:visible | keys: shop*(39) categories
+g:SidebarCartSection f=10 | keys: cart*(10)
+g:SocialMediaSection f=13 | keys: social*(13)
+g:TypographyColorsSection f=36 | keys: heading*(4) site*(4) body*(3) arrow*(2) auto*(2) breadcrumb*(2) category*(2) hero*(2) nav*(2) neutral*(2) section*(2) tagline*(2) accentColor borderColor brandColor buttonFont linkColor pageTitleColor textSecondaryColor | ro: pageTitleColor sectionHeadingColor sectionTextColor
+
+## Branding (target kind "branding")
+b:branding f=137 lists=certifications[add|remove|reorder]->CertificationDetailsPanel | keys: location*(92) age*(45) | ro: locationPickerOverlayOpacity
+
+## Pages (target kind "page"; p:_common fields apply to every page)
+p:_common f=1 | keys: published
+p:account f=79 | keys: overview*(13) loyalty*(12) orders*(11) addresses*(10) settings*(9) tabs*(6) status*(5) title*(4) button*(3) field*(2) sidebar*(2) layout mainBgColor
+p:age-gate f=0
+p:blog f=5 lists=posts[add|remove|reorder]->BlogPostDetailPanel | keys: bodyFont headingFont imageFit layout titleUppercase
+p:blog-detail f=2 lists=blog.posts[remove]->BlogPostDetailPanel | keys: imageFit layout
+p:cart f=40 | keys: empty*(11) summary*(10) discount*(4) title*(4) button*(3) item*(3) card*(2) gramLimit.label layout showGramLimit
+p:checkout f=19 | keys: payment*(4) title*(4) label*(2) section*(2) addressAutocomplete.enabled deliveryLabel.enabled freeShippingBanner.enabled notice.html popupHeading.color saveAddress.enabled signInPromptStyle.color
+p:faq f=16 lists=faqCategories[add|remove|reorder]:name faqCategories[].items[add|remove]:a q | keys: question*(6) answer*(5) hide*(3) layout showQuestionBorderTop
+p:location-selection f=0
+p:login f=51 | keys: register*(10) sign*(8) side*(7) validation*(6) footnote*(4) title*(4) input*(3) card*(2) labels*(2) split*(2) tabs*(2) layout
+p:order-confirmation f=13 | keys: order*(13)
+p:order-details f=18 | keys: order*(18)
+p:privacy-policy f=12 lists=privacyContent[add|remove|reorder]->TextSectionDetailPanel | keys: heading*(6) show*(3) last*(2) contentColor
+p:product-details f=84 lists=productDetail.chipOrder[reorder;orders=detailChips]:value | keys: product*(59) global*(25)
+p:products f=39 lists=filterOrder[reorder;orders=filters]:enabled productListCategoryOrder[reorder;orders=categories]:enabled sortOptionsOrder[reorder;orders=sortOptions]:enabled | keys: header*(20) global*(10) default*(3) grid*(2) collapseFiltersByDefault disableFilterScroll layout showOnlyInStockCategories | ro: defaultSort.sort defaultSort.sortOrder
+p:return-refund f=12 lists=returnRefundContent[add|remove|reorder]->TextSectionDetailPanel | keys: heading*(6) show*(3) last*(2) contentColor
+p:terms-of-service f=12 lists=termsContent[add|remove|reorder]->TextSectionDetailPanel | keys: heading*(6) show*(3) last*(2) contentColor
+
+## Details panels (list items; keys shown without the item. prefix; edit with edit_list update on the owning list)
+d:BlogPostDetailPanel f=8 | keys: body category date excerpt image readingTime slug title
+d:CategoryDetailsPanel f=4 lists=childCategoryOrder[reorder;orders=childCategories]:enabled | keys: description icon image name
+d:CertificationDetailsPanel f=6 | keys: alt description image location name number
+d:ColumnDetailsPanel f=6 | keys: icon*(2) body image linkUrl title
+d:FaqDetailsPanel f=3 | keys: answer defaultOpen question
+d:HeroBulletDetailsPanel f=3 | keys: description icon title
+d:LocationDetailsPanel f=8 | keys: address delivery hours image mailOrder name phone pickup
+d:PromotionDetailsPanel f=8 | keys: image*(2) barColor ctaText description name textColor url
+d:ReviewDetailsPanel f=4 | keys: date name rating text
+d:SeoPanel f=8 | keys: defaults*(3) pages*(3) customGoogleAnalyticId robotsTxt
+d:TextSectionDetailPanel f=2 | keys: content title
+
+## Pinned (built-in) sections: page → sectionId; * = reorderable row of the page's sections list, others are virtual
+account → __pinned_account
+age-gate → __pinned_age_gate
+blog → __pinned_blog_list
+blog-detail → __pinned_blog_detail
+cart → __pinned_cart
+checkout → __pinned_checkout
+faq → __pinned_faq
+location-selection → __pinned_location_selection
+login → __pinned_login
+order-confirmation → __pinned_order_confirmation
+order-details → __pinned_order_details
+privacy-policy → __pinned_privacy
+product-details → __pinned_product_detail
+products → __pinned_product_list*
+return-refund → __pinned_return_refund
+terms-of-service → __pinned_terms

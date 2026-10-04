@@ -1,0 +1,51 @@
+# Sous Chef lab — the in-house model kit (docs/LAB.md §1).
+#
+# Runtime is the standard library only: the manifest loader, the EditorState
+# builder, the engine wrapper (a subprocess around the browser engine's
+# headless.mjs) and the case generator run on any Python >= 3.12 with no
+# third-party package. Extras:
+#   [dev]    pytest — `make -C lab test`
+#   [train]  torch / unsloth / trl / peft / datasets — train.py, dpo.py,
+#            export.py import them inside run() only; `--dry-run` never does.
+#            Versions follow the thermometer kit's measured set
+#            (breadstack-thermometer/lab/in-house-model/pyproject.toml,
+#            Unsloth 2026.9.11 / Transformers 5.5.0 / Torch 2.12.1+cu130)
+#            and are a recipe, not a lock: nothing here was installed or run.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "souschef-lab"
+version = "0.1.0"
+description = "Sous Chef lab: cases, collector, verifier and training recipe for the in-house editor model."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4"]
+train = [
+    "unsloth==2026.9.11",
+    "unsloth-zoo==2026.9.7",
+    "torch==2.12.1",
+    "transformers==5.5.0",
+    "trl==0.24.0",
+    "datasets>=4.2,<4.4",
+    "peft>=0.18.0",
+    "accelerate>=1.10.0",
+    "bitsandbytes>=0.47.0",
+]
+
+[project.scripts]
+souschef-lab = "souschef_lab.cli:main"
+
+[tool.setuptools]
+packages = ["souschef_lab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = [
+    "engine: needs node >= 20 and the cookie-cutter headless engine (skipped otherwise; SOUS_CHEF_LAB_REQUIRE_ENGINE=1 turns the skip into a failure)",
+]

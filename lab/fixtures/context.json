@@ -1,0 +1,31 @@
+{
+  "_source": "lab fixture: the merchant-side lists the turn context carries (service README §1.2) and the slugs/ids `ref` and `keyed_by` fields take their values from",
+  "categories": [
+    {"slug": "flower", "name": "Flower"},
+    {"slug": "pre-rolls", "name": "Pre-Rolls"},
+    {"slug": "edibles", "name": "Edibles"},
+    {"slug": "vapes", "name": "Vapes"},
+    {"slug": "concentrates", "name": "Concentrates"},
+    {"slug": "accessories", "name": "Accessories"}
+  ],
+  "tags": [
+    {"slug": "staff-picks", "name": "Staff Picks"},
+    {"slug": "new", "name": "New"},
+    {"slug": "sale", "name": "Sale"}
+  ],
+  "brands": [
+    {"slug": "pure-sunfarms", "name": "Pure Sunfarms"},
+    {"slug": "redecan", "name": "Redecan"},
+    {"slug": "good-supply", "name": "Good Supply"}
+  ],
+  "locations": [
+    {"id": "loc-main", "name": "Main Street"},
+    {"id": "loc-north", "name": "Northgate"},
+    {"id": "loc-harbour", "name": "Harbourfront"}
+  ],
+  "customPages": [
+    {"slug": "about", "title": "About Us"},
+    {"slug": "events", "title": "Events"}
+  ],
+  "paymentMethods": ["visa", "mastercard", "amex", "debit", "cash"]
+}

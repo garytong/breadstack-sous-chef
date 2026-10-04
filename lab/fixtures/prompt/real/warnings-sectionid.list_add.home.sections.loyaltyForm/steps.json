@@ -1,0 +1,61 @@
+[
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Adding a loyalty form and giving the category tiles a border."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_1",
+     "name": "edit_list",
+     "input": {
+      "target": {
+       "kind": "page",
+       "page": "home"
+      },
+      "list": "sections",
+      "action": "add",
+      "item": {
+       "id": "loyaltyForm"
+      }
+     }
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_2",
+     "name": "set_fields",
+     "input": {
+      "target": {
+       "kind": "section",
+       "page": "home",
+       "sectionId": "featuredCategories"
+      },
+      "values": {
+       "tileBorder": "all"
+      }
+     }
+    }
+   ],
+   "usage": {
+    "input_tokens": 120,
+    "output_tokens": 30
+   }
+  }
+ },
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Done — the loyalty form is on the home page and the tiles have a border."
+    }
+   ],
+   "usage": {
+    "input_tokens": 190,
+    "output_tokens": 14
+   }
+  }
+ }
+]
