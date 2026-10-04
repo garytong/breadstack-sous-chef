@@ -144,10 +144,6 @@ def answered_ids(log_path: Path) -> set[str]:
     return {str(r.get("id")) for r in read_jsonl(log_path) if r.get("status") == "ok"}
 
 
-def stable_hash(s: str) -> int:
-    return int(hashlib.sha1(s.encode("utf-8")).hexdigest()[:12], 16)
-
-
 def manifest_hash(doc: dict) -> str:
     """README §1.1 in Python (cross-checked against Go in the service's tests)."""
     body = {k: v for k, v in doc.items() if k not in ("generated_from", "coverage")}
@@ -386,13 +382,13 @@ def load_assets(path: Path | None) -> list[dict]:
 
 def pick_asset_for(assets: Iterable[dict], suspended: dict, case_id: str) -> dict:
     """The fixture asset that answers a pick_asset: one of the asked type
-    (`assetType`, default image), chosen deterministically from the case id
-    and tool call id so reruns agree. `{public_url, alt, srcset}`."""
-    wanted = suspended.get("assetType") or "image"
-    pool = [a for a in assets if (a.get("asset_type") or a.get("type") or "image") == wanted] or list(assets)
-    if not pool:
-        raise ValueError("no fixture assets to answer pick_asset with (fixtures/assets.json)")
-    a = pool[stable_hash(f"{case_id}|{suspended.get('toolCallId')}") % len(pool)]
+    (`assetType`, default image), chosen from the case id alone
+    (`state.fixture_asset_for` — the same function the case generator uses
+    for the pick variant's expected ops, LAB.md §2/§4) so reruns and the
+    expectation agree. `{public_url, alt, srcset}` (empty alt/srcset
+    omitted, as the real picker's api.Asset)."""
+    from .state import fixture_asset_for
+    a = fixture_asset_for(list(assets), case_id, str(suspended.get("assetType") or "image"))
     out = {"public_url": a["public_url"]}
     for k in ("alt", "srcset"):
         if a.get(k):

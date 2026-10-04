@@ -338,6 +338,17 @@ func (t *turn) dispatch(uses []model.Block) ([]model.ToolResult, *pendingDoc, []
 			// counted.
 			pd.SuspendedID = u.ID
 		default: // browser op
+			if out, refused := toolgen.ValidateBrowserOp(u.Name, u.Input); refused {
+				// A reset / restore_default without keys would clear the
+				// whole target in the engine: answered here, is_error, and
+				// never emitted as a tool.call (README §2, §4 step 4).
+				call.Server = true
+				t.rec.MarkServer(u.ID)
+				res := model.ToolResult{ID: u.ID, Content: out.Content, IsError: true}
+				results = append(results, res)
+				pd.ServerResults = append(pd.ServerResults, serverResult{ID: u.ID, Content: res.Content, IsError: true})
+				break
+			}
 			call.Seq = t.seq + len(calls) + 1
 			calls = append(calls, u)
 		}

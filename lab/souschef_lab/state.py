@@ -24,6 +24,7 @@ Standard library only.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -140,6 +141,25 @@ def load_layouts_fixture(fixtures_dir: Path | None = None) -> dict:
 
 def load_assets_fixture(fixtures_dir: Path | None = None) -> list[dict]:
     return list(load_fixture("assets.json", fixtures_dir)["assets"])
+
+
+def stable_hash(s: str) -> int:
+    return int(hashlib.sha1(s.encode("utf-8")).hexdigest()[:12], 16)
+
+
+def fixture_asset_for(assets: list[dict], case_id: str, asset_type: str = "image") -> dict:
+    """The fixture asset the collector's fake picker answers a case's
+    `pick_asset` with (collect.pick_asset_for): one of the asked type, chosen
+    from the case id alone — so the generator can put exactly this asset in
+    the pick variant's expected ops, and every sample of the case gets the
+    same answer. The generator and the collector must share this function:
+    when they disagreed (the picker also hashed the service's random tool
+    call id, 2026-10-04) every pick case compared the model's correct write
+    against another asset."""
+    pool = [a for a in assets if (a.get("asset_type") or a.get("type") or "image") == asset_type] or list(assets)
+    if not pool:
+        raise ValueError("no fixture assets to answer pick_asset with (fixtures/assets.json)")
+    return pool[stable_hash(case_id) % len(pool)]
 
 
 def load_probe_initials(fixtures_dir: Path | None = None) -> dict:

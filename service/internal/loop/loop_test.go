@@ -547,6 +547,68 @@ func TestTurn_ReportUnsupportedEchoesAndEnds(t *testing.T) {
 	}
 }
 
+// A reset / restore_default without keys would clear the whole target in the
+// engine: the loop answers it is_error E_OP itself and emits no tool.call,
+// while a reset WITH keys in the same batch still reaches the browser.
+func TestTurn_KeylessResetRefusedNotEmitted(t *testing.T) {
+	for _, name := range []string{"reset", "restore_default"} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil,
+				modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.ToolUse("r1", name, map[string]any{"target": heroTarget})}}),
+				modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("Which setting should I clear?")}}),
+			)
+			turn, evs := h.start(h.request("clear the hero"))
+			if !strings.HasSuffix(kinds(evs), "turn.done") || strings.Contains(kinds(evs), "tool.call") || strings.Contains(kinds(evs), "turn.waiting") {
+				t.Fatalf("events = %s (a keyless %s must not reach the browser)", kinds(evs), name)
+			}
+			reqs := h.fake.Requests()
+			if len(reqs) != 2 {
+				t.Fatalf("model calls = %d", len(reqs))
+			}
+			res := lastToolResults(t, reqs[1])
+			if len(res) != 1 || res[0].ID != "r1" || !res[0].IsError || !strings.Contains(res[0].Content, `"code":"E_OP"`) || !strings.Contains(res[0].Content, name+" needs keys") {
+				t.Fatalf("tool result = %+v", res)
+			}
+			tr, _ := h.st.trace(turn.ID())
+			if !strings.Contains(string(tr.Ops), `"server":true`) {
+				t.Error("trace ops must flag the refused call as answered server-side")
+			}
+		})
+	}
+	// Empty keys array: same refusal.
+	h := newHarness(t, nil,
+		modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.ToolUse("r2", "reset", map[string]any{"target": heroTarget, "keys": []string{}})}}),
+		modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("Which setting?")}}),
+	)
+	_, evs := h.start(h.request("clear the hero"))
+	if strings.Contains(kinds(evs), "tool.call") {
+		t.Fatalf("events = %s (keys:[] must not reach the browser)", kinds(evs))
+	}
+	// Mixed batch: the keyless one is refused inline, the keyed one is
+	// emitted with seq 1 and the turn waits on it alone.
+	h = newHarness(t, nil,
+		modeltest.Reply(modeltest.Message{Content: []modeltest.Block{
+			modeltest.ToolUse("bad", "reset", map[string]any{"target": heroTarget}),
+			modeltest.ToolUse("good", "reset", map[string]any{"target": heroTarget, "keys": []string{"headline"}}),
+		}}),
+		modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("Cleared the headline.")}}),
+	)
+	turn, evs := h.start(h.request("clear the hero headline"))
+	if kinds(evs) != "tool.call turn.waiting" {
+		t.Fatalf("events = %s", kinds(evs))
+	}
+	if d := data(t, evs[0]); d["id"] != "good" || d["name"] != "reset" {
+		t.Fatalf("emitted call = %v", d)
+	}
+	if _, err := h.cont(turn.ID(), api.ToolResult{ToolCallID: "good", OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	res := lastToolResults(t, h.fake.Requests()[1])
+	if len(res) != 2 || res[0].ID != "bad" || !res[0].IsError || res[1].ID != "good" || res[1].IsError {
+		t.Fatalf("tool results = %+v", res)
+	}
+}
+
 func TestTurn_UnknownToolIsAnError(t *testing.T) {
 	h := newHarness(t, nil,
 		modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.ToolUse("x1", "launch_rocket", map[string]any{})}}),

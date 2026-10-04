@@ -173,6 +173,8 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 	}
 	// Regression pin: counted over the pre-fix strict set (everything but the
 	// two open-map tools), the counter must give the 29 the API reported.
+	// `keys` on reset / restore_default was optional then (one each) and is
+	// required now, so those two are added back before comparing.
 	preFix := 0
 	for _, tl := range Tools(snapshot(t)) {
 		if tl.Name != SetFields && tl.Name != EditList {
@@ -180,8 +182,20 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 			preFix += opt
 		}
 	}
-	if preFix != 29 {
-		t.Fatalf("pre-fix strict set counts %d optional parameters, the API reported 29 — counter drifted from the API's rule", preFix)
+	if preFix+2 != 29 {
+		t.Fatalf("pre-fix strict set counts %d (+2 for the then-optional keys) optional parameters, the API reported 29 — counter drifted from the API's rule", preFix)
+	}
+	// The strict set today: 10 (two target embeddings = 8, set_page_layout's
+	// page, report_unsupported's manual_hint).
+	today := 0
+	for _, tl := range Tools(snapshot(t)) {
+		if tl.Strict {
+			opt, _ := countStrictBudget(tl.InputSchema)
+			today += opt
+		}
+	}
+	if today != 10 {
+		t.Fatalf("strict set counts %d optional parameters, want 10", today)
 	}
 	// The counter itself, on the shape the API rejected: a nested object's
 	// optionals count, required members do not, anyOf is one union.
@@ -256,14 +270,20 @@ func countStrictBudget(schema map[string]any) (optional, union int) {
 
 // Strict schemas must satisfy the structured-outputs rules: every object has
 // additionalProperties:false and a required array; no numeric / string
-// constraints anywhere; additionalProperties never anything but false.
+// constraints anywhere; the only array constraint is minItems 0 or 1
+// (platform.claude.com/docs/en/build-with-claude/structured-outputs:
+// "Array minItems (only values 0 and 1 supported)"); additionalProperties
+// never anything but false.
 func TestStrictSchemasObeyStructuredOutputRules(t *testing.T) {
 	for _, tl := range Tools(snapshot(t)) {
 		walk(tl.InputSchema, func(path string, m map[string]any) {
-			for _, bad := range []string{"minimum", "maximum", "multipleOf", "minLength", "maxLength", "minItems", "maxItems", "pattern", "$ref"} {
+			for _, bad := range []string{"minimum", "maximum", "multipleOf", "minLength", "maxLength", "maxItems", "uniqueItems", "pattern", "$ref"} {
 				if _, ok := m[bad]; ok {
 					t.Errorf("%s%s: unsupported constraint %s", tl.Name, path, bad)
 				}
+			}
+			if mi, ok := m["minItems"]; ok && mi != 0 && mi != 1 {
+				t.Errorf("%s%s: minItems %v — strict mode accepts only 0 or 1", tl.Name, path, mi)
 			}
 			if m["type"] != "object" {
 				return
@@ -442,14 +462,26 @@ func TestDataOpSchemasMirrorEngineOps(t *testing.T) {
 			t.Fatalf("edit_list lacks %s", k)
 		}
 	}
+	// reset / restore_default: keys REQUIRED and non-empty — the engine's
+	// keyless form clears the whole target and must not be offered.
 	for _, name := range []string{Reset, RestoreDefault} {
 		tl := toolByName(t, tools, name)
-		if req := tl.InputSchema["required"].([]string); strings.Join(req, ",") != "target" {
-			t.Fatalf("%s required = %v", name, req)
+		if req := tl.InputSchema["required"].([]string); strings.Join(req, ",") != "target,keys" {
+			t.Fatalf("%s required = %v, want target,keys", name, req)
 		}
 		keys := props(t, tl.InputSchema)["keys"].(map[string]any)
-		if keys["type"] != "array" || keys["items"].(map[string]any)["type"] != "string" {
-			t.Fatalf("%s keys = %v", name, keys)
+		if keys["type"] != "array" || keys["items"].(map[string]any)["type"] != "string" || keys["minItems"] != 1 {
+			t.Fatalf("%s keys = %v (want array of string, minItems 1)", name, keys)
+		}
+		for _, bad := range []string{"Omit", "omit", "whole target is", "every field of the target is"} {
+			if strings.Contains(tl.Description, bad) || strings.Contains(keys["description"].(string), bad) {
+				t.Errorf("%s still describes the keyless clear-all form (%q): %s | %s", name, bad, tl.Description, keys["description"])
+			}
+		}
+		for _, want := range []string{"not available", "list every key", "E_OP"} {
+			if !strings.Contains(tl.Description, want) {
+				t.Errorf("%s description must say %q: %s", name, want, tl.Description)
+			}
 		}
 	}
 	if !strings.Contains(toolByName(t, tools, Reset).Description, "unset_value") || !strings.Contains(toolByName(t, tools, RestoreDefault).Description, "default") {
@@ -634,6 +666,48 @@ func TestDispatchReportUnsupported(t *testing.T) {
 	res, _ = Dispatch(m, ReportUnsupported, json.RawMessage(`{"reason":"  "}`))
 	if !res.IsError {
 		t.Fatal("empty reason must be an error")
+	}
+}
+
+// ValidateBrowserOp refuses the keyless (clear-all) shape of reset /
+// restore_default in every spelling and lets everything else through.
+func TestValidateBrowserOp(t *testing.T) {
+	target := `"target":{"kind":"section","page":"home","sectionId":"hero-1"}`
+	refused := []string{
+		`{` + target + `}`,
+		`{` + target + `,"keys":null}`,
+		`{` + target + `,"keys":[]}`,
+		`{` + target + `,"keys":"headline"}`,
+		`{` + target + `,"keys":[""]}`,
+		`{` + target + `,"keys":["headline", 3]}`,
+		`{` + target + `,"keys":[" "]}`,
+		``,
+		`not json`,
+	}
+	for _, name := range []string{Reset, RestoreDefault} {
+		for _, in := range refused {
+			res, ok := ValidateBrowserOp(name, json.RawMessage(in))
+			if !ok || !res.IsError {
+				t.Errorf("%s %s: must be refused, got %+v", name, in, res)
+				continue
+			}
+			var e struct{ Code, Message string }
+			if err := json.Unmarshal([]byte(res.Content), &e); err != nil || e.Code != "E_OP" {
+				t.Errorf("%s %s: result %s", name, in, res.Content)
+			}
+			if in != `` && in != `not json` && !strings.Contains(e.Message, name+" needs keys") {
+				t.Errorf("%s %s: message %q", name, in, e.Message)
+			}
+		}
+		if res, ok := ValidateBrowserOp(name, json.RawMessage(`{`+target+`,"keys":["headline","subheadline"]}`)); ok {
+			t.Errorf("%s with keys must pass, got %+v", name, res)
+		}
+	}
+	// Other tools are the engine's business, keys or not.
+	for _, name := range []string{SetFields, EditList, SetPageLayout, ResetPinnedSection, PickAsset, LookupFields, "unknown_tool"} {
+		if _, ok := ValidateBrowserOp(name, json.RawMessage(`{}`)); ok {
+			t.Errorf("%s must not be refused by ValidateBrowserOp", name)
+		}
 	}
 }
 

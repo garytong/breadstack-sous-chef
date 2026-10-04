@@ -21,10 +21,17 @@
 // int 2026-10-04 at 29/24). `lookup_fields` and `describe_target`, whose
 // members are all optional, are therefore `strict: false` too (Dispatch
 // validates them and answers self-correcting errors); the six remaining
-// tools are `strict: true` and spend 12 of the 24
-// (TestStrictOptionalParameterBudget). `tool_choice` is always `auto`
-// (forced tool use 400s on Claude Sonnet 5.5 / Opus 5.5), which the loop sets
-// — not this package.
+// tools are `strict: true` and spend 10 of the 24
+// (TestStrictOptionalParameterBudget; 12 before `keys` became required on
+// reset / restore_default). `tool_choice` is always `auto` (forced tool use
+// 400s on Claude Sonnet 5.5 / Opus 5.5), which the loop sets — not this
+// package.
+//
+// Browser ops are applied by the engine, which is the authority on their
+// shape — with one server-side exception: ValidateBrowserOp refuses a reset /
+// restore_default without `keys` before the loop emits it, because the
+// engine's keyless form clears the WHOLE target (every field of a section,
+// page or panel) and the model must never be able to reach it.
 package toolgen
 
 import (
@@ -189,6 +196,44 @@ func Dispatch(m *manifest.Manifest, name string, input json.RawMessage) (res Res
 			"shown_to_merchant": true,
 			"next":              "Tell the merchant in one or two sentences that this cannot be changed here and that they can make the change in the editor or contact Breadstack support. Do not invent contact details.",
 		}), true
+	}
+	return Result{}, false
+}
+
+// ─── Browser-op guard ────────────────────────────────────────────────────────
+
+// ValidateBrowserOp is the server-side check a browser op passes before the
+// loop emits it as a tool.call. It refuses — refused is true and res is the
+// is_error tool_result for the model — a reset / restore_default whose
+// `keys` is missing, not an array, empty, or holds anything but non-blank
+// strings: the engine applies such a call to EVERY field of the target
+// (validate.js validateResetLike, `op.keys === undefined`), and the strict
+// schema (keys required, minItems 1) is belt; this is braces, so the clear-
+// all form cannot reach the browser however the input arrived. Every other
+// tool passes untouched (the engine validates it).
+func ValidateBrowserOp(name string, input json.RawMessage) (res Result, refused bool) {
+	if name != Reset && name != RestoreDefault {
+		return Result{}, false
+	}
+	var req struct {
+		Keys *json.RawMessage `json:"keys"`
+	}
+	if err := unmarshalInput(input, &req); err != nil {
+		return errResult("E_OP", err.Error()), true
+	}
+	need := fmt.Sprintf("%s needs keys: list the field keys to %s (at least one, strings). Clearing a whole target is not available; nothing was changed.", name, map[string]string{Reset: "clear", RestoreDefault: "restore"}[name])
+	if req.Keys == nil || strings.TrimSpace(string(*req.Keys)) == "null" {
+		return errResult("E_OP", need), true
+	}
+	var keys []any
+	if err := json.Unmarshal(*req.Keys, &keys); err != nil || len(keys) == 0 {
+		return errResult("E_OP", need), true
+	}
+	for _, k := range keys {
+		s, ok := k.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			return errResult("E_OP", need), true
+		}
 	}
 	return Result{}, false
 }

@@ -80,7 +80,7 @@ def keyed_supported(manifest: Manifest, container: Container, key: str) -> bool:
     return bool(panel and ".".join(parts[2:]) in panel.fields)  # panel field keys carry no `item.` prefix
 from .state import (
     PINNED_BY_PAGE, slice_path, build_state, context_of, find_section, find_section_index, gate_writes, apply_gate_writes,
-    get_path, load_assets_fixture, load_context_fixture, load_layouts_fixture, read_field, resolve_key, sections_of,
+    fixture_asset_for, get_path, load_assets_fixture, load_context_fixture, load_layouts_fixture, read_field, resolve_key, sections_of,
     sections_of_type, sections_slice_path, set_path, type_of_section, write_values, section_title,
 )
 
@@ -280,20 +280,115 @@ def _ordinal(n: int) -> str:
     return ["first", "second", "third", "fourth", "fifth", "sixth"][n] if n < 6 else f"{n + 1}th"
 
 
+# ── unambiguous field names (int-run1 finding B, 2026-10-04) ────────────────
+#
+# int-run1 (Claude Sonnet, 300 × 4) had 195 `no_answer` rows, most of them the model asking a sensible
+# clarifying question because the REQUEST was ambiguous: "Clear the color on the checkout page" (checkout has
+# four `Color` fields), "body text color → …" for `productDetail.reviewTextColor` (label `Body Text Color`,
+# and 'body text' names another pair), "the third content block" (five content blocks, two titled alike),
+# "address → …" for `locationOverrides.loc-main.address` (three locations). A request now names the field by
+# its manifest LABEL — the text `lookup_fields` returns, group segments kept (`Tagline › Text size in pixels`)
+# — qualified, when two or more fields of the same target share that label, by the type word (`Headline
+# color` vs `Headline text`), then by the dotted parent of a nested key (`Color (sectionStyle)`), then both;
+# a field no candidate makes unique in its target is SKIPPED (`skip:ambiguous-label`, the key recorded in
+# `skipped_ambiguous`) rather than asked for ambiguously. `clarify` cases stay deliberately ambiguous about
+# the SECTION (they name only the type), never about the field.
+
+TYPE_WORDS = {"color": "color", "text": "text", "richtext": "text", "bool": "toggle", "image": "image",
+              "range": "size", "number": "size", "select": "selection", "enum": "option", "ref": "selection"}
+
+
+def label_text(f: Field, key: str | None = None) -> str:
+    """The manifest label verbatim (`A › B` groups kept, parentheticals kept); an empty label or a
+    `{item}` placeholder (`Hide {item}`, `{item} Color`) falls back to the key's words."""
+    key = key or f.key
+    label = f.spec.get("label") or ""
+    if not label.strip():
+        return _words(key)
+    if "{" in label:  # `Hide {item}` → `Hide our-story`; `Overlay {item}` + overlayColor → `Overlay color`
+        words = re.sub(r"\{[^}]*\}", _words(key), label).split()
+        label = " ".join(w for i, w in enumerate(words) if i == 0 or w.lower() != words[i - 1].lower())
+    return re.sub(r"\s+", " ", label).strip()
+
+
+def _parent_key(key: str) -> str:
+    segs = [s for s in key.split(".") if not (s.startswith("{") and s.endswith("}"))]
+    return ".".join(segs[:-1])
+
+
+def phrase_candidates(f: Field, key: str | None = None) -> list[str]:
+    """Least to most qualified: label, label + type word, label (parent), label + type word (parent)."""
+    key = key or f.key
+    base = label_text(f, key)
+    tw = TYPE_WORDS.get(f.type, f.type)
+    parent = _parent_key(key)
+    bare = bool(re.fullmatch(r"\s*(\{[^}]*\})?\s*", f.spec.get("label") or ""))  # no label, or `{item}` alone
+    out = [] if bare and parent else [base, f"{base} {tw}"]  # `our-story` alone says nothing: start at the parent
+    if parent:
+        out += [f"{base} ({parent})", f"{base} {tw} ({parent})"]
+    return out
+
+
+def name_fields(scope: dict[str, Field]) -> dict[str, str | None]:
+    """key → the first candidate no OTHER field of `scope` could also be called (case-insensitive, against
+    every candidate of every other field), or None when none is — the ambiguity guard."""
+    cands = {k: phrase_candidates(f, k) for k, f in scope.items()}
+    lower = {k: {c.lower() for c in v} for k, v in cands.items()}
+    out: dict[str, str | None] = {}
+    for k, cs in cands.items():
+        others: set[str] = set()
+        for ok, v in lower.items():
+            if ok != k:
+                others |= v
+        out[k] = next((c for c in cs if c.lower() not in others), None)
+    return out
+
+
+def scope_fields(manifest: Manifest, c: Container, page: str | None = None) -> dict[str, Field]:
+    """Every field a request about `c` could mean: its fields, the hero's mirror item fields, a page's
+    `_common` fields."""
+    out = dict(c.fields)
+    for key in c.mirror_keys:
+        if key not in out:
+            f = manifest.mirror_item_field(c, key)
+            if f:
+                out[key] = f
+    if c.kind == "page":
+        for k, f in manifest.common_page_fields(page or c.name).items():
+            out.setdefault(k, f)
+    return out
+
+
+def keyed_phrase(f: Field, key: str, ctxf: dict) -> str:
+    """`locationOverrides.loc-main.address` → "address override for the location 'Main Street' (loc-main)"."""
+    ident = key.split(".")[1]
+    pool, noun = ("locations", "location") if f.keyed_by == "location" else ("categories", "category")
+    name = next((x.get("name") for x in ctxf.get(pool, []) if x.get("id") == ident or x.get("slug") == ident), None)
+    leaf = _words(key)
+    return f"{leaf} override for the {noun} '{name}' ({ident})" if name else f"{leaf} override for the {noun} {ident}"
+
+
 def section_phrase(state: dict, section_id: str, rng: random.Random, page: str = "home") -> str:
+    """Names the exact section: type label alone when the type is unique on the page (a unique title may
+    stand in); with repeats, always the id (`the third content block (contentBlock-3)`). A title shared by
+    two sections ('Why Choose Us?' on contentBlock-features AND -icons) is never used as the name."""
     row = find_section(state, section_id, page) or {"id": section_id}
     type_id = type_of_section(section_id)
     label = SECTION_LABELS.get(type_id, type_id)
     title = section_title(row)
+    rows = sections_of(state, page)
+    title_unique = bool(title) and sum(1 for s in rows if section_title(s) == title) == 1
     same = sections_of_type(state, type_id, page)
     options = []
-    if title:
-        options += [f"the '{title}' section", f"the {label} titled '{title}'"]
     if len(same) <= 1:
         options += [f"the {label}"] + ([] if label.endswith("section") else [f"the {label} section"])
+        if title_unique:
+            options += [f"the '{title}' section"]
     else:
         idx = [s.get("id") for s in same].index(section_id)
-        options += [f"the {_ordinal(idx)} {label}", f"section {section_id}"]
+        options += [f"the {_ordinal(idx)} {label} ({section_id})", f"the {label} {section_id}"]
+        if title_unique:
+            options += [f"the {label} titled '{title}' ({section_id})"]
     return rng.choice(options)
 
 
@@ -305,7 +400,7 @@ def container_phrase(c: Container, state: dict, rng: random.Random, section_id: 
     if c.kind == "branding":
         return rng.choice(["the site branding", "branding", "the brand settings"])
     if c.kind == "page":
-        return rng.choice([f"the {page} page", f"the {page.replace('-', ' ')} page"])
+        return rng.choice([f"the {page} page", f"the '{page}' page"])  # the exact page id, never a paraphrase
     return c.name
 
 
@@ -344,8 +439,10 @@ TOGGLE_ON_TEMPLATES = ["Turn on {field} for {where}.", "Enable the {field} on {w
 TOGGLE_OFF_TEMPLATES = ["Turn off {field} for {where}.", "Disable the {field} on {where}.", "Switch {field} off in {where}.", "Please disable {field} on {where}."]
 IMAGE_TEMPLATES = ["Use {value} as the {field} of {where}.", "Set {where}'s {field} to {value}.", "Swap the {field} on {where} for {value}.", "Change the {field} in {where} to {value}."]
 PICK_TEMPLATES = ["Let me pick a new {field} for {where}.", "I want to choose a different {field} on {where} from my library.", "Change the {field} of {where} — I'll select the image.", "Open the image picker for the {field} in {where}."]
-RESET_TEMPLATES = ["Clear the {field} on {where}.", "Reset the {field} of {where}.", "Remove the {field} from {where}.", "Unset {field} in {where}, please."]
-RESTORE_TEMPLATES = ["Put the {field} of {where} back to its default.", "Restore the default {field} on {where}.", "Reset {where}'s {field} to the template default.", "Undo my {field} change on {where} — back to the default value."]
+# reset = 'reset' / 'clear' + the field label (never "remove"/"unset", which read as delete-the-element or asked
+# for a clarification in int-run1); restore = 'default' + the field label.
+RESET_TEMPLATES = ["Clear the {field} on {where}.", "Reset the {field} of {where}.", "Please clear the {field} in {where}.", "{where}: reset the {field} (clear it)."]
+RESTORE_TEMPLATES = ["Put the {field} of {where} back to its default.", "Restore the default {field} on {where}.", "Reset {where}'s {field} to the template default.", "Restore the {field} of {where} to its default value."]
 LIST_ADD_TEMPLATES = ["Add a new {item} to {where}.", "Add another {item} in {where}.", "Please add one more {item} to {where}.", "{where}: add a {item}."]
 LIST_REMOVE_TEMPLATES = ["Remove the {ordinal} {item} from {where}.", "Delete the {ordinal} {item} in {where}.", "Take the {ordinal} {item} out of {where}.", "{where}: drop the {ordinal} {item}."]
 LIST_REORDER_TEMPLATES = ["Swap the first two {items} in {where}.", "Move the second {item} of {where} to the top.", "Reorder {where}: put the second {item} first.", "In {where}, make the second {item} come first."]
@@ -382,11 +479,26 @@ class Generator:
         self.layouts = load_layouts_fixture(fixtures_dir)
         self.base = base_state if base_state is not None else build_state(manifest, template=template, fixtures_dir=fixtures_dir)
         self.stats: dict[str, int] = {}
+        self.skipped_ambiguous: list[str] = []  # `<container>.<key>` of every field the ambiguity guard dropped
         self._ids: set[str] = set()
+        self._names: dict[tuple[str, str, str | None], dict[str, str | None]] = {}
 
     # helpers
     def _bump(self, k: str) -> None:
         self.stats[k] = self.stats.get(k, 0) + 1
+
+    def _field_name(self, c: Container, key: str, page: str | None = None) -> str | None:
+        """The unambiguous phrase for `key` in container `c` (name_fields over scope_fields), None when the
+        ambiguity guard rejects it — the caller bumps `skip:ambiguous-label` and skips the case."""
+        scope_key = (c.kind, c.name, page if c.kind == "page" else None)
+        names = self._names.get(scope_key)
+        if names is None:
+            names = self._names[scope_key] = name_fields(scope_fields(self.m, c, page))
+        return names.get(key)
+
+    def _skip_ambiguous(self, c: Container, key: str) -> None:
+        self._bump("skip:ambiguous-label")
+        self.skipped_ambiguous.append(f"{c.name}.{key}")
 
     def _state(self) -> dict:
         return copy.deepcopy(self.base)
@@ -432,6 +544,12 @@ class Generator:
             op["assets"] = assets
         return op
 
+    @staticmethod
+    def _image_op(t: WritableTarget, key: str, asset: dict) -> dict:
+        """`set_fields {values:{key: url}, assets:{key:{alt, srcset}}}` for a fixture asset (LAB.md §2 image row)."""
+        return {"op": "set_fields", "target": t.target(), "values": {key: asset["public_url"]},
+                "assets": {key: {"alt": asset.get("alt", ""), "srcset": asset.get("srcset")}}}
+
     # ── field cases ──────────────────────────────────────────────────────
     def field_cases(self, targets: Iterable[WritableTarget]) -> Iterator[Case]:
         gated_seen = 0
@@ -448,12 +566,17 @@ class Generator:
             if f.type == "select" and len(f.enum) < 2:
                 kind = "set_field"
             key = f.key
+            field_phrase = self._field_name(t.container, f.key, t.page)
+            if field_phrase is None:
+                self._skip_ambiguous(t.container, f.key)
+                continue
             if f.keyed_by:
                 ident = self.ctxf["locations"][0]["id"] if f.keyed_by == "location" else self.ctxf["categories"][0]["slug"]
                 key = re.sub(r"\{[a-zA-Z]+\}", ident, f.key)
                 if not keyed_supported(self.m, t.container, key):
                     self._bump("skip:keyed-not-resolvable")  # engine-gap (golden.test.js KNOWN_MISMATCHES)
                     continue
+                field_phrase = keyed_phrase(f, key, self.ctxf)  # the concrete location/category, by name and id
             where = t.section_id or t.page if t.container.kind in ("section", "page") else t.container.name
             cid = self._uid(f"{kind}/{t.container.name}/{where}/{key}")
             rng = case_rng(self.seed, cid)
@@ -472,25 +595,33 @@ class Generator:
                 continue
             meta = {"section_type": type_of_section(t.section_id) if t.section_id else None, "field_type": f.type,
                     "container_kind": t.container.kind, "gate_writes": gates, "gated": f.gated, "via_list": t.via_list,
-                    "mirror": bool(t.via_list), "keyed_by": f.keyed_by, "current": current}
+                    "mirror": bool(t.via_list), "keyed_by": f.keyed_by, "current": current, "field_phrase": field_phrase}
             where_phrase = container_phrase(t.container, state, rng, t.section_id, t.page)
-            field_phrase = _clean_label(f.label, f.key)
             if f.type == "image":
+                # Image writes are always `set_fields` + `assets` (the form the tool schema advertises and the model
+                # uses), also on a hero mirror key: the engine writes slides[0].<k> and the flat <k> for either form
+                # (verify.py collapses them) and the asset's alt/srcset ride along as companions. Before 2026-10-04
+                # the hero form was `edit_list update` WITHOUT assets, so the expected diff carried alt '' /
+                # srcset null while the model (correctly) wrote the asset's — every hero image case failed.
                 a = next(a for a in self.assets if a["public_url"] == value)
-                assets_member = {key: {"alt": a.get("alt", ""), "srcset": a.get("srcset")}}
-                op = self._set_op(t, key, value, assets_member if not t.via_list else None)
+                op = self._image_op(t, key, a)
                 request = render(rng.choice(IMAGE_TEMPLATES), where=where_phrase, field=field_phrase,
                                  value=value_phrase(f, value, rng, self.ctxf, self.assets))
                 yield self._case(cid, kind, t.target(), [key], state, t.page, request, [op], t.key, {**meta, "variant": "url", "asset_id": a["id"]})
-                # pick_asset variant: the model asks for the picker, then writes URL + alt/srcset
+                # pick_asset variant: the model asks for the picker, then writes URL + alt/srcset of EXACTLY the
+                # asset the collector's fake picker answers with (state.fixture_asset_for, keyed by this case id).
                 cid2 = self._uid(f"{kind}/{t.container.name}/{where}/{key}/pick")
+                picked = fixture_asset_for(self.assets, cid2, "image")
+                if picked["public_url"] == current:
+                    self._bump("skip:pick-same-as-current")
+                    continue
                 rng2 = case_rng(self.seed, cid2)
                 state2 = self._state()
                 self._open_gate(t.container, f, state2, t.section_id, t.page)
                 pick = {"op": "pick_asset", "purpose": f"{field_phrase} for {where_phrase}", "asset_type": "image"}
                 request2 = render(rng2.choice(PICK_TEMPLATES), where=where_phrase, field=field_phrase)
-                yield self._case(cid2, kind, t.target(), [key], state2, t.page, request2, [pick, op], t.key,
-                                 {**meta, "variant": "pick_asset", "asset_id": a["id"]})
+                yield self._case(cid2, kind, t.target(), [key], state2, t.page, request2, [pick, self._image_op(t, key, picked)], t.key,
+                                 {**meta, "variant": "pick_asset", "asset_id": picked["id"]})
                 continue
             op = self._set_op(t, key, value)
             if f.type == "bool":
@@ -514,6 +645,11 @@ class Generator:
             f = t.field
             if f.type in EXCLUDED_TYPES or f.read_only or f.keyed_by or t.via_list:
                 continue
+            field_phrase = self._field_name(t.container, f.key, t.page)
+            if field_phrase is None:
+                if f.has_unset or f.has_default:
+                    self._skip_ambiguous(t.container, f.key)
+                continue
             for mode, op_name, has in (("unset", "reset", f.has_unset), ("default", "restore_default", f.has_default)):
                 if not has:
                     continue
@@ -532,9 +668,10 @@ class Generator:
                 write_values(self.m, t.container, state, {f.key: seeded}, section_id=t.section_id, page=t.page)
                 op = {"op": op_name, "target": t.target(), "keys": [f.key]}
                 where_phrase = container_phrase(t.container, state, rng, t.section_id, t.page)
-                request = render(rng.choice(RESET_TEMPLATES if mode == "unset" else RESTORE_TEMPLATES), where=where_phrase, field=_clean_label(f.label, f.key))
+                request = render(rng.choice(RESET_TEMPLATES if mode == "unset" else RESTORE_TEMPLATES), where=where_phrase, field=field_phrase)
                 meta = {"section_type": type_of_section(t.section_id) if t.section_id else None, "field_type": f.type, "mode": mode,
-                        "container_kind": t.container.kind, "gate_writes": gates, "gated": f.gated, "seeded": seeded, "expected_leaf": expected_leaf}
+                        "container_kind": t.container.kind, "gate_writes": gates, "gated": f.gated, "seeded": seeded, "expected_leaf": expected_leaf,
+                        "field_phrase": field_phrase}
                 yield self._case(cid, "reset", t.target(), [f.key], state, t.page, request, [op], t.key, meta)
 
     # ── lists ────────────────────────────────────────────────────────────
@@ -591,9 +728,9 @@ class Generator:
             cur = seeded
         return path, cur
 
-    def _add_item(self, l: ListSpec, rng: random.Random):
+    def _add_item(self, l: ListSpec, rng: random.Random, item_names: dict[str, str | None] | None = None):
         """The `item` an add carries: a scalar for scalar lists (an asset url for image lists),
-        else one text-ish item field filled. Returns (item, request suffix)."""
+        else one text-ish item field filled (named by its unambiguous phrase). Returns (item, request suffix)."""
         if l.scalar:
             f = l.item_fields["value"]
             if f.type == "image":
@@ -601,12 +738,13 @@ class Generator:
                 return a["public_url"], f"using the image '{a['alt']}'" if a.get("alt") else ""
             text = rng.choice(TEXT_BANK)
             return text, f"with the text '{text}'"
+        names = item_names if item_names is not None else name_fields(l.item_fields)
         for f in l.item_fields.values():
-            if f.read_only or f.type not in ("text", "richtext"):
+            if f.read_only or f.type not in ("text", "richtext") or names.get(f.key) is None:
                 continue
             text = rng.choice(TEXT_BANK)
             value = f"<p>{text}</p>" if f.type == "richtext" else text
-            return {f.key: value}, f"with the {_clean_label(f.label, f.key)} '{text}'"
+            return {f.key: value}, f"with the {names[f.key]} '{text}'"
         return None, ""
 
     def _item_noun(self, l: ListSpec) -> str:
@@ -637,15 +775,23 @@ class Generator:
                 base_meta = {"section_type": type_of_section(section_id) if section_id else None, "list": l.key, "list_ops": l.ops,
                              "orders": l.orders, "item_ref": l.item_ref, "container_kind": c.kind, "depth": l.depth}
 
+                parent_list = c.lists.get(l.key.split("[]")[0]) if l.depth == 2 else None
+                item_names = name_fields(l.item_fields)  # the ambiguity guard over the row's fields
+
                 def prep(cid: str) -> tuple[random.Random, dict, str, list]:
                     rng = case_rng(self.seed, cid)
                     state = self._state()
-                    if l.depth == 2:
-                        parent_list = c.lists.get(l.key.split("[]")[0])
-                        if parent_list:
-                            self._ensure_list(c, parent_list, state, section_id, page, rng, [], 1)
+                    if parent_list:
+                        self._ensure_list(c, parent_list, state, section_id, page, rng, [], 1)
                     path, cur = self._ensure_list(c, l, state, section_id, page, rng, parents)
                     return rng, state, path, cur
+
+                def where_phrase(state: dict, rng: random.Random) -> str:
+                    """A nested list names its parent row too: `the first footer column of the footer`."""
+                    base = container_phrase(c, state, rng, section_id, page)
+                    if l.depth == 2:
+                        return f"the {_ordinal(parents[0])} {self._item_noun(parent_list) if parent_list else 'item'} of {base}"
+                    return base
 
                 if "add" in l.ops:
                     cid = self._uid(f"list_add/{c.name}/{where}/{l.key}")
@@ -653,10 +799,10 @@ class Generator:
                     op = {"op": "edit_list", "target": target, "list": l.key, "action": "add"}
                     if l.depth == 2:
                         op["index"] = parents
-                    item_value, item_desc = self._add_item(l, rng)
+                    item_value, item_desc = self._add_item(l, rng, item_names)
                     if item_value is not None:
                         op["item"] = item_value
-                    req = render(rng.choice(LIST_ADD_TEMPLATES), where=container_phrase(c, state, rng, section_id, page), item=noun)
+                    req = render(rng.choice(LIST_ADD_TEMPLATES), where=where_phrase(state, rng), item=noun)
                     if item_desc:
                         req = req.rstrip(".") + f" {item_desc}."
                     yield self._case(cid, "list_add", target, [l.key], state, page, req, [op], hold_key, {**base_meta, "len_before": len(cur), "item": item_value})
@@ -665,7 +811,7 @@ class Generator:
                     rng, state, path, cur = prep(cid)
                     idx = len(cur) - 1
                     op = {"op": "edit_list", "target": target, "list": l.key, "action": "remove", "index": parents + [idx] if l.depth == 2 else idx}
-                    req = render(rng.choice(LIST_REMOVE_TEMPLATES), where=container_phrase(c, state, rng, section_id, page), item=noun, ordinal=_ordinal(idx) if idx < 6 else "last")
+                    req = render(rng.choice(LIST_REMOVE_TEMPLATES), where=where_phrase(state, rng), item=noun, ordinal=_ordinal(idx) if idx < 6 else "last")
                     yield self._case(cid, "list_remove", target, [l.key], state, page, req, [op], hold_key, {**base_meta, "index": idx, "len_before": len(cur)})
                 if "reorder" in l.ops:
                     cid = self._uid(f"list_reorder/{c.name}/{where}/{l.key}")
@@ -679,7 +825,7 @@ class Generator:
                     op = {"op": "edit_list", "target": target, "list": l.key, "action": "reorder", "order": order}
                     if l.depth == 2:
                         op["index"] = parents
-                    req = render(rng.choice(LIST_REORDER_TEMPLATES), where=container_phrase(c, state, rng, section_id, page), item=noun, items=noun + "s")
+                    req = render(rng.choice(LIST_REORDER_TEMPLATES), where=where_phrase(state, rng), item=noun, items=noun + "s")
                     yield self._case(cid, "list_reorder", target, [l.key], state, page, req, [op], hold_key, {**base_meta, "order": order})
                 # update: one item field (always allowed), skipping images / derived / json
                 upd_fields = [f for f in l.item_fields.values() if not f.read_only and f.type not in ("image", "json") and f.key != "value"]
@@ -688,6 +834,10 @@ class Generator:
                     upd_fields = []
                 if upd_fields and not l.scalar:
                     for f in upd_fields[:3]:
+                        field_phrase = item_names.get(f.key)
+                        if field_phrase is None:
+                            self._skip_ambiguous(c, f"{l.key}[].{f.key}")
+                            continue
                         cid = self._uid(f"list_update/{c.name}/{where}/{l.key}/{f.key}")
                         rng, state, path, cur = prep(cid)
                         idx = 1 if len(cur) > 1 else 0
@@ -699,12 +849,12 @@ class Generator:
                         op = {"op": "edit_list", "target": target, "list": l.key, "action": "update", "index": parents + [idx] if l.depth == 2 else idx, "item": {f.key: value}}
                         if f.type == "bool":
                             tmpl = rng.choice(TOGGLE_ON_TEMPLATES if value else TOGGLE_OFF_TEMPLATES)
-                            req = render(tmpl, where=f"the {_ordinal(idx)} {noun} of {container_phrase(c, state, rng, section_id, page)}", field=_clean_label(f.label, f.key))
+                            req = render(tmpl, where=f"the {_ordinal(idx)} {noun} of {where_phrase(state, rng)}", field=field_phrase)
                         else:
-                            req = render(rng.choice(LIST_UPDATE_TEMPLATES), where=container_phrase(c, state, rng, section_id, page), item=noun,
-                                         ordinal=_ordinal(idx), field=_clean_label(f.label, f.key), value=value_phrase(f, value, rng, self.ctxf, self.assets))
+                            req = render(rng.choice(LIST_UPDATE_TEMPLATES), where=where_phrase(state, rng), item=noun,
+                                         ordinal=_ordinal(idx), field=field_phrase, value=value_phrase(f, value, rng, self.ctxf, self.assets))
                         yield self._case(cid, "list_update", target, [f"{l.key}[].{f.key}"], state, page, req, [op], f"{hold_key}[].{f.key}",
-                                         {**base_meta, "index": idx, "field_type": f.type, "value": value})
+                                         {**base_meta, "index": idx, "field_type": f.type, "value": value, "field_phrase": field_phrase})
 
     def section_list_cases(self, page: str = "home") -> Iterator[Case]:
         """The page's own `sections` list: add / remove / reorder / duplicate / update{enabled}."""
@@ -782,7 +932,8 @@ class Generator:
     # ── multi ────────────────────────────────────────────────────────────
     def multi_cases(self, targets: list[WritableTarget], n: int = 60) -> Iterator[Case]:
         simple = [t for t in targets if t.container.kind == "section" and not t.via_list and not t.field.keyed_by and not t.field.gated
-                  and t.field.type in ("text", "bool", "enum", "range", "number", "color") and not t.field.read_only]
+                  and t.field.type in ("text", "bool", "enum", "range", "number", "color") and not t.field.read_only
+                  and self._field_name(t.container, t.field.key, t.page) is not None]  # ambiguous labels never join a multi
         by_section: dict[str, list[WritableTarget]] = {}
         for t in simple:
             by_section.setdefault(t.section_id or "", []).append(t)
@@ -808,7 +959,7 @@ class Generator:
                 keys.append(f"{sid}.{t.field.key}")
                 hold_keys.append(t.key)
                 where = section_phrase(state, sid, rng, t.page)
-                fl = _clean_label(t.field.label, t.field.key)
+                fl = self._field_name(t.container, t.field.key, t.page)
                 if t.field.type == "bool":
                     parts.append(("turn on " if value else "turn off ") + f"{fl} for {where}")
                 else:
@@ -831,16 +982,20 @@ class Generator:
             if len(same) < 2:
                 continue
             c = self.m.section(type_id)
-            fields = [f for f in c.fields.values() if f.type in ("text", "range", "enum", "color") and not f.gated and not f.read_only][:30]
+            # deliberately ambiguous about the SECTION (type named, several rows); never about the field
+            fields = [f for f in c.fields.values() if f.type in ("text", "range", "enum", "color") and not f.gated and not f.read_only
+                      and self._field_name(c, f.key) is not None][:30]
             for f in fields:
                 cid = self._uid(f"clarify/{type_id}/{f.key}")
                 rng = case_rng(self.seed, cid)
                 state = self._state()
                 value = value_for(f, rng, ctxf=self.ctxf, assets=self.assets)
                 vp = value_phrase(f, value, rng, self.ctxf, self.assets)
-                req = render(rng.choice(CLARIFY_TEMPLATES), label=SECTION_LABELS.get(type_id, type_id), field=_clean_label(f.label, f.key), value=vp)
+                field_phrase = self._field_name(c, f.key)
+                req = render(rng.choice(CLARIFY_TEMPLATES), label=SECTION_LABELS.get(type_id, type_id), field=field_phrase, value=vp)
                 yield self._case(cid, "clarify", None, [f.key], state, "home", req, [], f"clarify.{type_id}.{f.key}",
-                                 {"section_type": type_id, "field_type": f.type, "candidates": [s["id"] for s in same], "container_kind": "section"},
+                                 {"section_type": type_id, "field_type": f.type, "candidates": [s["id"] for s in same], "container_kind": "section",
+                                  "field_phrase": field_phrase},
                                  candidates=[s["id"] for s in same])
 
     # ── unsupported ──────────────────────────────────────────────────────

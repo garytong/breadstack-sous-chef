@@ -400,3 +400,187 @@ def test_verify_cli_warns_on_a_stale_case(tmp_path, capsys):
         V.RecordedEngine = orig
     err = capsys.readouterr().err
     assert "measured with another engine" in err and "cases remeasure" in err
+
+
+# --- images (verify-2): companions, the two-way hero mirror, pick_asset substitution — on the real warm-up rows ---------
+
+RECORDED_IMAGES = FIX / "engine" / "recorded-images.json"
+IMAGE_FIXTURES = ["image.heroBanner.backgroundImage", "image.featuredCategories.taglineImage.pick"]
+REPO = LAB.parent
+
+
+@pytest.fixture(scope="module")
+def recorded_images():
+    return json.loads(RECORDED_IMAGES.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def image_engine():
+    e = V.RecordedEngine(RECORDED)
+    e.runs.update(V.RecordedEngine(RECORDED_IMAGES).runs)
+    return e
+
+
+def with_ops(row, ops):
+    """The collector row with its one browser tool.call carrying `ops[0]` instead (same seq slot, same results)."""
+    row = copy.deepcopy(row)
+    calls = [e for e in row["events"] if e.get("event") == "tool.call" and e["data"].get("name") not in V.NON_OPS]
+    assert len(calls) == len(ops) == 1
+    calls[0]["data"]["name"] = ops[0]["op"]
+    calls[0]["data"]["input"] = {k: v for k, v in ops[0].items() if k != "op"}
+    row["ops"] = ops
+    return row
+
+
+@pytest.mark.parametrize("name", IMAGE_FIXTURES)
+def test_the_real_warm_up_rows_pass_under_verify_2(name, image_engine):
+    fx = fixture(name)
+    assert fx["schema"] == 2 and fx["row"]["verdict"] == "missing_writes"  # verify-1's live verdict, kept as the finding
+    v = V.verify(fx["row"], fx["case"], image_engine)
+    assert v.verdict == fx["expected_verdict"] == "pass", (v.reasons, v.expected_diff, v.actual_diff)
+    assert v.reasons == fx["expected_reasons"] == [] and v.passed
+    assert v.info == fx["expected_info"]
+    assert v.companions and all(V.companion_of(p) for p in v.companions)
+    d = v.to_dict()
+    assert d["info"] == v.info and d["companions"] == v.companions and d["rule_version"] == "verify-2" == V.RULE_VERSION
+
+
+def test_f1_hero_image_companions_and_both_mirror_directions(image_engine, recorded_images):
+    fx = fixture(IMAGE_FIXTURES[0])
+    v = V.verify(fx["row"], fx["case"], image_engine)
+    slide = "homeSections[0].settings.slides[0].backgroundImage"
+    assert v.expected_diff[slide] == v.actual_diff[slide] == '"BREADSTACK_CDN/lab/hero-field-1600x900.webp"'
+    # the flat mirror collapsed on both sides, the nested `backgroundImageSrcSet.800` leaves included
+    assert not any(".settings.backgroundImage" in p for p in list(v.expected_diff) + list(v.actual_diff))
+    assert v.companions == [f"{slide}Alt", f"{slide}SrcSet.1600", f"{slide}SrcSet.800"]
+    # the OLD expectation (edit_list update WITHOUT assets → alt '' / srcset null) passes as well: only the companions differ
+    old = dict(fx["case"], expected={"ops": fx["case"]["expected"]["ops"],
+                                     "diff": recorded_images["runs"]["P_hero_image_no_assets"]["output"]["changes"][0]["diff"]})
+    v_old = V.verify(fx["row"], old, image_engine)
+    assert v_old.verdict == "pass" and v_old.info == ["companions"] and f"{slide}SrcSet" in v_old.companions
+
+
+def test_a_different_image_url_is_wrong_value_not_missing_or_extra(image_engine, recorded_images):
+    fx = fixture(IMAGE_FIXTURES[0])
+    row = with_ops(fx["row"], recorded_images["runs"]["W_hero_image_wrong_asset"]["ops"])  # the logo, not the field
+    v = V.verify(row, fx["case"], image_engine)
+    assert v.verdict == "wrong_value" and v.reasons == ["wrong_value"]
+    assert "companions" in v.info  # srcset widths 160/800 vs 800/1600 are set aside; the URL decides
+
+
+def test_a_missing_image_primary_is_missing_writes(image_engine, recorded_images):
+    fx = fixture(IMAGE_FIXTURES[0])
+    row = with_ops(fx["row"], recorded_images["runs"]["M_hero_headline_instead_of_image"]["ops"])
+    v = V.verify(row, fx["case"], image_engine)
+    assert v.verdict == "missing_writes" and v.reasons == ["missing_writes", "extra_writes"]
+    assert v.companions == [] and v.info == []  # no primary on both sides: nothing is set aside
+
+
+def test_set_fields_and_edit_list_update_slides_0_with_assets_are_the_same_write(recorded_images):
+    """Measured 2026-10-04: identical leaves for either op shape, companions and mirror included (LAB.md §3)."""
+    a = V.normalise(V.leaves_of(recorded_images["runs"]["F1_hero_image_set_fields"]["output"]))
+    b = V.normalise(V.leaves_of(recorded_images["runs"]["L_hero_image_edit_list_with_assets"]["output"]))
+    s = "homeSections[0].settings.slides[0].backgroundImage"
+    assert a == b and set(a) == {s, s + "Alt", s + "SrcSet.800", s + "SrcSet.1600"}
+
+
+def test_align_mirror_moves_a_flat_only_hero_write_onto_the_slide_path():
+    exp = {"homeSections[0].settings.slides[0].headline": '"a"'}
+    act = {"homeSections[0].settings.headline": '"a"'}
+    assert V.align_mirror(exp, act) == (exp, exp)
+    assert V.align_mirror(act, exp) == (exp, exp)  # the other direction
+    both = {"homeSections[0].settings.slides[0].headline": '"a"', "homeSections[0].settings.headline": '"b"'}
+    e3, a3 = V.align_mirror(both, exp)
+    assert len(e3) == 2 and a3 == exp  # a differing slide value keeps both paths: a real disagreement
+    other = {"homeSections[1].settings.headline": '"a"', "homeSections[0].settings.paddingY": "8", "homeSections[0].settings.slides[1].headline": '"c"'}
+    assert V.align_mirror(other, exp)[0] == other  # another section, a key never seen under slides[0], another slide
+    nested = {"homeSections[0].settings.bgSrcSet.800": '"x"'}
+    e5, _ = V.align_mirror(nested, {"homeSections[0].settings.slides[0].bgSrcSet.1600": '"y"'})
+    assert e5 == {"homeSections[0].settings.slides[0].bgSrcSet.800": '"x"'}  # nested companions follow their first key
+
+
+@pytest.mark.parametrize("path, primary", [
+    ("homeSections[1].settings.bgImageAlt", "homeSections[1].settings.bgImage"),
+    ("homeSections[1].settings.bgImageSrcSet", "homeSections[1].settings.bgImage"),
+    ("homeSections[1].settings.bgImageSrcSet.480w", "homeSections[1].settings.bgImage"),
+    ("homeSections[0].settings.slides[0].backgroundImageMobileSrcSet.800", "homeSections[0].settings.slides[0].backgroundImageMobile"),
+    ("homeSections[2].settings.imagesAlt[0]", "homeSections[2].settings.images[0]"),
+    ("homeSections[2].settings.imagesSrcSet[1].600", "homeSections[2].settings.images[1]"),
+    ("homeSections[1].settings.bgImage", None),
+    ("homeSections[1].settings.headline", None),
+    ("globalSettings.announcementBar.show", None),
+])
+def test_companion_of(path, primary):
+    assert V.companion_of(path) == primary
+
+
+def test_set_aside_companions_needs_the_primary_on_both_sides():
+    p = "homeSections[1].settings.bgImage"
+    exp = {p: '"u"', p + "Alt": '""', p + "SrcSet": "null"}
+    act = {p: '"u"', p + "Alt": '"Oven"', p + "SrcSet.480w": '"x"'}
+    e, a, aside = V.set_aside_companions(exp, act)
+    assert e == a == {p: '"u"'} and aside == [p + "Alt", p + "SrcSet", p + "SrcSet.480w"] and V.compare(e, a) == []
+    e2, _, aside2 = V.set_aside_companions(exp, {"other": "1"})
+    assert aside2 == [] and e2 == exp  # primary on one side only: the companions stay and count
+    e3, a3, _ = V.set_aside_companions(exp, dict(act, **{p: '"v"'}))
+    assert V.compare(e3, a3) == ["wrong_value"]  # a differing primary is wrong_value on the URL
+
+
+def test_substitute_picked_and_picked_assets_of():
+    ops = [{"op": "set_fields", "target": {"kind": "section", "page": "home", "sectionId": "s"},
+            "values": {"img": "https://cdn/a.webp", "title": "t"}, "assets": {"img": {"alt": "A", "srcset": {"1": "a1"}}}},
+           {"op": "set_fields", "target": {"kind": "section", "page": "home", "sectionId": "s"}, "values": {"other": 1}}]
+    picked = {"public_url": "https://cdn/b.webp", "srcset": {"2": "b2"}}  # no alt: the picker omits an empty one
+    out, changed = V.substitute_picked(ops, picked)
+    assert changed and out[0]["values"] == {"img": "https://cdn/b.webp", "title": "t"}
+    assert out[0]["assets"] == {"img": {"alt": "", "srcset": {"2": "b2"}}} and out[1] == ops[1]
+    assert ops[0]["values"]["img"] == "https://cdn/a.webp"  # the input is untouched
+    same, changed2 = V.substitute_picked(ops, {"public_url": "https://cdn/a.webp", "alt": "A", "srcset": {"1": "a1"}})
+    assert not changed2 and same == ops
+    events = [{"event": "turn.suspended", "seq": 1, "data": {"toolCallId": "p", "assetType": "image"}},
+              {"event": "tool.result", "seq": 2, "data": {"toolCallId": "p", "ok": True, "asset": picked, "for_seq": 1}},
+              {"event": "tool.result", "seq": 5, "data": {"toolCallId": "c", "ok": True, "written": ["x"], "for_seq": 3}}]
+    assert V.picked_assets_of(events) == [picked] and V.picked_assets_of({"events": events}) == [picked]
+    assert V.picked_assets_of({"events": [], "picked_assets": [picked]}) == [picked] and V.picked_assets_of([]) == []
+
+
+def test_a_pick_case_follows_the_picked_asset(image_engine):
+    fx = fixture(IMAGE_FIXTURES[1])
+    v = V.verify(fx["row"], fx["case"], image_engine)
+    assert v.verdict == "pass" and v.info == ["pick_substituted", "companions"]
+    assert v.expected_diff["homeSections[1].settings.taglineImage"] == '"BREADSTACK_CDN/lab/product-jar-800x800.webp"'
+    assert fx["case"]["expected"]["diff"][0]["after"] == "BREADSTACK_CDN/lab/paper-texture-1200x1200.webp"  # the generator's asset
+    # no picked asset in the trace → the case's expectation stands: texture expected, product-jar written → wrong_value
+    bare = copy.deepcopy(fx["row"])
+    bare["events"] = [e for e in bare["events"] if not (e.get("event") == "tool.result" and "asset" in e["data"])]
+    bare["picked_assets"] = []
+    v2 = V.verify(bare, fx["case"], image_engine)
+    assert v2.verdict == "wrong_value" and v2.info == ["companions"]
+    # a re-measure the engine refuses leaves the case's diff in place and says so
+
+    class Refusing(V.RecordedEngine):
+        refused = False
+
+        def run(self, state, ops, ctx):
+            if not self.refused:
+                self.refused = True
+                return {"ok": False, "results": [{"ok": False, "error": {"code": "E_VALUE"}}], "changes": []}
+            return super().run(state, ops, ctx)
+
+    eng = Refusing(RECORDED)
+    eng.runs.update(V.RecordedEngine(RECORDED_IMAGES).runs)
+    v3 = V.verify(fx["row"], fx["case"], eng)
+    assert v3.info == ["pick_remeasure_failed", "companions"] and v3.verdict == "wrong_value"
+
+
+@pytest.mark.skipif(not ENGINE_REQUIRED and not (ENGINE and Path(ENGINE).exists() and shutil.which("node")),
+                    reason="needs ENGINE=…/sousChef/ops/headless.mjs and node (CI: SOUS_CHEF_LAB_REQUIRE_ENGINE=1 fails instead)")
+@pytest.mark.parametrize("name", IMAGE_FIXTURES)
+def test_the_real_engine_agrees_on_the_image_fixtures(name):
+    fx = fixture(name)
+    manifest = REPO / fx["manifest"]  # the int manifest these rows were collected under (not the fixture snapshot)
+    if not manifest.exists():
+        pytest.skip(f"needs {fx['manifest']}")
+    from souschef_lab.engine import Engine
+    v = V.verify(fx["row"], fx["case"], Engine(ENGINE, manifest_path=manifest, memory_cache=False))
+    assert v.verdict == "pass" and v.info == fx["expected_info"], (v.reasons, v.expected_diff, v.actual_diff)

@@ -147,20 +147,41 @@ def test_image_cases_have_assets_and_pick_variant(by_kind):
     url = [c for c in by_kind["image"] if c.meta["variant"] == "url"]
     pick = [c for c in by_kind["image"] if c.meta["variant"] == "pick_asset"]
     assert len(url) == len(pick) > 0
-    for c in url:
-        op = c.expected["ops"][0]
-        if op["op"] == "set_fields":
-            (key, val), = op["values"].items()
-            assert val.startswith("https://cdn.int.breadstack.io/gal/")
-            assert set(op["assets"][key]) == {"alt", "srcset"}
+    assets = {a["public_url"]: a for a in S.load_assets_fixture()}
+    for c in url + pick:
+        # Every image write — the hero's mirrored backgroundImage included — is `set_fields` + the fixture asset's
+        # alt/srcset: what the model writes (warm-up #2, 2026-10-04), and what the engine's companions need.
+        op = c.expected["ops"][-1]
+        assert op["op"] == "set_fields", c.id
+        (key, val), = op["values"].items()
+        assert val.startswith("https://cdn.int.breadstack.io/gal/")
+        a = assets[val]
+        assert op["assets"] == {key: {"alt": a.get("alt", ""), "srcset": a.get("srcset")}}
+        assert c.meta["asset_id"] == a["id"]
     for c in pick:
         assert c.expected["ops"][0]["op"] == "pick_asset" and c.expected["ops"][0]["asset_type"] == "image"
-        assert c.expected["ops"][1]["op"] in ("set_fields", "edit_list")
         assert c.browser_ops == c.expected["ops"][1:]
+        # exactly the asset the collector's fake picker answers this case with
+        picked = S.fixture_asset_for(S.load_assets_fixture(), c.id, "image")
+        assert c.expected["ops"][1]["values"] == {c.fields[0]: picked["public_url"]}
+    hero_images = [c for c in url if c.meta.get("mirror")]
+    assert hero_images, "the hero's backgroundImage is an image case"
+
+
+def test_the_picker_choice_is_a_function_of_the_case_id_alone():
+    assets = S.load_assets_fixture()
+    a = S.fixture_asset_for(assets, "image/x/y/z/pick")
+    assert a == S.fixture_asset_for(assets, "image/x/y/z/pick") and a in assets
+    assert {S.fixture_asset_for(assets, f"c{i}")["id"] for i in range(40)} == {x["id"] for x in assets}  # all reachable
+    video = [{"public_url": "v.mp4", "asset_type": "video"}] + assets
+    assert S.fixture_asset_for(video, "c1", "video")["public_url"] == "v.mp4"
+    assert S.fixture_asset_for(video, "c1", "image")["public_url"] != "v.mp4"
+    with pytest.raises(ValueError):
+        S.fixture_asset_for([], "c1")
 
 
 def test_hero_mirror_keys_use_edit_list_update_slide_0(cases):
-    mirror = [c for c in cases if c.meta.get("mirror")]
+    mirror = [c for c in cases if c.meta.get("mirror") and c.kind != "image"]
     assert mirror
     for c in mirror:
         op = c.expected["ops"][-1]
@@ -402,3 +423,111 @@ def test_remeasure_cli_rewrites_in_place(tmp_path, cases, monkeypatch):
     assert C.main(["remeasure", "--cases", str(path), "--workers", "1"]) == 0
     rows = list(C.read_jsonl(path))
     assert len(rows) == 2 and all(r["engine_fingerprint"] == "fp-2" and r["expected"]["diff"] == [{"path": "x", "after": 2}] for r in rows)
+
+
+# ── unambiguous requests (int-run1 finding B, LAB.md §2) ────────────────────
+
+def test_name_fields_qualifies_shared_labels_or_refuses(m):
+    cb = C.name_fields(C.scope_fields(m, m.section("contentBlock")))
+    assert cb["title"] == "Headline text" and cb["titleColor"] == "Headline color"  # one label, two types → type word
+    assert cb["taglineFontSize"] == "Tagline › Text size in pixels"  # the group is part of the label, kept verbatim
+    assert cb["bgImageMobile"] == "Background Image (Mobile)"  # the parenthetical is what tells it from 'Background Image'
+    assert cb["textAlign"] is None and cb["splitContentAlign"] is None and cb["contentTextAlign"] is None  # 3 enums, 1 label
+    co = C.name_fields(C.scope_fields(m, m.page("checkout")))
+    assert co["sectionStyle.color"] == "Color (sectionStyle)" and co["labelStyle.color"] == "Color (labelStyle)"  # dotted parent
+    ac = C.name_fields(C.scope_fields(m, m.page("account")))
+    assert ac["orders.heading.text"] == "Heading text (orders.heading)" and ac["orders.heading.color"] == "Heading color (orders.heading)"
+    pd = C.name_fields(C.scope_fields(m, m.page("product-details")))
+    assert pd["globalSettings.cardTagsChipColor"] is None  # 'Text' × 7 under one parent: int-run1 "Remove the text from the product-details page"
+    assert pd["productDetail.reviewTextColor"] == "Body Text Color"  # int-run1 asked for "body text color"
+    hero = C.scope_fields(m, m.section("heroBanner"))
+    assert "headline" in hero and "paddingY" in hero  # mirror item fields join the hero's own
+    for c in m.containers():
+        handed = [v.lower() for v in C.name_fields(C.scope_fields(m, c)).values() if v]
+        assert len(handed) == len(set(handed)), c.name  # every phrase handed out is unique in its scope
+
+
+def test_ambiguous_fields_are_skipped_not_asked_for(gen, cases):
+    assert gen.stats["skip:ambiguous-label"] > 0
+    skipped = set(gen.skipped_ambiguous)
+    assert {"contentBlock.splitContentAlign", "product-details.globalSettings.cardTagsChipColor", "productCarousel.buttonText"} <= skipped
+    positive = [c for c in cases if c.kind in C.SET_KINDS + ("reset", "list_update", "clarify") and c.meta.get("list") != "sections"]
+    assert not any(c.fields == ["splitContentAlign"] for c in positive)
+    for c in positive:
+        assert c.meta["field_phrase"] and c.meta["field_phrase"] in c.request, (c.id, c.request)
+    assert all(c.meta["field_phrase"] for c in cases if c.kind == "image")  # both variants carry the phrase
+
+
+def test_repeated_sections_are_named_by_id_and_shared_titles_never_used(gen, cases):
+    rows = S.sections_of(gen.base, "home")
+    by_type = {}
+    for r in rows:
+        by_type.setdefault(S.type_of_section(r["id"]), []).append(r["id"])
+    repeated = {sid for ids in by_type.values() if len(ids) > 1 for sid in ids}
+    assert {"contentBlock-3", "contentBlock-features", "productCarousel-2"} <= repeated
+    titles = {}
+    for r in rows:
+        titles[S.section_title(r)] = titles.get(S.section_title(r), 0) + 1
+    shared = {t for t, n in titles.items() if t and n > 1}
+    assert shared, "the fixture state has two sections with one title (contentBlock-features / -icons)"
+    for c in cases:
+        sid = (c.target or {}).get("sectionId")
+        if c.kind == "multi":
+            assert all(s in c.request for s in c.meta["targets"] if s in repeated), c.request
+        elif sid in repeated:
+            assert sid in c.request, (c.id, c.request)
+        assert not any(f"titled '{t}'" in c.request or f"the '{t}' section" in c.request for t in shared), c.request
+
+
+def test_keyed_requests_name_the_location_by_name_and_id(cases):
+    keyed = [c for c in cases if c.meta.get("keyed_by")]
+    assert keyed
+    locs = {l["id"]: l["name"] for l in S.load_context_fixture()["locations"]}
+    for c in keyed:
+        ident = c.fields[0].split(".")[1]
+        assert ident in c.request and locs[ident] in c.request, c.request
+        assert c.meta["field_phrase"] == C.keyed_phrase(_container(M.load(FIXTURES_DIR / "manifest.snapshot.json"), c.expected["ops"][0]).fields[c.fields[0].replace(ident, "{locationId}")], c.fields[0], S.load_context_fixture())
+
+
+def test_page_requests_name_the_exact_page_id(cases):
+    seen = 0
+    for c in cases:
+        t = c.target or {}
+        if t.get("kind") == "page" and c.kind in C.SET_KINDS + ("reset",):
+            seen += 1
+            low = c.request.lower()
+            assert f"the {t['page']} page" in low or f"the '{t['page']}' page" in low, c.request
+    assert seen > 100
+
+
+def test_reset_requests_say_reset_or_clear_plus_the_label(by_kind):
+    for c in by_kind["reset"]:
+        low = c.request.lower()
+        assert c.meta["field_phrase"].lower() in low, c.request
+        if c.meta["mode"] == "unset":
+            assert ("reset" in low or "clear" in low) and "remove" not in low and "unset" not in low, c.request
+        else:
+            assert "default" in low, c.request
+
+
+def test_nested_list_requests_name_the_parent_row(by_kind):
+    nested = [c for kind in ("list_add", "list_remove", "list_reorder", "list_update") for c in by_kind[kind] if c.meta.get("depth") == 2]
+    assert nested
+    for c in nested:
+        assert "the first " in c.request.lower(), c.request  # `the first footer column of the footer`, `the first slide of the hero banner`
+
+
+def test_label_text_and_candidates():
+    f = M.Field("taglineFontSize", {"label": "Tagline › Text size in pixels", "type": "number"})
+    assert C.label_text(f) == "Tagline › Text size in pixels"
+    assert C.phrase_candidates(f) == ["Tagline › Text size in pixels", "Tagline › Text size in pixels size"]
+    nested = M.Field("sectionStyle.color", {"label": "Color", "type": "color"})
+    assert C.phrase_candidates(nested) == ["Color", "Color color", "Color (sectionStyle)", "Color color (sectionStyle)"]
+    placeholder = M.Field("pageHeaderHiddenPages.our-story", {"label": "Hide {item}", "type": "bool"})
+    assert C.label_text(placeholder) == "Hide our-story"  # `{item}` takes the key's words (the UI label)
+    assert C.label_text(M.Field("overlayColor", {"label": "Overlay {item}", "type": "color"})) == "Overlay color"
+    assert C.label_text(M.Field("bgColor", {"type": "color"})) == "bg color"
+    two = {"a": M.Field("a", {"label": "Title", "type": "text"}), "b": M.Field("b", {"label": "Title", "type": "text"})}
+    assert C.name_fields(two) == {"a": None, "b": None}
+    three = {**two, "c": M.Field("c", {"label": "Title", "type": "color"})}
+    assert C.name_fields(three)["c"] == "Title color"

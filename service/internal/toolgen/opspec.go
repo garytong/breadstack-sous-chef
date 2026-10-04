@@ -72,6 +72,14 @@ func arr(desc string, items map[string]any) map[string]any {
 	return map[string]any{"type": "array", "items": items, "description": desc}
 }
 
+// nonEmptyArr is an array with minItems 1 — the only array constraint strict
+// mode accepts (minItems 0 or 1; TestStrictSchemasObeyStructuredOutputRules).
+func nonEmptyArr(desc string, items map[string]any) map[string]any {
+	a := arr(desc, items)
+	a["minItems"] = 1
+	return a
+}
+
 func anyOf(desc string, options ...map[string]any) map[string]any {
 	opts := make([]any, len(options))
 	for i, o := range options {
@@ -125,28 +133,34 @@ var opSpecs = map[string]opSpec{
 			}, "target", "list", "action")
 		},
 	},
+	// reset / restore_default REQUIRE keys (README §2): the engine's keyless
+	// form clears every field of the target (a whole section, page or
+	// panel), and the first int collection showed the model reaching for it
+	// by default and then apologising for the damage (289 of 300 cases). The
+	// keyless shape is therefore not offered to the model at all, and the
+	// loop refuses a call that lacks keys anyway (ValidateBrowserOp).
 	Reset: {
 		runs: RunsBrowser, strict: true,
 		desc: func(ctx schemaContext) string {
-			return "Clear fields back to their unset state (the editor's ↺ button): each key is written as its manifest unset_value — NOT the template default (use restore_default for that). Without keys the WHOLE target is cleared (a section loses every setting; a page loses its options including published), so always pass keys unless the merchant clearly asked to clear everything."
+			return "Clear SPECIFIC fields back to their unset state (the editor's ↺ button): exactly the keys you list are written as their manifest unset_value — nothing else on the target changes, and NOT the template default (use restore_default for that). Clearing a whole target (every field of a section, page or panel) is not available: list every key you mean, confirmed via lookup_fields, one call per target. A call without keys is refused (E_OP) and nothing is cleared."
 		},
 		schema: func(ctx schemaContext) map[string]any {
 			return obj("", map[string]any{
 				"target": targetSchema(ctx),
-				"keys":   arr("Field keys to clear. Omit only to clear the whole target.", str("")),
-			}, "target")
+				"keys":   nonEmptyArr("The field keys to clear — only these are touched. At least one; every key must be a field of the target (dotted keyed keys allowed).", str("")),
+			}, "target", "keys")
 		},
 	},
 	RestoreDefault: {
 		runs: RunsBrowser, strict: true,
 		desc: func(ctx schemaContext) string {
-			return "Put fields back to the template's default value (the manifest `default`), going through the normal write path (companions, mirror, aliases). A key with no default is cleared instead. Without keys every field of the target is restored — pass keys unless the merchant asked for the whole thing."
+			return "Put SPECIFIC fields back to the template's default value (the manifest `default`), going through the normal write path (companions, mirror, aliases): exactly the keys you list are restored — nothing else on the target changes. A listed key with no default is cleared to its unset_value instead. Restoring a whole target (every field of a section, page or panel) is not available: list every key you mean, confirmed via lookup_fields. A call without keys is refused (E_OP) and nothing is restored."
 		},
 		schema: func(ctx schemaContext) map[string]any {
 			return obj("", map[string]any{
 				"target": targetSchema(ctx),
-				"keys":   arr("Field keys to restore. Omit only to restore the whole target.", str("")),
-			}, "target")
+				"keys":   nonEmptyArr("The field keys to restore — only these are touched. At least one; every key must be a field of the target (dotted keyed keys allowed).", str("")),
+			}, "target", "keys")
 		},
 	},
 	SetPageLayout: {

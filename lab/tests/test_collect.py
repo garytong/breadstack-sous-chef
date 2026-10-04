@@ -440,6 +440,11 @@ def test_pick_asset_for_is_deterministic_and_typed():
     s = {"toolCallId": "p1", "assetType": "image"}
     a = C.pick_asset_for(ASSETS, s, "c1")
     assert a == C.pick_asset_for(ASSETS, s, "c1") and set(a) <= {"public_url", "alt", "srcset"}
+    # a function of the case id alone: the service's random tool call id must not move it, or the generator's
+    # pick-variant expectation (state.fixture_asset_for — the same function) could never name the asset in advance
+    assert a == C.pick_asset_for(ASSETS, {"toolCallId": "toolu_other", "assetType": "image"}, "c1")
+    from souschef_lab.state import fixture_asset_for
+    assert a["public_url"] == fixture_asset_for(ASSETS, "c1", "image")["public_url"]
     video = [{"public_url": "v.mp4", "type": "video"}] + ASSETS
     assert C.pick_asset_for(video, {"toolCallId": "p1", "assetType": "video"}, "c1")["public_url"] == "v.mp4"
     with pytest.raises(ValueError):
