@@ -25,7 +25,10 @@ func (s opSpec) build(name string, ctx schemaContext) Tool {
 // obj is a closed object: additionalProperties false and a required array
 // (possibly empty) — what strict mode needs. Strictness note: this package
 // lists only the mandatory members in `required`; optional members are
-// plain properties the model may omit.
+// plain properties the model may omit. Every optional member of a strict
+// tool — nested objects included — counts toward the API's request-wide
+// budget of 24 (TestStrictOptionalParameterBudget), so a new optional member
+// on targetSchema costs one per strict tool that embeds it.
 func obj(desc string, props map[string]any, required ...string) map[string]any {
 	req := []string{}
 	req = append(req, required...)
@@ -183,7 +186,12 @@ var opSpecs = map[string]opSpec{
 		},
 	},
 	LookupFields: {
-		runs: RunsServer, strict: true,
+		// Not strict: every member is optional (target OR container, plus the
+		// narrowing knobs), 11 optionals with the nested target — it alone
+		// would spend almost half the request-wide budget of 24 (live 400 on
+		// int, 2026-10-04: 29 across the strict set). Dispatch validates the
+		// input and answers E_OP/E_TARGET/E_LIST so the model self-corrects.
+		runs: RunsServer, strict: false,
 		desc: func(ctx schemaContext) string {
 			return "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, and the list it belongs to; plus the container's lists. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate."
 		},
@@ -200,7 +208,9 @@ var opSpecs = map[string]opSpec{
 		},
 	},
 	DescribeTarget: {
-		runs: RunsServer, strict: true,
+		// Not strict, as lookup_fields: both members optional (6 optionals
+		// with the nested target); Dispatch validates and self-corrects.
+		runs: RunsServer, strict: false,
 		desc: func(ctx schemaContext) string {
 			return "Describe a target (or container): its lists with allowed ops / orders / detail panel, its field key stems (or every key when few), the hero mirror, presets, keyed-key prefixes and — for a page — its built-in pinned section id. Cheap orientation before lookup_fields."
 		},

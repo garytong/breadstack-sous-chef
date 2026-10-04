@@ -120,12 +120,138 @@ func TestRunsClassification(t *testing.T) {
 
 func TestStrictness(t *testing.T) {
 	tools := Tools(snapshot(t))
-	nonStrict := map[string]bool{SetFields: true, EditList: true}
+	// set_fields / edit_list carry open maps; lookup_fields / describe_target
+	// are all-optional server queries that would spend 17 of the API's 24
+	// strict optional parameters (TestStrictOptionalParameterBudget).
+	nonStrict := map[string]bool{SetFields: true, EditList: true, LookupFields: true, DescribeTarget: true}
 	for _, tl := range tools {
 		if tl.Strict == nonStrict[tl.Name] {
 			t.Errorf("%s: strict=%v", tl.Name, tl.Strict)
 		}
 	}
+	for _, name := range []string{Reset, RestoreDefault, SetPageLayout, ResetPinnedSection, PickAsset, ReportUnsupported} {
+		if !toolByName(t, tools, name).Strict {
+			t.Errorf("%s must stay strict (data op / merchant-facing)", name)
+		}
+	}
+}
+
+// The Messages API caps strict schemas per request: at most 24 optional
+// parameters (every property not listed in `required`, counted through nested
+// objects, summed over ALL tools sent with strict:true and any JSON output
+// schema) and at most 16 union-typed parameters (`anyOf` or a `type` array).
+// Exceeding either is a 400 before any token is billed — the int launch on
+// 2026-10-04 failed every call with "Schemas contains too many optional
+// parameters (29) ... (limit: 24)", which is exactly what this counter gives
+// for the pre-fix strict set (the nested target's 4 optionals × 4 tools made
+// the difference between the 13 a flat count sees and the API's 29).
+func TestStrictOptionalParameterBudget(t *testing.T) {
+	const optionalLimit, unionLimit = 24, 16
+	for _, m := range []*manifest.Manifest{snapshot(t), nil} {
+		totalOpt, totalUnion := 0, 0
+		for _, tl := range Tools(m) {
+			if !tl.Strict {
+				continue
+			}
+			opt, union := countStrictBudget(tl.InputSchema)
+			t.Logf("%-22s optional=%2d union=%d", tl.Name, opt, union)
+			totalOpt += opt
+			totalUnion += union
+		}
+		t.Logf("strict set: optional=%d/%d union=%d/%d (manifest=%v)", totalOpt, optionalLimit, totalUnion, unionLimit, m != nil)
+		if totalOpt > optionalLimit {
+			t.Fatalf("strict tools carry %d optional parameters, API limit %d", totalOpt, optionalLimit)
+		}
+		if totalUnion > unionLimit {
+			t.Fatalf("strict tools carry %d union-typed parameters, API limit %d", totalUnion, unionLimit)
+		}
+		// Headroom: a target member costs one per strict tool embedding it
+		// (two today), so keep at least that much room for the next one.
+		if optionalLimit-totalOpt < 4 {
+			t.Errorf("only %d optional parameters of headroom left", optionalLimit-totalOpt)
+		}
+	}
+	// Regression pin: counted over the pre-fix strict set (everything but the
+	// two open-map tools), the counter must give the 29 the API reported.
+	preFix := 0
+	for _, tl := range Tools(snapshot(t)) {
+		if tl.Name != SetFields && tl.Name != EditList {
+			opt, _ := countStrictBudget(tl.InputSchema)
+			preFix += opt
+		}
+	}
+	if preFix != 29 {
+		t.Fatalf("pre-fix strict set counts %d optional parameters, the API reported 29 — counter drifted from the API's rule", preFix)
+	}
+	// The counter itself, on the shape the API rejected: a nested object's
+	// optionals count, required members do not, anyOf is one union.
+	opt, union := countStrictBudget(map[string]any{
+		"type": "object", "required": []string{"a"},
+		"properties": map[string]any{
+			"a": map[string]any{"type": "object", "required": []string{"k"}, "properties": map[string]any{
+				"k": map[string]any{"type": "string"},
+				"x": map[string]any{"type": "string"},
+				"y": map[string]any{"type": []any{"string", "null"}},
+			}},
+			"b": map[string]any{"anyOf": []any{map[string]any{"type": "integer"}, map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"z": map[string]any{"type": "string"}}, "required": []any{}}}}},
+		},
+	})
+	if opt != 4 || union != 2 {
+		t.Fatalf("counter: optional=%d union=%d, want 4 and 2", opt, union)
+	}
+}
+
+// countStrictBudget counts, the way the API does, the optional parameters
+// (properties not in `required`, recursively through properties, items and
+// anyOf/allOf branches) and the union-typed parameters (a property with
+// `anyOf` or a `type` array) of one schema.
+func countStrictBudget(schema map[string]any) (optional, union int) {
+	var rec func(m map[string]any)
+	rec = func(m map[string]any) {
+		if p, ok := m["properties"].(map[string]any); ok {
+			req := map[string]bool{}
+			switch r := m["required"].(type) {
+			case []string:
+				for _, k := range r {
+					req[k] = true
+				}
+			case []any:
+				for _, k := range r {
+					if s, ok := k.(string); ok {
+						req[s] = true
+					}
+				}
+			}
+			for name, v := range p {
+				ps, _ := v.(map[string]any)
+				if !req[name] {
+					optional++
+				}
+				if _, isUnion := ps["anyOf"]; isUnion {
+					union++
+				} else if _, typeArr := ps["type"].([]any); typeArr {
+					union++
+				} else if _, typeArr := ps["type"].([]string); typeArr {
+					union++
+				}
+				rec(ps)
+			}
+		}
+		if items, ok := m["items"].(map[string]any); ok {
+			rec(items)
+		}
+		for _, k := range []string{"anyOf", "allOf", "oneOf"} {
+			if branches, ok := m[k].([]any); ok {
+				for _, b := range branches {
+					if bm, ok := b.(map[string]any); ok {
+						rec(bm)
+					}
+				}
+			}
+		}
+	}
+	rec(schema)
+	return optional, union
 }
 
 // Strict schemas must satisfy the structured-outputs rules: every object has

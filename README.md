@@ -95,6 +95,8 @@ Within one stream: `text.delta`×N, then `tool.call`×N + `turn.waiting`, or `tu
 
 Generated per manifest hash by `internal/toolgen`, cached, in the fixed order below (the tool list is part of the cached prefix). Data-op schemas are `strict: true`, `additionalProperties:false`; `tool_choice` is always `auto` (forced `any`/`tool` is rejected by Claude Sonnet 5.5 / Opus 5.5).
 
+**Strict-schema budget.** The Messages API caps, per request and summed over **every** tool sent with `strict:true` (plus any JSON output schema), the **optional parameters at 24** — each property not listed in `required`, counted through nested objects — and **union-typed parameters at 16** (`anyOf`, `type:[..,"null"]`). Over either limit every call is a 400 `invalid_request_error` ("Schemas contains too many optional parameters (N) … (limit: 24)") before any token is billed; the fake-model e2e does not enforce it, which is how int launched at 29/24 on 2026-10-04. The `target` object costs 4 optionals per strict tool that embeds it, so `lookup_fields` (11) and `describe_target` (6) — all-optional server queries that `Dispatch` validates anyway, answering `E_OP`/`E_TARGET`/`E_LIST` — are `strict: false` like `set_fields`/`edit_list` (open maps); the six strict tools spend 12 of the 24 and 0 of the 16. `TestStrictOptionalParameterBudget` counts both the way the API does (it reproduces the 29) and fails under 4 optionals of headroom. Making optional members required-with-`null` instead was rejected: nullable `target` members would cost 4 union types per embedding (16 for the four target-bearing tools = the whole union budget) and the browser's `resolveSectionTarget` requires `page` to be a string (a `null` page is `E_TARGET` unless the host fill treats it like absent), whereas `storeId`/`panel` already accept `null` (`targets.js`, `!= null`).
+
 | tool | runs | input |
 |---|---|---|
 | `set_fields` | browser | `{target, values:{key:val}, assets?:{key:{alt?,srcset?,mobile?}}}` |
@@ -104,8 +106,8 @@ Generated per manifest hash by `internal/toolgen`, cached, in the fixed order be
 | `set_page_layout` | browser | `{page, layout}` |
 | `reset_pinned_section` | browser | `{page, sectionId}` |
 | `pick_asset` | suspends | `{purpose, asset_type:"image"}`; resumes with the URL in the tool result |
-| `lookup_fields` | server | `{target?, container?, query?, keys?, list?, limit=40}` |
-| `describe_target` | server | `{target}` |
+| `lookup_fields` | server | `{target?, container?, query?, keys?, list?, limit=40, help?}` (not strict: all-optional, see budget) |
+| `describe_target` | server | `{target?, container?}` (not strict, see budget) |
 | `report_unsupported` | server | `{reason, manual_hint?}`; also emitted as `tool.call` so the UI can show it |
 
 `target` is the engine's union (FACTS 1 §1): `{kind:"section", page, sectionId, storeId?}` | `{kind:"global", panel?}` | `{kind:"branding"}` | `{kind:"page", page}`. Descriptions say `page` may be omitted for the viewed page (the host fills it from `ctx.currentPage`).

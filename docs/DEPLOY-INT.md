@@ -146,8 +146,10 @@ invoker binding. Keep `run_url` and `artifact_repo` from the output.
 
 ```sh
 URL=$(terraform output -raw run_url)
-curl -s $URL/healthz            # {"status":"ok"}
 curl -s $URL/readyz             # {"checks":{"db":"ok","default_route":"ok"},"status":"ready"}
+# /healthz is NOT reachable from outside: Google's front end answers its own
+# 404 page for that path on *.run.app (measured 2026-10-03). The container's
+# startup probe still uses it internally; use /readyz or /version externally.
 curl -s $URL/version            # {"build_id":"<sha>","go":"go1.24.x","routes":["default","opus"]}
 
 KEY=$(cat /tmp/sous-chef-int.key)

@@ -37,6 +37,10 @@ resource "google_sql_database_instance" "sous_chef" {
   region           = var.region
 
   settings {
+    # Shared-core tiers (db-f1-micro, db-g1-small) exist only in the Enterprise
+    # edition; the provider otherwise defaults POSTGRES_16 to ENTERPRISE_PLUS,
+    # which rejects them ("Invalid Tier (db-f1-micro) for (ENTERPRISE_PLUS)").
+    edition   = "ENTERPRISE"
     tier      = var.db_tier
     disk_size = var.sql_disk_size
     disk_type = "PD_SSD"

@@ -167,6 +167,10 @@ resource "google_cloud_run_v2_service" "sous_chef" {
       template[0].annotations,
       client,
       client_version,
+      # The API reports a service-level scaling block (manual/min instance
+      # counts = 0) that this config never sets; without this, every plan
+      # wants to null it (measured on the first int apply, 2026-10-03).
+      scaling,
     ]
   }
 

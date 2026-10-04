@@ -13,9 +13,18 @@
 // array, and no numeric/string constraints. `set_fields` (`values`,
 // `assets`) and `edit_list` (`item`) carry open maps keyed by manifest field
 // keys, which strict mode cannot express, so those two are `strict: false`
-// and the browser engine validates them; the other eight are `strict: true`.
-// `tool_choice` is always `auto` (forced tool use 400s on Claude Sonnet 5.5 /
-// Opus 5.5), which the loop sets — not this package.
+// and the browser engine validates them. The API also caps the optional
+// parameters of ALL strict tools in one request at 24 — every property not
+// in `required`, counted through nested objects (the `target` object is 4
+// per embedding) — and union-typed parameters (`anyOf`, `type: [..,"null"]`)
+// at 16; exceeding either is a 400 before any token is billed (seen live on
+// int 2026-10-04 at 29/24). `lookup_fields` and `describe_target`, whose
+// members are all optional, are therefore `strict: false` too (Dispatch
+// validates them and answers self-correcting errors); the six remaining
+// tools are `strict: true` and spend 12 of the 24
+// (TestStrictOptionalParameterBudget). `tool_choice` is always `auto`
+// (forced tool use 400s on Claude Sonnet 5.5 / Opus 5.5), which the loop sets
+// — not this package.
 package toolgen
 
 import (
