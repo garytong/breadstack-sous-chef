@@ -5,8 +5,11 @@
 // "anthropic" route is Claude itself (x-api-key, ANTHROPIC_BASE_URL
 // override, server-side fallbacks, prompt caching, effort); a
 // "messages-compatible" route is an Ollama/vLLM-style /v1/messages endpoint
-// that gets plainRequest (no Claude-only fields) and either an API key, a
-// Cloud Run ID token (X-Serverless-Authorization) or nothing.
+// that gets plainRequest (no Claude-only fields; thinking stated explicitly,
+// disabled by default, with the stored thinking blocks dropped from the
+// history it re-sends; temperature/top_p when the route sets them) and
+// either an API key, a Cloud Run ID token (X-Serverless-Authorization) or
+// nothing.
 //
 // The Table is built once from the config package's route table; a turn
 // picks a Backend by route name, allowlist-checked, and calls Message.

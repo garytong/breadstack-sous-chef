@@ -418,14 +418,14 @@ def test_check_pairs_names_what_is_wrong():
 
 
 def test_render_pair_cuts_the_completion_at_the_end_of_turn():
-    def apply(messages, tools=None, tokenize=False, add_generation_prompt=False, **kw):
-        text = "".join(f"<|im_start|>{m['role']}\n{m.get('content', '')}<|im_end|>\n" for m in messages)
-        return text + ("<|im_start|>assistant\n" if add_generation_prompt else "")
-
+    """The prompt is the served prompt (serving.render_prompt: it ends in the
+    empty think block Ollama writes as the generation prompt); a completion
+    is the turn's text up to and including the end-of-turn token."""
     row = {"prompt": [{"role": "user", "content": "hi"}], "chosen": [{"role": "assistant", "content": "A"}],
            "rejected": [{"role": "assistant", "content": "B"}], "tools": []}
-    p, c, r = dpo.render_pair(apply, row, {}, "<|im_end|>")
-    assert p.endswith("<|im_start|>assistant\n") and c == "A<|im_end|>" and r == "B<|im_end|>"
+    p, c, r = dpo.render_pair(row, "<|im_end|>")
+    assert p == "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    assert c == "A<|im_end|>" and r == "B<|im_end|>"
     ids = {"<|im_end|>": -1}
 
     def tokenize(text):
@@ -439,11 +439,11 @@ def test_render_pair_cuts_the_completion_at_the_end_of_turn():
                 text = text[1:]
         return out
 
-    kept, dropped = dpo.tokenize_pairs([dict(row, id="p1"), dict(row, id="p2")], tokenize, apply, {}, "<|im_end|>", -1,
+    kept, dropped = dpo.tokenize_pairs([dict(row, id="p1"), dict(row, id="p2")], tokenize, "<|im_end|>", -1,
                                        max_length=1000, max_pair_tokens=4000)
     assert [k["id"] for k in kept] == ["p1", "p2"] and dropped == {}
     assert kept[0]["chosen_input_ids"] == [ord("A"), -1] and kept[0]["tokens"] == 2 * len(kept[0]["prompt_input_ids"]) + 4
-    kept, dropped = dpo.tokenize_pairs([dict(row, id="p1")], tokenize, apply, {}, "<|im_end|>", -1, max_length=5,
+    kept, dropped = dpo.tokenize_pairs([dict(row, id="p1")], tokenize, "<|im_end|>", -1, max_length=5,
                                        max_pair_tokens=4000)
     assert kept == [] and dropped == {"too_long": 1}
     assert ids  # the marker id used above
@@ -489,6 +489,21 @@ def test_the_student_modelfile_copies_the_bases_lines_with_a_64k_context():
         export.student_modelfile("FROM x\nPARAMETER num_ctx 1\n", "x.gguf", "qwen3.5:9b", 65536)
     kept = export.student_modelfile(STOCK_MODELFILE, "x.gguf", "qwen3.5:9b", None)
     assert "PARAMETER num_ctx 4096" in kept  # no num_ctx: the base's own stays
+
+
+def test_the_committed_base_modelfile_stands_in_for_ollama_show(sft_adapter, capsys):
+    # lab/base-modelfiles/qwen3.5-9b.modelfile: the lines TRAIN-WORKSTATION.md §5
+    # recorded, so the export on a VM (docs/TRAIN-REMOTE.md) never asks an Ollama.
+    mf = LAB / "base-modelfiles" / "qwen3.5-9b.modelfile"
+    text = mf.read_text(encoding="utf-8")
+    kept = [ins.raw for ins in export.parse_modelfile(text) if ins.keyword in export.KEEP]
+    assert kept == ["TEMPLATE {{ .Prompt }}", "RENDERER qwen3.5", "PARSER qwen3.5", "PARAMETER presence_penalty 1.5",
+                    "PARAMETER temperature 1", "PARAMETER top_k 20", "PARAMETER top_p 0.95"]
+    student = export.student_modelfile(text, "x-q4_k_m.gguf", "qwen3.5:9b", 65536)
+    assert "RENDERER qwen3.5" in student and "PARSER qwen3.5" in student and "PARAMETER num_ctx 65536" in student
+    assert export.main(["--adapter", str(sft_adapter), "--name", "x", "--base-modelfile", str(mf), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"read {mf}" in out and "ollama show qwen3.5:9b --modelfile  (the base's" not in out
 
 
 def test_parse_modelfile_reads_triple_quoted_values():

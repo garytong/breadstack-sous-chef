@@ -216,6 +216,22 @@ The thermometer's Trainer-evaluation OOM (full fp32 logits, 14.5 GiB for one
 model sees it), `checkpoints/` when `--save-steps` > 0. `lab/runs/` is
 git-ignored. Unsloth also writes `lab/unsloth_compiled_cache/` (ignored).
 
+**Rows are rendered through the serving parity layer** (`souschef_lab/serving.py`,
+LAB.md §5 "Serving parity"), never the base's chat template: `sample_rendered.txt`
+is the text Ollama 0.34.4's `qwen3.5` renderer puts in front of the served
+student with thinking disabled — its tools block (Go struct order, dropped
+`additionalProperties`/`strict`, `<` escapes, spaced JSON), its echo of
+every tool call (sorted keys, compact JSON) and the empty `<think>` block that
+opens each assistant turn — and `run.json` records it as `render`. The parity
+fixture `lab/fixtures/parity/served.json` (Ollama's own render of the real
+captures, `make -C lab parity-write` through `lab/parity/`, a Go module
+pinning ollama v0.34.4) is what `tests/test_serving.py` holds that render to.
+**Re-capture the parity fixture when Ollama's renderer version changes**
+(a bump in `lab/model-image`, `parity/go.mod`, the export's `RENDERER`/`PARSER`,
+or how the service builds a request), then rebuild the dataset before training.
+A row whose call Ollama would echo as another call is dropped and counted
+(`run.json` → `rows.dropped_unservable`); `--thinking` is refused.
+
 ## 4. DPO
 
 ```sh

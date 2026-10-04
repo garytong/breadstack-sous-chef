@@ -162,14 +162,35 @@ def test_image_cases_have_assets_and_pick_variant(by_kind):
     for c in pick:
         assert c.expected["ops"][0]["op"] == "pick_asset" and c.expected["ops"][0]["asset_type"] == "image"
         assert c.browser_ops == c.expected["ops"][1:]
-        # exactly the asset the collector's fake picker answers this case with
+        # exactly the asset the collector's fake picker answers this case with — by the hash and by the name alike
         picked = S.fixture_asset_for(S.load_assets_fixture(), c.id, "image")
         assert c.expected["ops"][1]["values"] == {c.fields[0]: picked["public_url"]}
+        assert picked == S.fixture_asset_for(S.load_assets_fixture(), c.id, "image", S.case_asset_id(c.to_row()))
     hero_images = [c for c in url if c.meta.get("mirror")]
     assert hero_images, "the hero's backgroundImage is an image case"
 
 
-def test_the_picker_choice_is_a_function_of_the_case_id_alone():
+def test_url_variant_request_names_the_asset_the_picker_answers_with(by_kind):
+    """int-run3 (2026-10-04): a `url` request names the asset by its alt ("the image 'Sunlit field at harvest'");
+    the model owns no asset library, so it opens the picker and writes what it returns. The picker must therefore
+    return the asset the request names — 11 of 40 image rows wrote the hash pick instead (wrong_value), 4 refused it."""
+    assets = S.load_assets_fixture()
+    by_id = {a["id"]: a for a in assets}
+    url = [c for c in by_kind["image"] if c.meta["variant"] == "url"]
+    hash_differs = 0
+    for c in url:
+        named = by_id[c.meta["asset_id"]]
+        # the request carries the asset's alt (or its URL when the alt is empty) …
+        assert (f"'{named['alt']}'" if named.get("alt") else named["public_url"]) in c.request, (c.id, c.request)
+        # … and the collector's picker, given the case, answers exactly that asset — the one the expected ops carry
+        row = c.to_row()
+        answered = S.fixture_asset_for(assets, c.id, "image", S.case_asset_id(row))
+        assert answered is named and c.expected["ops"][-1]["values"] == {c.fields[0]: named["public_url"]}, c.id
+        hash_differs += S.fixture_asset_for(assets, c.id, "image") is not named
+    assert hash_differs, "the hash pick differs from the named asset for some url cases (else this test proves nothing)"
+
+
+def test_the_picker_choice_is_a_function_of_the_case_alone():
     assets = S.load_assets_fixture()
     a = S.fixture_asset_for(assets, "image/x/y/z/pick")
     assert a == S.fixture_asset_for(assets, "image/x/y/z/pick") and a in assets
@@ -177,6 +198,14 @@ def test_the_picker_choice_is_a_function_of_the_case_id_alone():
     video = [{"public_url": "v.mp4", "asset_type": "video"}] + assets
     assert S.fixture_asset_for(video, "c1", "video")["public_url"] == "v.mp4"
     assert S.fixture_asset_for(video, "c1", "image")["public_url"] != "v.mp4"
+    # a named asset wins over the hash — within the asked type only; an unknown name falls back to the hash
+    other = next(x for x in assets if x is not S.fixture_asset_for(assets, "c1"))
+    assert S.fixture_asset_for(assets, "c1", "image", other["id"]) is other
+    assert S.fixture_asset_for(video, "c1", "video", other["id"])["public_url"] == "v.mp4"
+    assert S.fixture_asset_for(assets, "c1", "image", "asset-nope") == S.fixture_asset_for(assets, "c1")
+    assert S.fixture_asset_for(assets, "c1", "image", None) == S.fixture_asset_for(assets, "c1")
+    assert S.case_asset_id({"meta": {"asset_id": "asset-hero-1"}}) == "asset-hero-1"
+    assert S.case_asset_id({"meta": {}}) is None and S.case_asset_id({}) is None
     with pytest.raises(ValueError):
         S.fixture_asset_for([], "c1")
 

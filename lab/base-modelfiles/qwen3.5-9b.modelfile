@@ -1,0 +1,14 @@
+# `ollama show qwen3.5:9b --modelfile` on the lab Ollama (0.34.4), read on
+# 2026-10-04 and recorded in docs/TRAIN-WORKSTATION.md §5. The lines export.py
+# copies into the student's Modelfile (TEMPLATE, RENDERER, PARSER, PARAMETER);
+# the FROM blob paths and the LICENSE block are dropped by the export anyway and
+# are left out here. Use it as `export.py --base-modelfile` wherever no Ollama
+# runs (the training VM, docs/TRAIN-REMOTE.md) — never point OLLAMA_HOST at the
+# busy lab server for this. Re-read the lines when the base tag is re-pulled.
+TEMPLATE {{ .Prompt }}
+RENDERER qwen3.5
+PARSER qwen3.5
+PARAMETER presence_penalty 1.5
+PARAMETER temperature 1
+PARAMETER top_k 20
+PARAMETER top_p 0.95

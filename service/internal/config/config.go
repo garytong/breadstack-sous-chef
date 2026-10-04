@@ -45,6 +45,36 @@ type Route struct {
 	// Stream is nil when the route did not say; internal/model applies the
 	// kind-based default (true for anthropic, false for messages-compatible).
 	Stream *bool `json:"stream,omitempty"`
+	// Thinking ("disabled"|"enabled") is for messages-compatible routes only
+	// and defaults to disabled: the request carries
+	// {"thinking":{"type":"disabled"}} (Ollama maps it to think=false, so a
+	// qwen3.5-family renderer emits the empty <think> block the SFT rows were
+	// trained with) and thinking blocks are dropped from the history the
+	// service re-sends. "enabled" sends {"type":"enabled"} and replays the
+	// blocks. Anthropic routes reject the field: Claude runs adaptive
+	// thinking with the field omitted (README §5).
+	Thinking string `json:"thinking,omitempty"`
+	// Temperature / TopP are sent as given when set (messages-compatible
+	// routes only; nil = the server's default). Anthropic routes reject them:
+	// adaptive thinking fixes temperature and disallows top_p.
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+}
+
+// Thinking values a route may name.
+const (
+	ThinkingDisabled = "disabled"
+	ThinkingEnabled  = "enabled"
+)
+
+// ThinkingEnabled reports whether this route requests and replays thinking:
+// always on an anthropic route (adaptive, preserved thinking); on a
+// messages-compatible route only when it says "thinking":"enabled".
+func (r Route) ThinkingEnabled() bool {
+	if r.Kind == RouteAnthropic {
+		return true
+	}
+	return r.Thinking == ThinkingEnabled
 }
 
 // DefaultModelRoutes is the MODEL_ROUTES value used when the variable is
@@ -212,6 +242,25 @@ func validateRoute(name string, r Route) error {
 	case "", "low", "medium", "high", "max":
 	default:
 		return fmt.Errorf("MODEL_ROUTES[%s]: effort %q is not low|medium|high|max", name, r.Effort)
+	}
+	switch r.Thinking {
+	case "", ThinkingDisabled, ThinkingEnabled:
+	default:
+		return fmt.Errorf("MODEL_ROUTES[%s]: thinking %q is not disabled|enabled", name, r.Thinking)
+	}
+	if r.Kind == RouteAnthropic {
+		if r.Thinking != "" {
+			return fmt.Errorf("MODEL_ROUTES[%s]: thinking is only valid for messages-compatible routes (Claude runs adaptive thinking)", name)
+		}
+		if r.Temperature != nil || r.TopP != nil {
+			return fmt.Errorf("MODEL_ROUTES[%s]: temperature/top_p are only valid for messages-compatible routes", name)
+		}
+	}
+	if r.Temperature != nil && (*r.Temperature < 0 || *r.Temperature > 2) {
+		return fmt.Errorf("MODEL_ROUTES[%s]: temperature %v is not within 0..2", name, *r.Temperature)
+	}
+	if r.TopP != nil && (*r.TopP < 0 || *r.TopP > 1) {
+		return fmt.Errorf("MODEL_ROUTES[%s]: top_p %v is not within 0..1", name, *r.TopP)
 	}
 	return nil
 }

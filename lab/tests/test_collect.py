@@ -451,6 +451,46 @@ def test_pick_asset_for_is_deterministic_and_typed():
         C.pick_asset_for([], s, "c1")
 
 
+NAMED_ASSETS = [{**ASSETS[0], "id": "asset-a"}, {**ASSETS[1], "id": "asset-b"}]
+
+
+def test_pick_asset_for_honours_the_asset_the_case_names():
+    """int-run3 (2026-10-04): a `url`-variant request names the asset ("the image 'Sunlit field at harvest'"); the
+    model opens the picker for it and writes what comes back, so the picker must return the named asset — the hash
+    pick made 11 such rows wrong_value and 4 no_answer. The pick variant names its hash pick, so nothing moves there."""
+    s = {"toolCallId": "p1", "assetType": "image"}
+    hashed = C.pick_asset_for(NAMED_ASSETS, s, "c1")
+    other = next(a for a in NAMED_ASSETS if a["public_url"] != hashed["public_url"])
+    named = C.pick_asset_for(NAMED_ASSETS, s, "c1", other["id"])
+    assert named["public_url"] == other["public_url"] and set(named) <= {"public_url", "alt", "srcset"}
+    assert C.pick_asset_for(NAMED_ASSETS, s, "c1", None) == hashed  # no name → the hash, as before
+    assert C.pick_asset_for(NAMED_ASSETS, s, "c1", "asset-unknown") == hashed  # a name the pool lacks → the hash
+    video = [{"public_url": "v.mp4", "type": "video", "id": "asset-v"}] + NAMED_ASSETS
+    # the asked type still rules: an image name does not answer a video pick
+    assert C.pick_asset_for(video, {"toolCallId": "p1", "assetType": "video"}, "c1", other["id"])["public_url"] == "v.mp4"
+
+
+def test_run_case_answers_the_picker_with_the_case_s_named_asset(svc, client):
+    s = {"toolCallId": "p1", "assetType": "image"}
+    hashed = C.pick_asset_for(NAMED_ASSETS, s, "c1")
+    other = next(a for a in NAMED_ASSETS if a["public_url"] != hashed["public_url"])
+    write = {"target": SET_TITLE["target"], "values": {"image": other["public_url"]}, "assets": {"image": {"alt": other["alt"]}}}
+    svc.scripts["c1"] = [[("text.delta", {"text": "Pick an image."}), suspended("p1")],
+                         [call("t1", "set_fields", write), waiting("t1")], done()]
+    case = make_case(kind="image", request=f"Use the image '{other['alt']}' as the hero image.")
+    case["meta"] = {**case["meta"], "field_type": "image", "variant": "url", "asset_id": other["id"]}
+    row = C.run_case(case, client, fake_engine, assets=NAMED_ASSETS)
+    assert row["status"] == "ok"
+    posted = svc.tool_results[0]["body"]["results"][0]
+    assert posted["toolCallId"] == "p1" and posted["asset"]["public_url"] == other["public_url"]
+    assert row["picked_assets"] == [posted["asset"]] and row["ops"] == [{"op": "set_fields", **write}]
+    # a case without a named asset (any non-image case) keeps the hash answer
+    svc.scripts["c1"] = [[("text.delta", {"text": "Pick an image."}), suspended("p1")],
+                         [call("t1", "set_fields", write), waiting("t1")], done()]
+    row2 = C.run_case(make_case(), client, fake_engine, assets=NAMED_ASSETS)
+    assert row2["picked_assets"][0]["public_url"] == hashed["public_url"]
+
+
 def test_ctx_for_and_user_text():
     assert C.ctx_for(make_case()) == {**C.GOLDEN_CTX, "templateId": "editorial", "currentPage": "home"}
     assert C.ctx_for({"site_state": {}, "context": {}})["templateId"] == "editorial"

@@ -108,7 +108,10 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		// The assistant turn goes into the history before its results
 		// (thermometer); thinking blocks ride along unchanged — the API wants
 		// them back on the same model (preserved thinking) and their text is
-		// empty under the default display. The append is a compare-and-set
+		// empty under the default display. They are stored as returned; a
+		// messages-compatible route with thinking disabled (the default) drops
+		// them from the history at send time (model.buildParams), so what the
+		// model sees matches its training rows. The append is a compare-and-set
 		// on the tail this turn last wrote (its user text, or its last
 		// results message): a healthy turn always owns the tail, so it is a
 		// no-op check; a turn superseded while this call was in flight finds

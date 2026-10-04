@@ -906,9 +906,15 @@ class Generator:
                 op = self._image_op(t, key, a)
                 request = render(rng.choice(IMAGE_TEMPLATES), where=where_phrase, field=field_phrase,
                                  value=value_phrase(f, value, rng, self.ctxf, self.assets))
+                # `url` variant: the request names the asset by its alt (or its URL when the alt is empty). The model
+                # owns no asset library, so for an alt it opens the picker — and the collector's fake picker answers
+                # with THIS asset (meta.asset_id → state.fixture_asset_for(..., asset_id)), as the merchant who named
+                # it would pick it. Until 2026-10-04 the picker hashed the case id instead and 15 of int-run3's 21
+                # url rows failed (11 wrote the picker's other asset, 4 refused to write it and asked).
                 yield self._case(cid, kind, t.target(), [key], state, t.page, request, [op], t.key, {**meta, "variant": "url", "asset_id": a["id"]})
                 # pick_asset variant: the model asks for the picker, then writes URL + alt/srcset of EXACTLY the
-                # asset the collector's fake picker answers with (state.fixture_asset_for, keyed by this case id).
+                # asset the collector's fake picker answers with (state.fixture_asset_for, keyed by this case id;
+                # meta.asset_id carries the same asset, so both of the picker's paths agree).
                 cid2 = self._uid(f"{kind}/{t.container.name}/{where}/{key}/pick")
                 picked = fixture_asset_for(self.assets, cid2, "image")
                 if picked["public_url"] == current:

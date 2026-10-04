@@ -417,12 +417,12 @@ def tokenizer_counter(name: str | None) -> tuple[Callable[[dict], int], str]:
         from transformers import AutoTokenizer  # type: ignore
     except ImportError as e:
         raise SystemExit("--tokenizer needs the [train] extra (pip install -e 'lab[train]')") from e
+    from . import serving  # the row's training text is the served form (LAB.md §5), never the tokenizer's chat template
+
     tok = AutoTokenizer.from_pretrained(name, local_files_only=True)
 
     def count(hf: dict) -> int:
-        text = tok.apply_chat_template(hf["messages"], tools=hf["tools"] or None, tokenize=False,
-                                       add_generation_prompt=False)
-        return len(tok(text, add_special_tokens=False)["input_ids"])
+        return len(tok(serving.render_training(hf["messages"], hf["tools"]), add_special_tokens=False)["input_ids"])
 
     return count, f"exact: {name}"
 

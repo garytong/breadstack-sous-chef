@@ -41,5 +41,16 @@ ci_service_account = "52346985251@cloudbuild.gserviceaccount.com"
 # sous-chef-thermometer-api-key secret has a version.
 thermometer_api_url = ""
 
-# Phase 5 GPU model: off.
-gpu_model_enabled = false
+# Phase 5 GPU model (docs/DEPLOY-INT.md section 12): both halves off. Half 1
+# (gpu_model_enabled) creates the repository + roleless SA; after the image is
+# pushed as <gpu_model_repo output>/model:<gpu_model_image_tag>, half 2
+# (gpu_model_serve) creates the L4 service in us-east4 (no GPU region in
+# Canada) and main.tf adds the `inhouse` route (gpu_model_route) to the
+# service's MODEL_ROUTES + allowlist; default_route stays `default`.
+# min_instances 0 sleeps between demos (~1 min wake, ~US$0.19 per wake);
+# 1 keeps the model loaded at ~US$1.05/hour.
+gpu_model_enabled       = false
+gpu_model_serve         = false
+gpu_model_region        = "us-east4"
+gpu_model_image_tag     = "r1"
+gpu_model_min_instances = 0

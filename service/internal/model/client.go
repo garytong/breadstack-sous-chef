@@ -204,21 +204,46 @@ func (b *Backend) buildParams(req Request) anthropic.BetaMessageNewParams {
 		params.Fallbacks = anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()}
 	}
 	if b.route.Kind == config.RouteMessagesCompatible {
-		plainRequest(&params)
+		plainRequest(&params, b.route)
 	}
 	return params
 }
 
 // plainRequest (thermometer chat.go) drops every Claude-only field from
-// params — thinking, effort (output_config), the cache_control breakpoints
-// on the system blocks and at the top level, the betas (the anthropic-beta
-// header) and server-side fallbacks — leaving system + tools + messages +
-// max_tokens + tool_choice. A compatible server either rejects fields it
+// params — effort (output_config), the cache_control breakpoints on the
+// system blocks and at the top level, the betas (the anthropic-beta header)
+// and server-side fallbacks — leaving system + tools + messages +
+// max_tokens + tool_choice, then adds the route's own thinking and sampling
+// fields (README §5 table). A compatible server either rejects fields it
 // does not know or ignores them silently, and a fallback to a Claude model
 // is never what a local run wants. The system blocks are copied first so
 // the caller's prefix keeps its breakpoints.
-func plainRequest(params *anthropic.BetaMessageNewParams) {
-	params.Thinking = anthropic.BetaThinkingConfigParamUnion{}
+//
+// Thinking is always stated, never left to the server: Ollama's anthropic.go
+// (v0.34.4 FromMessagesRequest) maps {"type":"disabled"} → think=false and
+// {"type":"enabled"} → think=true, while an absent field leaves think=nil
+// and the renderer's default (true for qwen3.5) — which puts an OPEN <think>
+// at the end of the prompt where every SFT row has the empty think block.
+// With thinking disabled (the default) the stored thinking blocks are also
+// dropped from the history sent, so the rendered conversation matches
+// training; enabled replays them. budget_tokens is half of max_tokens: Ollama
+// reads only type, and the value keeps the request valid for a Claude-shaped
+// server (≥1024 and < max_tokens when max_tokens allows).
+func plainRequest(params *anthropic.BetaMessageNewParams, route config.Route) {
+	if route.ThinkingEnabled() {
+		params.Thinking = anthropic.BetaThinkingConfigParamUnion{
+			OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{BudgetTokens: int64(route.MaxTokens / 2)},
+		}
+	} else {
+		params.Thinking = anthropic.BetaThinkingConfigParamUnion{OfDisabled: &anthropic.BetaThinkingConfigDisabledParam{}}
+		params.Messages = dropThinking(params.Messages)
+	}
+	if route.Temperature != nil {
+		params.Temperature = param.NewOpt(*route.Temperature)
+	}
+	if route.TopP != nil {
+		params.TopP = param.NewOpt(*route.TopP)
+	}
 	params.OutputConfig = anthropic.BetaOutputConfigParam{}
 	params.CacheControl = anthropic.BetaCacheControlEphemeralParam{}
 	system := make([]anthropic.BetaTextBlockParam, len(params.System))
@@ -229,6 +254,52 @@ func plainRequest(params *anthropic.BetaMessageNewParams) {
 	params.System = system
 	params.Betas = nil
 	params.Fallbacks = anthropic.BetaFallbacksParamUnion{}
+}
+
+// dropThinking returns msgs with every thinking / redacted_thinking block
+// removed from the assistant turns. The caller's slices are not touched
+// (the loop's history is the persisted one, replayed as stored): messages
+// are copied only when a block is dropped. A message left with no content
+// (a thinking-only assistant turn, which the loop never stores) is dropped
+// whole rather than sent as an empty turn.
+func dropThinking(msgs []anthropic.BetaMessageParam) []anthropic.BetaMessageParam {
+	var out []anthropic.BetaMessageParam
+	for i, m := range msgs {
+		if m.Role != anthropic.BetaMessageParamRoleAssistant || !hasThinking(m.Content) {
+			if out != nil {
+				out = append(out, m)
+			}
+			continue
+		}
+		if out == nil {
+			out = make([]anthropic.BetaMessageParam, 0, len(msgs))
+			out = append(out, msgs[:i]...)
+		}
+		kept := make([]anthropic.BetaContentBlockParamUnion, 0, len(m.Content))
+		for _, c := range m.Content {
+			if c.OfThinking == nil && c.OfRedactedThinking == nil {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		m.Content = kept
+		out = append(out, m)
+	}
+	if out == nil {
+		return msgs
+	}
+	return out
+}
+
+func hasThinking(blocks []anthropic.BetaContentBlockParamUnion) bool {
+	for _, c := range blocks {
+		if c.OfThinking != nil || c.OfRedactedThinking != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // wantsFallbacks (thermometer chat.go, Sonnet 5.5 added) reports whether

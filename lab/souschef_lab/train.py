@@ -41,7 +41,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import trainkit
+from . import serving, trainkit
 from .trainkit import (MARKERS, check_rows, die, estimate_tokens, history_turns, leaked_tool_results, load_split,
                        mask_history_turns, say, template_kind, trained_spans, updates_for, utc_now, utc_stamp,
                        val_subset, weighted_loss)
@@ -93,7 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"Unsloth tiled MLP, trading speed for memory (auto: on above {TILED_ABOVE} tokens) "
                         "(default: %(default)s)")
     p.add_argument("--thinking", action="store_true", default=RECIPE["thinking"],
-                   help="render with the template's thinking mode on (default off: the traces carry no thinking)")
+                   help="refused: the rows are rendered as the service serves them, thinking disabled (the empty think "
+                        "block); the traces carry no thinking (docs/LAB.md §5)")
     p.add_argument("--instruction-part", help="override the masking marker that starts a non-assistant turn")
     p.add_argument("--response-part", help="override the masking marker that starts an assistant turn")
     p.add_argument("--dry-run", "--check", dest="dry_run", action="store_true",
@@ -117,17 +118,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def render_kwargs(chat_template: str, thinking: bool) -> dict:
-    """How a row is rendered with the base's chat template (Qwen3.5: thinking
-    only changes the generation prompt; the rows carry none)."""
-    return {"enable_thinking": thinking}
+def render_text(messages: list[dict], tools: list[dict] | None) -> str:
+    """A row's training text: the conversation as Ollama renders it for the
+    served student (serving.render_training — the qwen3.5 renderer with
+    thinking disabled, every assistant turn opened by the empty think block
+    the served generation prompt ends with). Never the base's chat template:
+    its tools block and echoed tool calls are not the served bytes
+    (docs/LAB.md §5 "Serving parity")."""
+    return serving.render_training(messages, tools)
 
 
-def render_text(apply_template, messages: list[dict], tools: list[dict] | None, **kw) -> str:
-    """A row's text as the base's chat template renders it (tokenize=False;
-    kw holds add_generation_prompt and the render kwargs). Arguments are
-    decoded first: the template iterates them as a mapping."""
-    return apply_template(trainkit.decode_arguments(messages), tools=tools, tokenize=False, **kw)
+def served_markers(tok) -> None:
+    """Stop unless the ChatML markers the serving render writes are single
+    special tokens of this base's tokenizer: the masking (MARKERS) and the
+    render assume Qwen's vocabulary."""
+    missing = [t for t in serving.SPECIAL_TOKENS if len(tok(t, add_special_tokens=False)["input_ids"]) != 1]
+    if missing:
+        die(f"this base's tokenizer has no single token for {', '.join(missing)}: the serving render (Ollama's "
+            "qwen3.5 renderer) and the ChatML masking need a Qwen3.5 base")
 
 
 def validation_loss(model, rows, torch, bf16: bool = False) -> float | None:
@@ -191,7 +199,7 @@ def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None
         "warmup_ratio": args.warmup_ratio, "weight_decay": args.weight_decay, "packing": False,
         "eval_steps": args.eval_steps, "save_steps": args.save_steps, "val_max_rows": args.val_max_rows,
         "seed": args.seed, "tiled_mlp": tiled, "thinking": args.thinking, "data": str(args.data),
-        "config": getattr(args, "config", None), "render": "chat_template",
+        "config": getattr(args, "config", None), "render": serving.DESCRIPTION,
         "manifest_hash": dataset_manifest(args.data).get("manifest_hash"),
     }
     if train_rows is not None:
@@ -220,6 +228,9 @@ def render_plan(p: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.thinking:
+        die("--thinking: the rows render in the served form (serving.py: Ollama's qwen3.5 renderer with thinking "
+            "disabled, the empty think block first) and the traces carry no thinking — there is no thinking render")
     train_rows, val_rows = load_split(args.data, "train"), load_split(args.data, "val")
     if not train_rows:
         die(f"no training rows in {trainkit.rel(args.data)}/train.jsonl — run `python -m souschef_lab.dataset` first")
@@ -275,20 +286,20 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
     # A multimodal base (Qwen3.5) hands back a processor; text work uses its tokenizer.
     tok = getattr(processor, "tokenizer", processor)
 
-    kind = template_kind(tok.chat_template or "")
-    instruction_part = args.instruction_part or (MARKERS[kind][0] if kind else None)
-    response_part = args.response_part or (MARKERS[kind][1] if kind else None)
-    if not (instruction_part and response_part):
-        die("this base's chat template is not ChatML (Qwen-style), the format the lab masks. Pass --instruction-part "
-            "and --response-part only if its tool results open exactly like a user turn — otherwise the student "
-            "would be trained on tool output. A Qwen base is the supported path.")
-    render_kw = render_kwargs(tok.chat_template or "", args.thinking)
+    # The render is Ollama's (serving.py), ChatML whatever the base's own template says; the masking markers are
+    # ChatML's, and the base's tokenizer must know them as single tokens.
+    kind = template_kind(tok.chat_template or "") or "chatml"
+    instruction_part = args.instruction_part or MARKERS[kind][0]
+    response_part = args.response_part or MARKERS[kind][1]
+    served_markers(tok)
 
-    def render(rows: list[dict]) -> tuple[list[dict], list[str], list[int], int]:
-        kept, texts, lengths, dropped = [], [], [], 0
+    def render(rows: list[dict]) -> tuple[list[dict], list[str], list[int], int, int]:
+        kept, texts, lengths, dropped, unservable = [], [], [], 0, 0
         for r in rows:
-            text = render_text(tok.apply_chat_template, r["messages"], r["tools"], add_generation_prompt=False,
-                               **render_kw)
+            if serving.unservable(r["messages"]):
+                unservable += 1  # its served echo would read back as another call (serving.unservable): never trained
+                continue
+            text = render_text(r["messages"], r["tools"])
             n = len(tok(text, add_special_tokens=False)["input_ids"])
             if n > args.max_seq_length:
                 dropped += 1  # truncating would cut the answer — the part being learned
@@ -296,14 +307,14 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
             kept.append(r)
             texts.append(text)
             lengths.append(n)
-        return kept, texts, lengths, dropped
+        return kept, texts, lengths, dropped, unservable
 
-    train_kept, train_texts, train_lens, train_dropped = render(train_rows)
+    train_kept, train_texts, train_lens, train_dropped, train_unservable = render(train_rows)
     val_rows_used = val_subset(val_rows, args.val_max_rows, args.seed)
-    val_kept, val_texts, val_lens, val_dropped = render(val_rows_used)
-    say(f"Rendered with the base's chat template: {len(train_texts)} train / {len(val_texts)} val rows fit; "
-        f"{train_dropped + val_dropped} longer than {args.max_seq_length:,} tokens dropped. "
-        f"Longest kept: {max(train_lens, default=0):,} tokens.")
+    val_kept, val_texts, val_lens, val_dropped, val_unservable = render(val_rows_used)
+    say(f"Rendered as the served student sees it ({serving.DESCRIPTION}): {len(train_texts)} train / "
+        f"{len(val_texts)} val rows fit; {train_dropped + val_dropped} longer than {args.max_seq_length:,} tokens "
+        f"dropped; {train_unservable + val_unservable} unservable dropped. Longest kept: {max(train_lens, default=0):,} tokens.")
     if not train_texts:
         die("no training row fits --max-seq-length")
     leaks = leaked_tool_results(train_kept[0], train_texts[0], instruction_part, response_part)
@@ -431,12 +442,12 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         **p,
         "finished_at": utc_now(),
         "minutes": round((time.monotonic() - t0) / 60, 1),
-        "template": kind or "custom",
+        "template": kind,
         "instruction_part": instruction_part,
         "response_part": response_part,
-        "render": render_kw,
         "rows": {**p["rows"], "train_fit": len(train_texts), "val_fit": len(val_texts),
-                 "dropped_too_long": train_dropped + val_dropped},
+                 "dropped_too_long": train_dropped + val_dropped,
+                 "dropped_unservable": train_unservable + val_unservable},
         "tokens": {"train_total": sum(train_lens), "train_max": max(train_lens), "val_total": sum(val_lens)},
         "steps": trainer.state.global_step,
         "train_loss": getattr(stats, "training_loss", None),

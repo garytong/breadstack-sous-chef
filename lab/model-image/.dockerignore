@@ -1,0 +1,5 @@
+# The build context is lab/model-image, and the image needs only the
+# entrypoint from it. The model comes through the named context "model"
+# (make -C lab model-build), never from here.
+*
+!entrypoint.sh

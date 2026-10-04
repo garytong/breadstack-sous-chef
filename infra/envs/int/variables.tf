@@ -148,3 +148,24 @@ variable "gpu_model_min_instances" {
   type    = number
   default = 0
 }
+variable "gpu_model_route" {
+  type = object({
+    name         = string
+    model        = string
+    max_tokens   = number
+    call_timeout = string
+    temperature  = optional(number, 0.3)
+  })
+  default = {
+    name         = "inhouse"
+    model        = "sous-chef"
+    max_tokens   = 4096
+    call_timeout = "180s"
+    temperature  = 0.3
+  }
+  description = "The messages-compatible route main.tf adds to MODEL_ROUTES (and to MODEL_ROUTE_ALLOWLIST) while gpu_model_serve is on: its name (what a turn's `model` says), the Ollama model name inside the image, max_tokens, and the MODEL_CALL_TIMEOUT the service runs with meanwhile (the thermometer's L4 needed ~120 s per call; the model service's own timeout is 300 s). Its url is the module's output; its auth is id-token."
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]*$", var.gpu_model_route.name)) && var.gpu_model_route.max_tokens >= 1 && var.gpu_model_route.temperature >= 0 && var.gpu_model_route.temperature <= 2 && can(regex("^[0-9]+(ms|s|m|h)$", var.gpu_model_route.call_timeout))
+    error_message = "gpu_model_route: name is lowercase [a-z0-9-], max_tokens >= 1, temperature 0..2, call_timeout a Go duration such as \"180s\"."
+  }
+}

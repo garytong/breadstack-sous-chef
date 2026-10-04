@@ -69,6 +69,7 @@ from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 from . import render
+from .state import case_asset_id
 
 LAB_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = LAB_DIR / "fixtures" / "manifest.snapshot.json"
@@ -380,15 +381,16 @@ def load_assets(path: Path | None) -> list[dict]:
     return [a for a in (items or []) if isinstance(a, dict) and a.get("public_url")]
 
 
-def pick_asset_for(assets: Iterable[dict], suspended: dict, case_id: str) -> dict:
-    """The fixture asset that answers a pick_asset: one of the asked type
-    (`assetType`, default image), chosen from the case id alone
-    (`state.fixture_asset_for` — the same function the case generator uses
-    for the pick variant's expected ops, LAB.md §2/§4) so reruns and the
-    expectation agree. `{public_url, alt, srcset}` (empty alt/srcset
-    omitted, as the real picker's api.Asset)."""
+def pick_asset_for(assets: Iterable[dict], suspended: dict, case_id: str, asset_id: str | None = None) -> dict:
+    """The fixture asset that answers a pick_asset: the asset the case names
+    (`asset_id` = the case's `meta.asset_id`, `state.case_asset_id`) when it
+    is of the asked type (`assetType`, default image), else one of that type
+    chosen from the case id alone — `state.fixture_asset_for`, the same
+    function the case generator uses for the expected ops (LAB.md §2/§4), so
+    the request text, the expectation and reruns agree. `{public_url, alt,
+    srcset}` (empty alt/srcset omitted, as the real picker's api.Asset)."""
     from .state import fixture_asset_for
-    a = fixture_asset_for(list(assets), case_id, str(suspended.get("assetType") or "image"))
+    a = fixture_asset_for(list(assets), case_id, str(suspended.get("assetType") or "image"), asset_id)
     out = {"public_url": a["public_url"]}
     for k in ("alt", "srcset"):
         if a.get(k):
@@ -626,7 +628,7 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
                 rec.written.extend(it.get("written") or [])
             rec.engine_results.append({k: v for k, v in eng.items() if k != "state"})
         if suspended is not None:
-            asset = pick_asset_for(assets, suspended, case_id)
+            asset = pick_asset_for(assets, suspended, case_id, case_asset_id(case))
             rec.assets.append(asset)
             results.append({"toolCallId": str(suspended.get("toolCallId")), "ok": True, "asset": asset})
         if not results:

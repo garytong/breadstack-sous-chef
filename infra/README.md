@@ -16,6 +16,7 @@ infra/
   modules/model-gpu/     Phase 5 stub: private Ollama GPU service, IAM-only (behind a flag)
   envs/int/              root module for int   (backend prefix sous-chef/int)
   envs/prod/             root module for prod  (backend prefix sous-chef/prod)
+  envs/train/            the training GPU VM in int: own VPC + IAP SSH + NAT, bucket, notify-only budget, A100-on-demand / H100-Spot switch (backend prefix sous-chef/train; its README.md is the runbook, make -C lab train-vm-… the wrappers)
   envs/*/terraform.tfvars.example   copy to terraform.tfvars (gitignored) and fill in
 ```
 
@@ -219,9 +220,19 @@ halves, as for the thermometer's Sourdough:
    `roles/run.invoker` binding for `sous-chef-run` alone. No shared secret:
    sous-chef sends a Google ID token with the service URL as audience
    (`auth: id-token` route).
-3. Add a route to `model_routes`, e.g.
-   `{"inhouse":{"kind":"messages-compatible","url":"<gpu_model_url>","auth":"id-token","model":"sous-chef","max_tokens":4096,"stream":false}}`,
-   and extend `model_route_allowlist`.
+3. The route is composed by the env root, not typed into a tfvar: while
+   `gpu_model_serve` is on, `envs/int/main.tf` adds
+   `{"inhouse":{"kind":"messages-compatible","url":<module url>,"auth":"id-token","model":"sous-chef","max_tokens":4096,"stream":false}}`
+   to the table in force (`model_routes`, or the server's two defaults when
+   that is empty), appends the name to `model_route_allowlist`, and runs the
+   service with `MODEL_CALL_TIMEOUT` 180 s (the thermometer's L4 needed
+   ~120 s per call). Name, Ollama model, max_tokens and that timeout are
+   `gpu_model_route`; `default_route` is never changed, so a turn that names
+   no route keeps Claude. With `gpu_model_serve` off the three `model_*`
+   tfvars pass through untouched: the plan with both flags off is the plan
+   without Phase 5, and half 1 alone does not roll the sous-chef service.
+   (`envs/prod` still takes the route by hand; port the locals when prod
+   gets a model.) Runbook: `docs/DEPLOY-INT.md` section 12.
 
 Cost reference from the thermometer (us-east4 list price, 2026-09): about
 US$1.05/hour while an instance runs, billed until ~10 minutes after the last

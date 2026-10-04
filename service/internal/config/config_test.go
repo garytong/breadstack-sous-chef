@@ -83,7 +83,8 @@ func TestLoadOverrides(t *testing.T) {
 	m["THERMOMETER_API_KEY"] = "tm_x"
 	m["BUILD_ID"] = "abc123"
 	m["MODEL_ROUTES"] = `{"default":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":4096},
-	  "local":{"kind":"messages-compatible","url":"https://gpu.internal/v1/messages","auth":"id-token","model":"qwen","max_tokens":2048,"stream":false}}`
+	  "local":{"kind":"messages-compatible","url":"https://gpu.internal/v1/messages","auth":"id-token","model":"qwen","max_tokens":2048,"stream":false},
+	  "think":{"kind":"messages-compatible","url":"https://gpu.internal/v1/messages","auth":"none","model":"qwen","max_tokens":2048,"thinking":"enabled","temperature":0.2,"top_p":0.9}}`
 	m["MODEL_ROUTE_ALLOWLIST"] = "default,local"
 	c, err := Load(env(m))
 	if err != nil {
@@ -105,6 +106,14 @@ func TestLoadOverrides(t *testing.T) {
 	if c.ModelRoutes["default"].Stream != nil {
 		t.Error("unset stream should stay nil so the model package can apply the kind default")
 	}
+	// thinking defaults: anthropic always on; messages-compatible off unless said
+	if !c.ModelRoutes["default"].ThinkingEnabled() || local.ThinkingEnabled() || local.Thinking != "" || local.Temperature != nil || local.TopP != nil {
+		t.Errorf("thinking/temperature/top_p defaults: default=%+v local=%+v", c.ModelRoutes["default"], local)
+	}
+	think := c.ModelRoutes["think"]
+	if !think.ThinkingEnabled() || think.Temperature == nil || *think.Temperature != 0.2 || think.TopP == nil || *think.TopP != 0.9 {
+		t.Errorf("think route = %+v", think)
+	}
 	if !c.RouteAllowed("local") || c.RouteAllowed("opus") {
 		t.Error("allowlist override not applied")
 	}
@@ -112,24 +121,29 @@ func TestLoadOverrides(t *testing.T) {
 
 func TestLoadRejectsBadValues(t *testing.T) {
 	cases := map[string]map[string]string{
-		"PORT":                  {"PORT": "abc"},
-		"PORT: 0 out of range":  {"PORT": "0"},
-		"MIGRATE_AT_BOOT":       {"MIGRATE_AT_BOOT": "maybe"},
-		"MODEL_CALL_TIMEOUT":    {"MODEL_CALL_TIMEOUT": "soon"},
-		"TURN_TTL: must be":     {"TURN_TTL": "-1s"},
-		"MAX_CONCURRENT_TURNS":  {"MAX_CONCURRENT_TURNS": "0"},
-		"TRACE_RETENTION_DAYS":  {"TRACE_RETENTION_DAYS": "0"},
-		"must be set together":  {"THERMOMETER_API_URL": "https://x"},
-		"MODEL_ROUTES: invalid": {"MODEL_ROUTES": "{"},
-		"DEFAULT_ROUTE":         {"DEFAULT_ROUTE": "nope"},
-		"MODEL_ROUTE_ALLOWLIST": {"MODEL_ROUTE_ALLOWLIST": "default,ghost"},
-		"kind \"openai\"":       {"MODEL_ROUTES": `{"default":{"kind":"openai","auth":"api-key","model":"x","max_tokens":1}}`},
-		"auth \"basic\"":        {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"basic","model":"x","max_tokens":1}}`},
-		"model is required":     {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","max_tokens":1}}`},
-		"max_tokens must be":    {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x"}}`},
-		"routes need url":       {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","auth":"none","model":"x","max_tokens":1}}`},
-		"url is only valid":     {"MODEL_ROUTES": `{"default":{"kind":"anthropic","url":"https://x","auth":"api-key","model":"x","max_tokens":1}}`},
-		"effort \"extreme\"":    {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x","max_tokens":1,"effort":"extreme"}}`},
+		"PORT":                             {"PORT": "abc"},
+		"PORT: 0 out of range":             {"PORT": "0"},
+		"MIGRATE_AT_BOOT":                  {"MIGRATE_AT_BOOT": "maybe"},
+		"MODEL_CALL_TIMEOUT":               {"MODEL_CALL_TIMEOUT": "soon"},
+		"TURN_TTL: must be":                {"TURN_TTL": "-1s"},
+		"MAX_CONCURRENT_TURNS":             {"MAX_CONCURRENT_TURNS": "0"},
+		"TRACE_RETENTION_DAYS":             {"TRACE_RETENTION_DAYS": "0"},
+		"must be set together":             {"THERMOMETER_API_URL": "https://x"},
+		"MODEL_ROUTES: invalid":            {"MODEL_ROUTES": "{"},
+		"DEFAULT_ROUTE":                    {"DEFAULT_ROUTE": "nope"},
+		"MODEL_ROUTE_ALLOWLIST":            {"MODEL_ROUTE_ALLOWLIST": "default,ghost"},
+		"kind \"openai\"":                  {"MODEL_ROUTES": `{"default":{"kind":"openai","auth":"api-key","model":"x","max_tokens":1}}`},
+		"auth \"basic\"":                   {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"basic","model":"x","max_tokens":1}}`},
+		"model is required":                {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","max_tokens":1}}`},
+		"max_tokens must be":               {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x"}}`},
+		"routes need url":                  {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","auth":"none","model":"x","max_tokens":1}}`},
+		"url is only valid":                {"MODEL_ROUTES": `{"default":{"kind":"anthropic","url":"https://x","auth":"api-key","model":"x","max_tokens":1}}`},
+		"effort \"extreme\"":               {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x","max_tokens":1,"effort":"extreme"}}`},
+		"thinking \"auto\"":                {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","url":"https://x","auth":"none","model":"x","max_tokens":1,"thinking":"auto"}}`},
+		"thinking is only valid":           {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x","max_tokens":1,"thinking":"disabled"}}`},
+		"temperature/top_p are only valid": {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x","max_tokens":1,"temperature":0.5}}`},
+		"temperature 3 is not":             {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","url":"https://x","auth":"none","model":"x","max_tokens":1,"temperature":3}}`},
+		"top_p 1.5 is not":                 {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","url":"https://x","auth":"none","model":"x","max_tokens":1,"top_p":1.5}}`},
 	}
 	for want, extra := range cases {
 		m := minimal()

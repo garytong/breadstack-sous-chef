@@ -147,19 +147,38 @@ def stable_hash(s: str) -> int:
     return int(hashlib.sha1(s.encode("utf-8")).hexdigest()[:12], 16)
 
 
-def fixture_asset_for(assets: list[dict], case_id: str, asset_type: str = "image") -> dict:
+def fixture_asset_for(assets: list[dict], case_id: str, asset_type: str = "image", asset_id: str | None = None) -> dict:
     """The fixture asset the collector's fake picker answers a case's
-    `pick_asset` with (collect.pick_asset_for): one of the asked type, chosen
-    from the case id alone — so the generator can put exactly this asset in
-    the pick variant's expected ops, and every sample of the case gets the
-    same answer. The generator and the collector must share this function:
-    when they disagreed (the picker also hashed the service's random tool
-    call id, 2026-10-04) every pick case compared the model's correct write
-    against another asset."""
+    `pick_asset` with (collect.pick_asset_for): the asset the case NAMES
+    (`asset_id` — the generator's `meta.asset_id`) when it is one of the
+    asked type (a merchant who asked for "the image 'Sunlit field at
+    harvest'" picks that one), else one of the asked type chosen from the
+    case id alone. Either way the answer is a function of the case, so the
+    generator can put exactly this asset in the expected ops and every
+    sample of the case gets the same one. The generator and the collector
+    must share this function: when they disagreed (the picker also hashed
+    the service's random tool call id, 2026-10-04) every pick case compared
+    the model's correct write against another asset; and while the picker
+    ignored the asset a `url`-variant request named (int-run3, 2026-10-04:
+    the model owns no asset library, so it opens the picker for a request
+    that names an image by its alt and writes what the picker returns) 15 of
+    the run's 21 `url` rows failed on the picker's other asset."""
     pool = [a for a in assets if (a.get("asset_type") or a.get("type") or "image") == asset_type] or list(assets)
     if not pool:
         raise ValueError("no fixture assets to answer pick_asset with (fixtures/assets.json)")
+    if asset_id:
+        named = next((a for a in pool if a.get("id") == asset_id), None)
+        if named is not None:
+            return named
     return pool[stable_hash(case_id) % len(pool)]
+
+
+def case_asset_id(case: dict) -> str | None:
+    """The fixture asset a case names (`meta.asset_id`: the `url` variant's
+    requested asset, the pick variant's hash pick); None for other cases."""
+    meta = case.get("meta") if isinstance(case, dict) else None
+    v = (meta or {}).get("asset_id") if isinstance(meta, dict) else None
+    return str(v) if v else None
 
 
 def load_probe_initials(fixtures_dir: Path | None = None) -> dict:

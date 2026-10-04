@@ -25,6 +25,11 @@ the wire, request after request (each request is the prefix of the turn up to th
 `system[1]` and `tools` equal `../system0.rules.txt`, `../system1.index.txt`, `../tools.json` byte for byte on every call
 (`../README.json` has the hashes); `dataset.to_hf` reads those bytes. Shape-specific assertions pin each row of the table.
 
+`../../parity/served.json` is Ollama 0.34.4's OWN prompt for every `model-requests.jsonl` body here, rendered by
+`lab/parity/` (a Go module pinning github.com/ollama/ollama v0.34.4; `make -C lab parity-write`); `tests/test_serving.py`
+holds `serving.render_prompt` (the lab's serving-parity render, LAB.md §5) to it byte for byte, request after request.
+Re-capturing here means re-writing that fixture too (`make -C lab parity-write`), and so does a new Ollama version.
+
 ## Recipe (re-capture when the service's prompt or result rendering changes)
 
 ```sh

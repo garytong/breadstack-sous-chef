@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -615,10 +616,13 @@ func TestCompatible_PlainRequest_APIKey(t *testing.T) {
 	if r.Stream {
 		t.Errorf("compatible routes do not stream by default")
 	}
-	for _, k := range []string{"thinking", "output_config", "cache_control", "fallbacks"} {
+	for _, k := range []string{"output_config", "cache_control", "fallbacks"} {
 		if _, has := r.Body[k]; has {
 			t.Errorf("plainRequest must drop %s", k)
 		}
+	}
+	if th, _ := r.Body["thinking"].(map[string]any); len(th) != 1 || th["type"] != "disabled" {
+		t.Errorf("thinking must be stated disabled by default, got %v", r.Body["thinking"])
 	}
 	if r.Header.Get("Anthropic-Beta") != "" {
 		t.Errorf("no beta header on a compatible route")
@@ -763,6 +767,206 @@ func TestAnthropic_StreamingDoesNotFallBackOn4xx(t *testing.T) {
 	if _, err := b.Message(context.Background(), sampleRequest(), nil); err == nil || len(fake.Requests()) != 1 {
 		t.Errorf("Claude's 400 is final: err=%v requests=%d", err, len(fake.Requests()))
 	}
+}
+
+// --- thinking / sampling fields per route -------------------------------------
+
+// historyWithThinking is a stored conversation as the loop replays it: an
+// assistant turn with a thinking block, a redacted one, text and a tool_use,
+// then its tool_result (the shape `messages.content` holds).
+func historyWithThinking(t *testing.T) []anthropic.BetaMessageParam {
+	t.Helper()
+	msgs, err := UnmarshalMessages([]byte(`[
+	 {"role":"user","content":[{"type":"text","text":"make the hero title bigger"}]},
+	 {"role":"assistant","content":[
+	   {"type":"thinking","thinking":"let me see","signature":"sig"},
+	   {"type":"redacted_thinking","data":"xyz"},
+	   {"type":"text","text":"Making it bigger."},
+	   {"type":"tool_use","id":"toolu_1","name":"set_fields","input":{"values":{"headlineFontSize":56}}}]},
+	 {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"{\"ok\":true}"}]},
+	 {"role":"user","content":[{"type":"text","text":"and bolder"}]}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return msgs
+}
+
+// blockTypes lists the content block types of the i-th message on the wire.
+func blockTypes(t *testing.T, body map[string]any, i int) []string {
+	t.Helper()
+	msgs, _ := body["messages"].([]any)
+	if i >= len(msgs) {
+		t.Fatalf("message %d missing in %v", i, body["messages"])
+	}
+	var out []string
+	for _, b := range msgs[i].(map[string]any)["content"].([]any) {
+		out = append(out, b.(map[string]any)["type"].(string))
+	}
+	return out
+}
+
+func TestCompatible_ThinkingDisabledByDefault_ExactBody(t *testing.T) {
+	fake := modeltest.New(modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("ok")}}))
+	defer fake.Close()
+	b, _ := compatTable(t, fake, config.AuthNone, nil).Route("")
+	req := sampleRequest()
+	req.Messages = historyWithThinking(t)
+	if _, err := b.Message(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	r := fake.Requests()[0]
+	// exact top-level keys: nothing Claude-only, thinking stated, no sampling fields unless set
+	var keys []string
+	for k := range r.Body {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if got := strings.Join(keys, ","); got != "max_tokens,messages,model,system,thinking,tool_choice,tools" {
+		t.Errorf("body keys = %s", got)
+	}
+	if string(mustJSON(t, r.Body["thinking"])) != `{"type":"disabled"}` {
+		t.Errorf("thinking = %s", mustJSON(t, r.Body["thinking"]))
+	}
+	// the stored thinking blocks are not re-sent; everything else is, in order
+	if got := strings.Join(blockTypes(t, r.Body, 1), ","); got != "text,tool_use" {
+		t.Errorf("assistant history on the wire = %s, want thinking dropped", got)
+	}
+	if len(r.Body["messages"].([]any)) != 4 {
+		t.Errorf("message count changed: %d", len(r.Body["messages"].([]any)))
+	}
+	if strings.Contains(string(r.Raw), "let me see") || strings.Contains(string(r.Raw), `"redacted_thinking"`) {
+		t.Errorf("thinking text reached the wire: %s", r.Raw)
+	}
+	// the caller's history is untouched (it is the persisted one)
+	if got := strings.Join(blockTypesOf(req.Messages[1]), ","); got != "thinking,redacted_thinking,text,tool_use" {
+		t.Errorf("caller's history mutated: %s", got)
+	}
+}
+
+func TestCompatible_ThinkingEnabled_ReplaysBlocksAndSamplingFields(t *testing.T) {
+	fake := modeltest.New(modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("ok")}}))
+	defer fake.Close()
+	temp, topP := 0.2, 0.9
+	tbl := compatTable(t, fake, config.AuthNone, func(o *Options) {
+		r := o.Routes["lab"]
+		r.Thinking = config.ThinkingEnabled
+		r.Temperature = &temp
+		r.TopP = &topP
+		o.Routes["lab"] = r
+	})
+	b, _ := tbl.Route("")
+	req := sampleRequest()
+	req.Messages = historyWithThinking(t)
+	if _, err := b.Message(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	r := fake.Requests()[0]
+	if string(mustJSON(t, r.Body["thinking"])) != `{"budget_tokens":256,"type":"enabled"}` {
+		t.Errorf("thinking = %s", mustJSON(t, r.Body["thinking"]))
+	}
+	if r.Body["temperature"] != 0.2 || r.Body["top_p"] != 0.9 {
+		t.Errorf("temperature/top_p = %v/%v", r.Body["temperature"], r.Body["top_p"])
+	}
+	if got := strings.Join(blockTypes(t, r.Body, 1), ","); got != "thinking,redacted_thinking,text,tool_use" {
+		t.Errorf("enabled must replay the thinking blocks, got %s", got)
+	}
+	for _, k := range []string{"output_config", "cache_control", "fallbacks"} {
+		if _, has := r.Body[k]; has {
+			t.Errorf("plainRequest must still drop %s", k)
+		}
+	}
+}
+
+func TestCompatible_TemperatureOnlyWhenSet(t *testing.T) {
+	fake := modeltest.New(modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("ok")}}))
+	defer fake.Close()
+	zero := 0.0
+	tbl := compatTable(t, fake, config.AuthNone, func(o *Options) { r := o.Routes["lab"]; r.Temperature = &zero; o.Routes["lab"] = r })
+	b, _ := tbl.Route("")
+	if _, err := b.Message(context.Background(), sampleRequest(), nil); err != nil {
+		t.Fatal(err)
+	}
+	r := fake.Requests()[0]
+	if v, has := r.Body["temperature"]; !has || v != 0.0 {
+		t.Errorf("an explicit temperature 0 must be sent, got %v (present=%v)", v, has)
+	}
+	if _, has := r.Body["top_p"]; has {
+		t.Errorf("top_p must be absent when unset")
+	}
+}
+
+func TestAnthropic_UnaffectedByThinkingFields(t *testing.T) {
+	fake := modeltest.New(modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("ok")}}))
+	defer fake.Close()
+	b, _ := anthropicTable(t, fake, nil).Route("")
+	req := sampleRequest()
+	req.Messages = historyWithThinking(t)
+	if _, err := b.Message(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	r := fake.Requests()[0]
+	for _, k := range []string{"thinking", "temperature", "top_p"} {
+		if _, has := r.Body[k]; has {
+			t.Errorf("anthropic route must not send %s (adaptive thinking), got %v", k, r.Body[k])
+		}
+	}
+	if got := strings.Join(blockTypes(t, r.Body, 1), ","); got != "thinking,redacted_thinking,text,tool_use" {
+		t.Errorf("anthropic route must replay preserved thinking, got %s", got)
+	}
+}
+
+func TestDropThinking_EdgeCases(t *testing.T) {
+	// no thinking anywhere → the same slice back, untouched
+	plain := []anthropic.BetaMessageParam{UserTextTurn("a"), {Role: anthropic.BetaMessageParamRoleAssistant, Content: []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock("b")}}}
+	if got := dropThinking(plain); len(got) != 2 || &got[0] != &plain[0] {
+		t.Errorf("a history without thinking must be returned as is")
+	}
+	// a thinking-only assistant turn is dropped whole, not sent empty
+	msgs, err := UnmarshalMessages([]byte(`[
+	 {"role":"user","content":[{"type":"text","text":"a"}]},
+	 {"role":"assistant","content":[{"type":"thinking","thinking":"x","signature":"s"}]},
+	 {"role":"user","content":[{"type":"text","text":"b"}]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := dropThinking(msgs)
+	if len(got) != 2 || got[0].Role != "user" || got[1].Role != "user" {
+		t.Errorf("thinking-only turn should be dropped: %d messages", len(got))
+	}
+	// a user turn carrying a thinking-typed block (never produced, but) is left alone
+	user, _ := UnmarshalMessages([]byte(`[{"role":"user","content":[{"type":"thinking","thinking":"x","signature":"s"},{"type":"text","text":"a"}]}]`))
+	if got := dropThinking(user); len(got[0].Content) != 2 {
+		t.Errorf("only assistant turns are filtered")
+	}
+}
+
+func blockTypesOf(m anthropic.BetaMessageParam) []string {
+	var out []string
+	for _, c := range m.Content {
+		switch {
+		case c.OfThinking != nil:
+			out = append(out, "thinking")
+		case c.OfRedactedThinking != nil:
+			out = append(out, "redacted_thinking")
+		case c.OfText != nil:
+			out = append(out, "text")
+		case c.OfToolUse != nil:
+			out = append(out, "tool_use")
+		default:
+			out = append(out, "?")
+		}
+	}
+	return out
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	js, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return js
 }
 
 // --- non-object tool input guard ---------------------------------------------

@@ -1,0 +1,47 @@
+# train — copy to terraform.tfvars (gitignored) and check the values. The
+# Makefile (make -C lab train-…) passes project_id and whether the VM exists
+# now (training_vm_enabled) on top, so those two always win. Edit the VM's
+# shape here before make -C lab train-vm-up; changing zone or machine_type on
+# a VM that exists replaces it and deletes its disk (train-vm-down first).
+
+project_id = "breadstack-sous-chef-int"
+
+# Who may push and pull (objectAdmin on the bucket, beside the VM's account).
+operators = ["user:gary.tong@breadstack.com"]
+
+# The VM: one GPU for the 9B's SFT in bf16, the measured workstation recipe
+# unchanged (max_seq_length 32768, LoRA r16; docs/TRAIN-WORKSTATION.md).
+#
+#   default   a2-highgpu-1g (1 × A100 40 GB) ON DEMAND in us-central1-a:
+#             the recipe's 26.8 GiB peak fits the 40 GB, the int project
+#             holds 16 on-demand A100s of quota (no request), and on demand
+#             because train.py has no --resume — a preempted run is lost.
+#             About US$3.67/h plus the disk (~US$0.05). A stockout in zone a:
+#             train-vm-down, zone = "us-central1-b" (or -c), train-vm-up.
+#   fallback  a3-highgpu-1g (1 × H100 80 GB) SPOT, the three lines below
+#             swapped in: fastest, US$6.57/h, preemptible — for the ~1 h
+#             runs only. The thermometer got one in zone a on 2026-10-03.
+machine_type       = "a2-highgpu-1g"
+zone               = "us-central1-a"
+provisioning_model = "STANDARD"
+# machine_type       = "a3-highgpu-1g"
+# zone               = "us-central1-a"
+# provisioning_model = "SPOT"
+termination_action = "STOP"
+# The hard stop, per start: bootstrap (~30 min) + the longest run expected
+# (the ~900-row SFT, 3–5 h estimated on the A100; the A100's 9B speed is
+# unmeasured until the first smoke) + the export (~5 min) with room. A run
+# longer than this is stopped mid-way with its adapter-latest on the disk.
+max_run_hours = 12
+# The bill's label: smoke, sft, dpo or export.
+stage = "smoke"
+
+# The budget: a NOTIFICATION, never a cap. It counts purpose=sous-chef-train
+# spend since the start date, in the billing account's currency. 200 is a
+# first figure against ~US$5–20 per run (README.md, Cost); the account is
+# int's (gcloud billing projects describe breadstack-sous-chef-int,
+# 2026-10-04: the same account as the thermometer's).
+budget_enabled    = true
+billing_account   = "01DF7D-F1F664-EC2F0A"
+budget_amount     = 200
+budget_start_date = "2026-10-04"

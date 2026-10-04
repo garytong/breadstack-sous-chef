@@ -19,4 +19,4 @@ Built so far (docs/LAB.md §1–§2, engine side of §3):
 
 The engine lives in the cookie-cutter checkout: set `COOKIE_CUTTER_DIR` (default: `../../breadstack-cookie-cutter`) or `SOUS_CHEF_ENGINE` to the `headless.mjs` path. Tests that need it skip when it is absent unless `SOUS_CHEF_LAB_REQUIRE_ENGINE=1`.
 
-Data directories (`lab/data/`, `lab/runs/`) and `lab/.venv/` are git-ignored. Fixtures under `lab/fixtures/` are copies of read-only sources with their origin recorded in a `_source` member; `manifest.snapshot.json` is a symlink to `service/testdata/`.
+Data directories (`lab/data/`, `lab/runs/`) and `lab/.venv/` are git-ignored. Fixtures under `lab/fixtures/` are copies of read-only sources with their origin recorded in a `_source` member; `manifest.snapshot.json` is a symlink to `service/testdata/`. `fixtures/parity/served.json` is generated: Ollama 0.34.4's own render of the real captures (`make -C lab parity-write`, through `lab/parity/`, a Go module pinning ollama v0.34.4) — the serving-parity fixture `tests/test_serving.py` holds `souschef_lab/serving.py` to (docs/LAB.md §5); re-record it when Ollama's renderer version changes.

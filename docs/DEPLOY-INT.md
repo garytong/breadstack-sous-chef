@@ -311,3 +311,142 @@ empty.
   a version with `new` alone and roll again.
 - **Retention job**: nightly 03:00 UTC from Cloud Scheduler; run it by hand
   with `gcloud run jobs execute sous-chef-retention --project $PROJECT --region $REGION --wait`.
+
+## 12. In-house model on int (Phase 5, `infra/modules/model-gpu`)
+
+The trained Sous Chef (Qwen3.5-9B LoRA, exported to a q4_k_m GGUF) served by
+Ollama from a private Cloud Run **L4** service in `us-east4` (Cloud Run has
+no GPU region in Canada; the Toronto service calls it cross-region, as the
+thermometer does), reachable only by `sous-chef-run` with a Google ID token.
+The sous-chef service gets one extra route, `inhouse`; **`default_route`
+stays `default`**, so nobody's turns move to the model unless the request
+says `"model":"inhouse"` (the launcher drawer does that from
+`?sousChefModel=inhouse`). Shape and numbers come from the thermometer's
+Sourdough (`breadstack-thermometer/lab/sourdough/README.md`,
+`infra/sourdough.tf`). Status (2026-10-04): the Terraform is written and
+planned read-only; **nothing below has been applied** (no `sous-chef-model`
+repository, SA or service exists in int yet).
+
+What the tfvars mean (`infra/envs/int/terraform.tfvars`; the example carries
+the same lines, both halves off):
+
+| tfvar | off | on | effect |
+|---|---|---|---|
+| `gpu_model_enabled` | `false` | `true` | **half 1**: Artifact Registry `sous-chef-model` (us-east4, immutable tags) + roleless SA `sous-chef-model-run`. Nothing else changes: the sous-chef service is not rolled |
+| `gpu_model_serve` | `false` | `true` | **half 2**: the Cloud Run GPU service `sous-chef-model` (1 x L4, 4 vCPU / 16Gi, max 1 instance, 300 s timeout, ingress all, authoritative `run.invoker` = `sous-chef-run`) **and** a new sous-chef revision with `MODEL_ROUTES` (+`inhouse`), `MODEL_ROUTE_ALLOWLIST=default,opus,inhouse`, `MODEL_CALL_TIMEOUT=180s` |
+| `gpu_model_image_tag` | `"r1"` | | the tag the service runs; a new export = a new tag (tags are immutable) |
+| `gpu_model_min_instances` | `0` | `1` | asleep (scale to zero) / awake (model loaded, billed every second) |
+| `gpu_model_route` | default | | `{name="inhouse", model="sous-chef", max_tokens=4096, call_timeout="180s"}`; the url is the module output, auth is `id-token` |
+
+Plans measured 2026-10-04 (`terraform plan -lock=false`, read-only): both
+flags off → `No changes`; `-var=gpu_model_enabled=true` → exactly 2 creates
+(repository, SA) and the `gpu_model_repo` output; both on → 4 creates
+(repository, SA, service, invoker binding) + 1 in-place update of
+`sous-chef` (the three env vars above; `MODEL_ROUTES` "known after apply"
+because it carries the new service's URL).
+
+### Half 1: repository + SA, then the image
+
+```sh
+cd infra/envs/int
+sed -i 's/^gpu_model_enabled .*/gpu_model_enabled       = true/' terraform.tfvars
+terraform plan  -var=image=$IMAGE          # 2 to add, 0 to change
+terraform apply -var=image=$IMAGE          # a person: repository + SA creation
+terraform output gpu_model_repo            # us-east4-docker.pkg.dev/breadstack-sous-chef-int/sous-chef-model
+```
+
+Build the image on the workstation (CPU only, no GPU involved; the lab
+Ollama on :11435 is never touched) from the export's q4_k_m GGUF and push
+it — `make -C lab model-stage model-build NAME=<run> QUANT=q4_k_m MODEL_TAG=r1`,
+then the commands `make -C lab model-push` prints (`gcloud auth
+configure-docker us-east4-docker.pkg.dev`, `docker push`). About 9.3 GB goes
+up; the repository stores it for ~US$0.90/month per tag. The Ollama model
+inside the image is named `sous-chef` (`lab/model-image/Dockerfile`), which
+is what the route's `model` says.
+
+### Half 2: the GPU service and the route
+
+```sh
+sed -i 's/^gpu_model_serve .*/gpu_model_serve         = true/' terraform.tfvars
+terraform plan  -var=image=$IMAGE          # 4 to add, 1 to change (sous-chef env)
+terraform apply -var=image=$IMAGE
+terraform output gpu_model_url
+```
+
+If the apply fails on the GPU service with a quota error, int's Cloud Run L4
+quota (`NvidiaL4GpuAllocNoZonalRedundancyPerProjectRegion`, us-east4) is 0:
+request it in the console (the thermometer's went through as 3; its README
+section "Quota" has the form), or move `gpu_model_region = "us-central1"`
+and re-plan (the repository stays in us-east4; Cloud Run imports the image).
+The service starts with `gpu_model_min_instances` from the file: `0` means
+it scales to zero straight away and costs nothing until the first request.
+
+Verify, read-only:
+
+```sh
+URL=$(terraform output -raw run_url)
+curl -s $URL/version                       # routes now ["default","inhouse","opus"]
+curl -s $URL/readyz                        # default_route still "ok" (Claude)
+gcloud run services describe sous-chef-model --project $PROJECT --region us-east4 \
+  --format='value(status.url,spec.template.spec.containers[0].image)'
+```
+
+A direct smoke test of the model service with your own login (Owner holds
+`run.routes.invoke`; this wakes the GPU for ~11 billed minutes):
+
+```sh
+MODEL_URL=$(terraform output -raw gpu_model_url)
+curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" $MODEL_URL/api/ps
+gcloud run services logs read sous-chef-model --project $PROJECT --region us-east4 --limit 20   # "sous-chef loaded in N s", CUDA not library=cpu
+```
+
+Then one turn through the launcher with `?sousChefModel=inhouse` on the int
+pantry (the launcher's half: cookie-cutter `launcher/client/src/sousChef/useSousChef.js`,
+deployed to `pantry-int`; its `SOUS_CHEF_URL`/key are the section 10 wiring).
+A 403 class in the model service's logs means the ID token's audience or the
+invoker binding is wrong; a `400 bad_request "model: …"` from sous-chef
+means `inhouse` is not in the allowlist the revision runs with.
+
+### Warm and asleep (the only cost switch)
+
+| state | tfvar | what it costs (us-east4 list, 2026-09, from the thermometer) |
+|---|---|---|
+| asleep | `gpu_model_min_instances = 0` | $0 idle. First request after a quiet spell wakes the GPU: ~1 min, first full answer 45–75 s; the instance then idles **10 min** after the last request, so one wake is about **US$0.19**, a 30-min demo ~$0.50–0.70 |
+| awake | `gpu_model_min_instances = 1` | model loaded, billed every second: **~US$1.05/hour, ~$25/day, ~$764/month** |
+
+Flip it with a targeted apply of the model service alone (nothing else is
+planned, and the sous-chef service is not rolled):
+
+```sh
+# warm, ~15 min before a demo
+terraform apply -var=image=$IMAGE -var=gpu_model_min_instances=1 \
+  -target='module.model_gpu[0].google_cloud_run_v2_service.model[0]'
+# sleep, right after
+terraform apply -var=image=$IMAGE -var=gpu_model_min_instances=0 \
+  -target='module.model_gpu[0].google_cloud_run_v2_service.model[0]'
+```
+
+Keep the file's value equal to the state you want to persist: every later
+full apply passes the file's `gpu_model_min_instances`, so a model warmed by
+`-var` goes back to sleep on the next plain apply (the thermometer reads the
+live value first — `make sourdough-warm/-sleep`; sous-chef has no Makefile
+for this yet, so read the plan). Per-answer cost is in the GPU time only:
+Ollama answers are **$0.00** on the Anthropic bill. Leaving it awake over a
+weekend is ~$75.
+
+### Turning it off
+
+`gpu_model_serve = false` + apply: removes the service and the binding, and
+the sous-chef revision goes back to `MODEL_CALL_TIMEOUT=60s`, the default
+route table and `default,opus` (a turn that still says `inhouse` gets `400
+bad_request`). `gpu_model_enabled = false` + apply then removes the SA and
+the repository **with its images** (push again after). There is no reason to
+retire the route while the service stays: with `default_route = "default"`
+an unused route costs nothing beyond the sleeping service.
+
+### Rolling a new model
+
+Export → `make -C lab model-stage model-build MODEL_TAG=r2` → push →
+`gpu_model_image_tag = "r2"` → apply (one new revision of the model
+service; the route is unchanged). Immutable tags mean `r1` can never be
+overwritten; roll back by setting the tag back.

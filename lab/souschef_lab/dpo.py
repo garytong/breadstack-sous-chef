@@ -21,9 +21,12 @@ the pattern, never imported), on the 9B recipe docs/LAB.md §8 fixes:
               and counted.
 
 How a pair is computed (the LabDPOTrainer keeps TRL's loss, metrics and
-loop): each pair is rendered with the base's chat template — the prompt with
-the generation prompt, each completion as the text the template adds for
-that turn up to the end-of-turn token — and tokenized as the model sees it
+loop): each pair is rendered in the served form (serving.py, docs/LAB.md §5
+"Serving parity") — the prompt is byte for byte what Ollama renders for
+that call (serving.render_prompt: the history without think blocks, the
+empty think block as the generation prompt), each completion is the turn
+as Ollama's parser would read it back, from the end of that prompt up to
+the end-of-turn token — and tokenized apart, exactly as the model sees it
 served. The chosen and rejected sequences run one at a time, unpadded, with
 the logits kept for the completion only and their log-probs taken in fp32 a
 chunk at a time.
@@ -47,8 +50,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import trainkit
-from .train import render_kwargs, render_text
+from . import serving, trainkit
+from .train import served_markers
 from .trainkit import die, estimate_tokens, read_jsonl, say, updates_for, utc_now, val_subset
 
 # The recipe (docs/LAB.md §8).
@@ -90,16 +93,21 @@ def check_pairs(rows: list[dict], where: str) -> list[str]:
     return problems
 
 
-def render_pair(apply_template, row: dict, render_kw: dict, eos: str) -> tuple[str, str, str] | str:
+def render_pair(row: dict, eos: str) -> tuple[str, str, str] | str:
     """(prompt text, chosen text, rejected text), or why the pair cannot be
-    rendered. The prompt is the conversation with the generation prompt; a
-    completion is what the template adds for that turn after it, up to and
-    including the end-of-turn token — where the model stops."""
+    rendered. The prompt is Ollama's prompt for that call
+    (serving.render_prompt, ending in the empty think block); a completion
+    is what the served render adds for that turn after it (the turn's text
+    and calls as Ollama echoes them), up to and including the end-of-turn
+    token — where the model stops. A pair whose completion Ollama would
+    echo as another call (serving.unservable) is not rendered."""
     prompt = row["prompt"]
-    p_text = render_text(apply_template, prompt, row["tools"], add_generation_prompt=True, **render_kw)
+    if serving.unservable(row["chosen"]) or serving.unservable(row["rejected"]):
+        return "unservable_call"
+    p_text = serving.render_prompt(prompt, row["tools"])
     out = [p_text]
     for side in ("chosen", "rejected"):
-        full = render_text(apply_template, prompt + row[side], row["tools"], add_generation_prompt=False, **render_kw)
+        full = serving.render_conversation(prompt + row[side], row["tools"], think_turns="last")
         if not full.startswith(p_text):
             return "render_mismatch"
         comp = full[len(p_text):]
@@ -110,15 +118,15 @@ def render_pair(apply_template, row: dict, render_kw: dict, eos: str) -> tuple[s
     return out[0], out[1], out[2]
 
 
-def tokenize_pairs(rows: list[dict], tokenize, apply_template, render_kw: dict, eos: str, eos_id: int,
-                   max_length: int, max_pair_tokens: int) -> tuple[list[dict], dict]:
+def tokenize_pairs(rows: list[dict], tokenize, eos: str, eos_id: int, max_length: int,
+                   max_pair_tokens: int) -> tuple[list[dict], dict]:
     """The pairs as token ids (prompt, chosen, rejected) and the count of
     those dropped, by reason: a sequence over max_length or both over
     max_pair_tokens (never cut), a render that does not extend its prompt, a
-    completion that does not end its turn."""
+    completion that does not end its turn, an unservable call."""
     kept, dropped = [], {}
     for r in rows:
-        got = render_pair(apply_template, r, render_kw, eos)
+        got = render_pair(r, eos)
         if isinstance(got, str):
             dropped[got] = dropped.get(got, 0) + 1
             continue
@@ -377,7 +385,7 @@ def plan(args, sft: dict, train_rows: list[dict] | None = None, val_rows: list[d
         "optim": args.optim, "scheduler": "linear", "max_length": max_length, "max_seq_length": max_length,
         "max_pair_tokens": args.max_pair_tokens or 2 * max_length, "tiled_mlp": tiled, "seed": args.seed,
         "eval_steps": args.eval_steps, "val_max_pairs": args.val_max_pairs, "thinking": False,
-        "render": "chat_template", "reference_file": str(out / REF_FILE),
+        "render": serving.DESCRIPTION, "reference_file": str(out / REF_FILE),
         "reference": "the frozen SFT model: the policy's own log-probs before the first update, precomputed once "
                      f"and cached ({REF_FILE}; ref_model=None)",
         "manifest_hash": pairs_manifest(args.pairs).get("manifest_hash"),
@@ -487,7 +495,7 @@ def run(args, p: dict, sft: dict, train_rows: list[dict], val_rows: list[dict]) 
     say(f"Policy: {trainkit.rel(args.sft_adapter)} continued, {sum(q.numel() for _, q in lora_params):,} trainable "
         f"weights on {p['base']} in bf16 · reference: {p['reference']}")
 
-    render_kw = render_kwargs(tok.chat_template or "", False)
+    served_markers(tok)
     eos = tok.eos_token or "<|im_end|>"
     eos_id = tok.convert_tokens_to_ids(eos)
 
@@ -495,10 +503,8 @@ def run(args, p: dict, sft: dict, train_rows: list[dict], val_rows: list[dict]) 
         return tok(text, add_special_tokens=False)["input_ids"]
 
     val_used = val_subset(val_rows, args.val_max_pairs, args.seed)
-    train_pairs, dropped = tokenize_pairs(train_rows, tokenize, tok.apply_chat_template, render_kw, eos, eos_id,
-                                          p["max_length"], p["max_pair_tokens"])
-    val_pairs, val_dropped = tokenize_pairs(val_used, tokenize, tok.apply_chat_template, render_kw, eos, eos_id,
-                                            p["max_length"], p["max_pair_tokens"])
+    train_pairs, dropped = tokenize_pairs(train_rows, tokenize, eos, eos_id, p["max_length"], p["max_pair_tokens"])
+    val_pairs, val_dropped = tokenize_pairs(val_used, tokenize, eos, eos_id, p["max_length"], p["max_pair_tokens"])
     say(f"Tokenized: {len(train_pairs)} train / {len(val_pairs)} val pairs kept; dropped "
         f"{dict(sorted(dropped.items())) or 'none'} (train), {dict(sorted(val_dropped.items())) or 'none'} (val). "
         f"Longest pair {max((x['tokens'] for x in train_pairs), default=0):,} tokens.")
