@@ -17,6 +17,26 @@ the collector logged beside a row (thermometer build_dataset.py's rule):
   duplicate      the same (case_id, canonical ops) was already kept
   over_length    tokens > max_seq (the base tokenizer when [train] is
                  installed and --tokenizer names it, else BYTES_PER_TOKEN)
+  escalated      only with --drop-escalated: the turn was handed to the
+                 fallback route (hybrid, README §4)
+
+Candidate fields (`--fields-context`, default on; LAB.md §5): the served
+student's route puts a `<candidate_fields>` block in the user turn (README §5
+`fields_context`), so its training rows must carry it. With the option on,
+every row's user turn is rendered with the block the service's own code
+computes for that row's context and text NOW (fields.py → the
+`sous-chef-fields` CLI; needs go) — whatever route the row was collected on:
+a Claude teacher row was sent none, and gets one. Off renders none, even for
+a row logged with one. `dataset-manifest.json` records which
+(`fields_context`), and train.py copies it into run.json, so an adapter
+trained with the block is distinguishable from one trained without.
+
+Hybrid rows: a row whose turn escalated (`row.escalated`, collect.py) was
+finished by the FALLBACK route's model. It is kept as a teacher row and
+flagged — `meta.escalated`, `meta.escalation_reason`, `meta.model` = the
+route that finished it, `meta.requested_model` = the student route that was
+asked — never counted as the student's; `stats.escalated` has the counts and
+`--drop-escalated` rejects them instead.
 
 Row format = thermometer lab/hf.py to_hf (copied, attribution in place):
 ``{id, messages:[system, user, assistant{content, tool_calls:[{id, type,
@@ -65,6 +85,8 @@ from .verify import (
 
 RULES = ("error", "messages_mismatch", "stop_reason", "not_pass", "warnings", "empty_reply", "lookup_storm", "holdout",
          "duplicate", "over_length")
+OPTIONAL_RULES = ("escalated",)  # applied only when asked (--drop-escalated)
+FIELDS_MODES = ("on", "off", "as-logged")
 LOOKUP_STORM = 3
 BYTES_PER_TOKEN = 3.0  # LAB.md §5: the fallback when no tokenizer is installed; train.py counts exactly
 DEFAULT_MAX_SEQ = 32768
@@ -126,13 +148,18 @@ context_block = render.context_block
 messages_from_events = render.messages_from_events
 
 
-def rebuild_messages(row: dict, case: dict | None = None) -> list[dict]:
+def rebuild_messages(row: dict, case: dict | None = None, candidates: str | None = None) -> list[dict]:
     """The turn's Anthropic messages rebuilt from ``row.events`` with the
-    context and text the turn was asked with (render.turn_inputs). This is
-    the ONLY source ``to_hf`` reads: a row's stored ``messages`` are a cache
-    (``stored_messages_match``), never the bytes that train."""
+    context and text the turn was asked with (render.turn_inputs) and — by
+    default — the candidate-fields block it was SENT with
+    (``row.candidate_fields``; none for most rows). This is the ONLY source
+    ``to_hf`` reads: a row's stored ``messages`` are a cache
+    (``stored_messages_match``), never the bytes that train. ``candidates``
+    overrides the block (``""`` = none): the training render of a row for a
+    route that sends another block than the one the row was collected with."""
     context, text = render.turn_inputs(row, case)
-    return messages_from_events(events_of(row), context, text)
+    block = render.turn_candidates(row) if candidates is None else candidates
+    return messages_from_events(events_of(row), context, text, block)
 
 
 def stored_messages_match(row: dict, case: dict | None = None, rebuilt: list[dict] | None = None) -> bool:
@@ -172,17 +199,25 @@ def _block_text(content) -> str:
 
 
 def to_hf(row: dict, case: dict | None = None, system: list[str] | tuple[str, ...] = (),
-          tools: list[dict] | None = None) -> dict:
+          tools: list[dict] | None = None, candidates: str | None = None) -> dict:
     """One training row (thermometer lab/hf.py to_hf, adapted: Anthropic
     messages ALWAYS rebuilt from ``row.events`` by render.py — never read
     from ``row.messages``, which may predate the renderer; no thinking; tool
-    results' content is the posted JSON)."""
+    results' content is the posted JSON). ``candidates``: the
+    candidate-fields block of the user turn — ``None`` = the one the row was
+    logged with, ``""`` = none, else the block to train with
+    (``rebuild_messages``). An escalated row (hybrid) is flagged as the
+    fallback route's: ``meta.model`` is the route that finished the turn."""
+    from .collect import completed_by, escalation_of  # lazy: collect imports nothing from here, keep it one-way
+
     case = case or {}
     messages: list[dict] = []
     sys_text = join_system(system)
     if sys_text:
         messages.append({"role": "system", "content": sys_text})
-    source = rebuild_messages(row, case)
+    block = render.turn_candidates(row) if candidates is None else render.go_trim_space(candidates)
+    source = rebuild_messages(row, case, block)
+    escalation = escalation_of(row)
     answer_start = len(messages) + 1  # after the system message and the one user message
     names: dict[str, str] = {}
     answered: set[str] = set()
@@ -222,7 +257,11 @@ def to_hf(row: dict, case: dict | None = None, system: list[str] | tuple[str, ..
         "messages": messages,
         "tools": hf_tools(tools if tools is not None else row.get("tools")),
         "meta": {
-            "model": row.get("model"), "case_id": row.get("case_id") or case.get("id"), "sample": row.get("sample"),
+            "model": completed_by(row) if escalation else row.get("model"),
+            "requested_model": row.get("model"), "escalated": bool(escalation),
+            "escalation_reason": (escalation or {}).get("reason"),
+            "fields_context": bool(block), "fields_block_chars": len(block),
+            "case_id": row.get("case_id") or case.get("id"), "sample": row.get("sample"),
             "kind": case.get("kind"), "target": target, "family": family_of(case),
             "field_type": (case.get("meta") or {}).get("field_type"), "holdout": bool(case.get("holdout")),
             "manifest_hash": case.get("manifest_hash"), "engine_fingerprint": case.get("engine_fingerprint"),
@@ -296,6 +335,11 @@ class BuildConfig:
     token_method: str = f"estimate: bytes ÷ {BYTES_PER_TOKEN:g}"
     family_share: float = 0.03
     logs: list[str] = field(default_factory=list)
+    # Candidate fields: "on" = every row rendered with the block `fields` (a fields.Fields) computes; "off" = none;
+    # "as-logged" = the block each row was collected with (the library default; the CLI's is on).
+    fields_context: str = "as-logged"
+    fields: object | None = None
+    drop_escalated: bool = False
 
 
 @dataclass
@@ -314,9 +358,23 @@ def build(rows: list[dict], cases: dict[str, dict], engine: Engine, cfg: BuildCo
     bestofn.select picks — split by case id, exam = the holdout cases."""
     from .bestofn import Judge, SelectConfig, select, selection_meta  # lazy: bestofn imports this module
 
+    from .collect import escalation_of
+
     cfg = cfg or BuildConfig()
-    judge = Judge(cases, engine, system=cfg.system, tools=cfg.tools, max_seq=cfg.max_seq, tokens=cfg.tokens)
+    if cfg.fields_context not in FIELDS_MODES:
+        raise ValueError(f"fields_context must be one of {FIELDS_MODES}")
+    if cfg.fields_context == "on":
+        if cfg.fields is None:
+            raise ValueError("fields_context on needs BuildConfig.fields (fields.Fields on the cases' manifest)")
+        cfg.fields.prime(render.turn_inputs(r, cases.get(str(r.get("case_id") or ""))) for r in rows)  # one process
+    judge = Judge(cases, engine, system=cfg.system, tools=cfg.tools, max_seq=cfg.max_seq, tokens=cfg.tokens,
+                  fields_context=cfg.fields_context, fields=cfg.fields)
     judged = [judge(r) for r in rows]
+    if cfg.drop_escalated:
+        for j in judged:
+            if escalation_of(j.row):
+                j.reasons.append("escalated")
+                j.passed = False
     seen: set[str] = set()
     for j in sorted(judged, key=lambda j: (j.case_id, j.sample, j.sample_id)):
         if j.passed:
@@ -369,17 +427,57 @@ def build(rows: list[dict], cases: dict[str, dict], engine: Engine, cfg: BuildCo
         "engine": {"fingerprint": build_fp, "case_fingerprints": case_fps, "stale_cases": len(stale),
                    "stale_sample": stale[:5]},
         "messages_mismatch": {"rows": len(mismatched), "sample": mismatched[:5]},
+        "fields_context": fields_stats(cfg, judged, out.train + out.val),
+        "escalated": escalated_stats(judged, out.train + out.val),
     }
     out.manifest = {
         "built_at": out.stats["built_at"], "mode": "best-of-n" if cfg.best_of_n else "all-kept",
         "logs": list(cfg.logs), "manifest_hashes": hashes, "engine_fingerprint": build_fp,
         "case_engine_fingerprints": case_fps, "rule_version": RULE_SET_VERSION, "keep_rules": list(RULES),
+        "fields_context": {"enabled": out.stats["fields_context"]["rows_with_block"] > 0 if cfg.fields_context == "as-logged"
+                           else cfg.fields_context == "on", "mode": cfg.fields_context,
+                           **(cfg.fields.identity() if cfg.fields_context == "on" else {}),
+                           "rows": out.stats["kept"], "rows_with_block": out.stats["fields_context"]["rows_with_block"]},
+        "escalated_rows": {"kept": out.stats["escalated"]["kept"], "policy": "dropped" if cfg.drop_escalated
+                           else "kept as teacher rows, flagged (meta.escalated, meta.model = the fallback route)"},
+        "optional_rules": ["escalated"] if cfg.drop_escalated else [],
         "lookup_storm": LOOKUP_STORM, "max_seq": cfg.max_seq, "token_count": cfg.token_method, "val_pct": cfg.val_pct,
         "split": "sha1(case_id) % 100 < val_pct; exam = holdout cases", "thinking": "none (traces carry no thinking)",
         "system_prompt": {"blocks": len(cfg.system), "bytes": len(join_system(cfg.system).encode("utf-8"))},
         "counts": {"train": len(out.train), "val": len(out.val), "exam": len(out.exam), "rejects": len(out.rejects)},
     }
     return out
+
+
+def fields_stats(cfg: BuildConfig, judged: list, kept: list[dict]) -> dict:
+    """What the build did about the candidate-fields block: the mode, how
+    many kept rows carry one, the block's size, and how many rows were
+    LOGGED with a block that is not the one rendered now (``drift``: the
+    retrieval or the manifest changed since the collection, or the mode
+    overrode the log)."""
+    chars = sorted(r["meta"]["fields_block_chars"] for r in kept if r["meta"].get("fields_block_chars"))
+    logged = [j for j in judged if j.hf and "candidate_fields" in j.row]
+    from .fields import first_user, split_user_text  # pure string helpers; no go needed
+
+    def rendered(hf: dict) -> str:
+        return split_user_text(str((first_user(hf) or {}).get("content") or ""))[2]
+
+    drift = sorted(j.sample_id for j in logged if render.go_trim_space(str(j.row.get("candidate_fields") or "")) != rendered(j.hf))
+    return {"mode": cfg.fields_context, "rows_with_block": len(chars), "rows_without_block": len(kept) - len(chars),
+            "block_chars": {"p50": chars[len(chars) // 2], "p95": chars[min(len(chars) - 1, int(len(chars) * 0.95))],
+                            "max": chars[-1]} if chars else None,
+            "logged_with_block": len(logged), "drift": {"rows": len(drift), "sample": drift[:5]}}
+
+
+def escalated_stats(judged: list, kept: list[dict]) -> dict:
+    """Hybrid rows in the logs and in the kept set (flagged teacher rows)."""
+    from .collect import escalation_of
+
+    esc = [j for j in judged if escalation_of(j.row)]
+    kept_esc = [r for r in kept if r["meta"].get("escalated")]
+    return {"rows": len(esc), "kept": len(kept_esc),
+            "reasons": dict(sorted(Counter(str(escalation_of(j.row).get("reason")) for j in esc).items())),
+            "kept_by_route": dict(sorted(Counter(str(r["meta"].get("model")) for r in kept_esc).items()))}
 
 
 def token_stats(rows: list[dict], budget: int, count: Callable[[dict], int] = estimate_tokens) -> dict:
@@ -406,6 +504,24 @@ def write_build(out_dir: Path, b: Build) -> None:
     write_jsonl(out_dir / "rejects.jsonl", b.rejects)
     (out_dir / "stats.json").write_text(json.dumps(b.stats, indent=2, ensure_ascii=False), encoding="utf-8")
     (out_dir / MANIFEST_NAME).write_text(json.dumps(b.manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def fields_for_cases(manifest: Path | None, cases_path: Path, cases: dict[str, dict]):
+    """The fields.Fields for a build: on ``manifest``, else ``manifest.json``
+    beside the cases file, else the lab's fixture snapshot — refused when its
+    hash is not the cases' (the blocks would list another manifest's keys)."""
+    from . import fields as mod  # lazy: only --fields-context on needs go
+    from .collect import DEFAULT_MANIFEST, manifest_hash
+
+    path = manifest or next((p for p in (cases_path.parent / "manifest.json",) if p.is_file()), DEFAULT_MANIFEST)
+    if not Path(path).is_file():
+        raise mod.FieldsError(f"manifest {path} not found (--manifest)")
+    have = manifest_hash(json.loads(Path(path).read_text(encoding="utf-8")))
+    want = {str(c.get("manifest_hash")) for c in cases.values() if c.get("manifest_hash")}
+    if want and want != {have}:
+        raise mod.FieldsError(f"{path} hashes to {have[:12]}… but the cases were generated from "
+                              f"{', '.join(sorted(w[:12] + '…' for w in want))}: pass the cases' manifest with --manifest")
+    return mod.Fields(path)
 
 
 def tokenizer_counter(name: str | None) -> tuple[Callable[[dict], int], str]:
@@ -440,6 +556,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tools", help="the tool definitions (Anthropic shape, JSON list)")
     p.add_argument("--tokenizer", help="count tokens exactly with this local tokenizer ([train] extra)")
     p.add_argument("--recorded", help="replay recorded engine output (tests)")
+    p.add_argument("--fields-context", choices=FIELDS_MODES, default="on",
+                   help="the user turn's candidate-fields block: on = the block the service computes for every row "
+                        "(the served student's prompt; needs go and --manifest), off = none, as-logged = what each "
+                        "row was collected with (default: %(default)s)")
+    p.add_argument("--manifest", type=Path,
+                   help="the manifest the cases were generated from, for --fields-context on (default: manifest.json "
+                        "beside --cases, else the lab's fixture snapshot)")
+    p.add_argument("--drop-escalated", action="store_true",
+                   help="reject rows whose turn escalated to the fallback route (default: keep them as flagged teacher rows)")
     args = p.parse_args(argv)
     if not 0 <= args.val_pct < 100:
         p.error("--val-pct must be 0–99")
@@ -449,8 +574,17 @@ def main(argv: list[str] | None = None) -> int:
     cases = {c["id"]: c for c in read_jsonl(args.cases)}
     rows = [r for path in args.log for r in read_jsonl(path)]
     engine: Engine = RecordedEngine(args.recorded) if args.recorded else default_engine()
+    fields = None
+    if args.fields_context == "on":
+        try:
+            fields = fields_for_cases(args.manifest, Path(args.cases), cases)
+        except RuntimeError as e:  # fields.FieldsError
+            print(f"cannot build with --fields-context on: {e}\n(--fields-context off builds rows without the "
+                  f"candidate-fields block — the form adapters before 2026-10-04 were trained on)", file=sys.stderr)
+            return 2
     cfg = BuildConfig(val_pct=args.val_pct, max_seq=args.max_seq, best_of_n=args.best_of_n, system=system, tools=tools,
-                      tokens=count, token_method=method, logs=list(args.log))
+                      tokens=count, token_method=method, logs=list(args.log), fields_context=args.fields_context,
+                      fields=fields, drop_escalated=args.drop_escalated)
     b = build(rows, cases, engine, cfg)
     write_build(Path(args.out), b)
     s = b.stats
@@ -466,7 +600,14 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
     print(f"rows {s['rows_read']} · kept {s['kept']} (train {s['train']} / val {s['val']}) · exam cases {s['holdout_cases']} "
           f"· rejected {s['rejected']}")
-    for reason in [*RULES, "no_case"]:
+    fc, esc = s["fields_context"], s["escalated"]
+    print(f"  candidate fields {fc['mode']}: {fc['rows_with_block']} of {s['kept']} kept rows carry the block"
+          + (f" (chars p50 {fc['block_chars']['p50']} / p95 {fc['block_chars']['p95']} / max {fc['block_chars']['max']})"
+             if fc["block_chars"] else ""))
+    if esc["rows"]:
+        print(f"  escalated (hybrid) rows: {esc['rows']} in the logs, {esc['kept']} kept as flagged teacher rows "
+              f"{esc['kept_by_route']}")
+    for reason in [*RULES, *OPTIONAL_RULES, "no_case"]:
         if s["rejects_by_reason"].get(reason):
             print(f"  rejected · {reason:13} {s['rejects_by_reason'][reason]}")
     print(f"wrote {args.out}/train.jsonl, val.jsonl, exam.jsonl, rejects.jsonl, stats.json, {MANIFEST_NAME}")

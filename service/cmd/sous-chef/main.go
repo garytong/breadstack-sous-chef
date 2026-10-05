@@ -138,6 +138,8 @@ func serve(ctx context.Context, cfg *config.Config, getenv func(string) string) 
 	srv := api.New(auth.NewKeys(cfg.ServiceKeys), api.Options{
 		BuildID:                cfg.BuildID,
 		Routes:                 cfg.RouteNames(),
+		RouteInfo:              cfg.RouteInfo(),
+		DefaultRoute:           cfg.DefaultRoute,
 		DefaultRouteConfigured: defaultOK,
 		// README §1 limits: 8 MiB manifests, 256 KB for every other body.
 		MaxManifestBytes: api.DefaultMaxManifestBytes,

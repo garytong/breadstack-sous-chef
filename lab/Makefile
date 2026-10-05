@@ -42,6 +42,15 @@ SFT               ?= runs/adapters/$(NAME)-sft/adapter
 ADAPTER           ?= runs/adapters/$(NAME)-dpo/adapter
 SOUS_CHEF_URL     ?= http://127.0.0.1:8080
 SOUS_CHEF_KEY     ?= test-key
+# Candidate fields (docs/LAB.md §5). FIELDS_CONTEXT: the block in the TRAINING rows (dataset, fields-rerender, train,
+# train-dry) — on = the served student's prompt. ROUTE_FIELDS_CONTEXT: whether the route collect/eval ask sends the
+# block, so the logged messages are what the model read — auto = what the service's /version says for the route
+# (on / off are refused when the service says otherwise; needed only for a service built before it said).
+# DPO_FIELDS_CONTEXT: dpo's check of the pairs — auto = what the SFT adapter was trained with.
+FIELDS_CONTEXT       ?= on
+ROUTE_FIELDS_CONTEXT ?= auto
+DPO_FIELDS_CONTEXT   ?= auto
+OUT                  ?= $(DATA)-fc
 
 # Remote training (docs/TRAIN-REMOTE.md): the base weights go to the VM as one
 # tar of the local Hugging Face cache (18 GiB), laid out like the thermometer's
@@ -76,7 +85,7 @@ MODEL_IMAGE   = $(MODEL_REPO)/model:$(MODEL_TAG)
 
 export COOKIE_CUTTER_DIR ENGINE SOUS_CHEF_ENGINE=$(ENGINE)
 
-.PHONY: help venv test test-engine cases cases-dry cases-remeasure engine-fingerprint collect dataset pairs eval passk retrain-check parity parity-write train-env train-dry train-gpu-check train dpo export model-stage model-build model-push train-vm-init train-vm-plan train-vm-apply train-vm-up train-vm-ssh train-vm-down train-vm-status train-remote-push train-remote-pull fake-service fake-model clean
+.PHONY: help venv test test-engine cases cases-dry cases-remeasure engine-fingerprint collect dataset fields-rerender pairs eval passk retrain-check parity parity-write train-env train-dry train-gpu-check train dpo export model-stage model-build model-push train-vm-init train-vm-plan train-vm-apply train-vm-up train-vm-ssh train-vm-down train-vm-status train-remote-push train-remote-pull fake-service fake-model clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -108,13 +117,15 @@ engine-fingerprint: ## print the engine's identity (sha256 over the static impor
 
 # ── later phases (docs/LAB.md §4-§8); the modules land with their own tests ──
 collect: ## collect N samples per case from ROUTE via SOUS_CHEF_URL / SOUS_CHEF_KEY
-	$(LABPY) -m souschef_lab.collect --cases $(DATA)/cases.jsonl --route $(ROUTE) --samples $(N) --out $(DATA)/collect-$(LABEL).jsonl --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --manifest $(MANIFEST)
-dataset: ## build train/val/exam from the collected logs (LOGS=space-separated jsonl files)
-	$(LABPY) -m souschef_lab.dataset $(foreach f,$(LOGS),--log $(f)) --cases $(DATA)/cases.jsonl --out $(DATA)/dataset $(if $(BEST_OF_N),--best-of-n,)
+	$(LABPY) -m souschef_lab.collect --cases $(DATA)/cases.jsonl --route $(ROUTE) --samples $(N) --out $(DATA)/collect-$(LABEL).jsonl --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --manifest $(MANIFEST) --fields-context $(ROUTE_FIELDS_CONTEXT)
+dataset: ## build train/val/exam from the collected logs (LOGS=space-separated jsonl files); FIELDS_CONTEXT=on (default; needs go) renders every row with the service's candidate-fields block, off without; the manifest is $(DATA)/manifest.json when there (else the fixture snapshot; DATASET_MANIFEST=… overrides)
+	$(LABPY) -m souschef_lab.dataset $(foreach f,$(LOGS),--log $(f)) --cases $(DATA)/cases.jsonl --out $(DATA)/dataset $(if $(BEST_OF_N),--best-of-n,) --fields-context $(FIELDS_CONTEXT) $(if $(DATASET_MANIFEST),--manifest $(DATASET_MANIFEST),)
+fields-rerender: ## re-render a built dataset's user turns with the candidate-fields block: DATA=data/<set> (its dataset/ + manifest.json) → OUT=data/<new set>/dataset (FIELDS_CONTEXT=off strips it); needs go
+	$(LABPY) -m souschef_lab.fields rerender --data $(DATA)/dataset --manifest $(DATA)/manifest.json --out $(OUT)/dataset --fields-context $(FIELDS_CONTEXT)
 pairs: ## DPO pairs from the collected logs (LOGS=…)
 	$(LABPY) -m souschef_lab.pairs $(foreach f,$(LOGS),--log $(f)) --cases $(DATA)/cases.jsonl --out $(DATA)/pairs
 eval: ## held-out exam on ROUTE → runs/eval-$(LABEL)-<UTC>.json
-	$(LABPY) -m souschef_lab.eval --route $(ROUTE) --label $(LABEL) --cases $(DATA)/cases.jsonl --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --manifest $(MANIFEST)
+	$(LABPY) -m souschef_lab.eval --route $(ROUTE) --label $(LABEL) --cases $(DATA)/cases.jsonl --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --manifest $(MANIFEST) --fields-context $(ROUTE_FIELDS_CONTEXT)
 passk: ## pass@k over several eval runs (RUNS=space-separated runs/eval-*.json)
 	$(LABPY) -m souschef_lab.passk $(RUNS)
 retrain-check: ## manifest drift / real-kept pass / age triggers (exit 0/1/2)
@@ -128,15 +139,15 @@ train-env: ## create lab/.venv-train (Python $(TRAIN_PYTHON) via uv) with the [t
 	$(UV) pip install --python $(TRAIN_VENV)/bin/python --index $(TORCH_INDEX) --index-strategy unsafe-best-match -c $(TRAIN_CONSTRAINTS) -e '.[train]'
 	CUDA_VISIBLE_DEVICES= $(TRAIN_VENV)/bin/python -W ignore -c 'import torch, trl, peft, transformers, fla; print("train-env ok: python", __import__("sys").version.split()[0], "torch", torch.__version__, "trl", trl.__version__, "peft", peft.__version__, "transformers", transformers.__version__, "fla", fla.__version__)'
 train-dry: ## the three --dry-run plans (SFT, DPO, export) against $(DATA) with TRAINPY; imports no torch, touches no GPU
-	$(TRAINPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft --dry-run
-	$(TRAINPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo --dry-run
+	$(TRAINPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft --fields-context $(FIELDS_CONTEXT) --dry-run
+	$(TRAINPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo --fields-context $(DPO_FIELDS_CONTEXT) --dry-run
 	$(TRAINPY) -m souschef_lab.export --adapter $(ADAPTER) --name $(NAME) $(if $(BASE_MODELFILE),--base-modelfile $(BASE_MODELFILE),) --dry-run
 train-gpu-check: ## `import unsloth, trl, peft` + the GPU's name (unsloth refuses to import without a GPU; this opens a CUDA context — run it only when Ollama is idle)
 	$(TRAINPY) -W ignore -c 'import unsloth, trl, peft, torch; print("unsloth", unsloth.__version__, "trl", trl.__version__, "peft", peft.__version__, "gpu", torch.cuda.get_device_name(0), "bf16", torch.cuda.is_bf16_supported())'
-train: ## SFT with TRAINPY (make train-env first); DRY=1 for --dry-run; NAME=run name (adapter → runs/adapters/$(NAME)-sft); MAX_STEPS=4 for a smoke run
-	$(TRAINPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft $(if $(MAX_STEPS),--max-steps $(MAX_STEPS),) $(if $(DRY),--dry-run,)
+train: ## SFT with TRAINPY (make train-env first); FIELDS_CONTEXT=on (default) refuses rows without the candidate-fields block, off refuses rows with it; DRY=1 for --dry-run; NAME=run name (adapter → runs/adapters/$(NAME)-sft); MAX_STEPS=4 for a smoke run
+	$(TRAINPY) -m souschef_lab.train --data $(DATA)/dataset --name $(NAME)-sft --fields-context $(FIELDS_CONTEXT) $(if $(MAX_STEPS),--max-steps $(MAX_STEPS),) $(if $(DRY),--dry-run,)
 dpo: ## DPO against the frozen SFT adapter (TRAINPY); SFT=adapter dir, NAME=run name
-	$(TRAINPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo $(if $(DRY),--dry-run,)
+	$(TRAINPY) -m souschef_lab.dpo --pairs $(DATA)/pairs --sft-adapter $(SFT) --name $(NAME)-dpo --fields-context $(DPO_FIELDS_CONTEXT) $(if $(DRY),--dry-run,)
 export: ## GGUF q4_k_m / q8_0 + Ollama Modelfile (num_ctx 65536); ADAPTER=adapter dir, NAME=Ollama model name; QUANTS=q4_k_m for one; BASE_MODELFILE=file instead of `ollama show`; CREATE=1 runs `ollama create` (OLLAMA_HOST + LAB_OLLAMA_BIN from the environment)
 	$(TRAINPY) -m souschef_lab.export --adapter $(ADAPTER) --name $(NAME) $(if $(QUANTS),--quants $(QUANTS),) $(if $(BASE_MODELFILE),--base-modelfile $(BASE_MODELFILE),) $(if $(CREATE),--create,) $(if $(DRY),--dry-run,)
 # ── the model image (lab/model-image/README.md) ──
@@ -258,7 +269,7 @@ train-remote-push: ## remote training: DATA=data/<set> → $(TRAIN_BUCKET)/data/
 	  gcloud storage rsync --recursive --exclude='^engine-cache/.*' '$(DATA)' '$(TRAIN_BUCKET)'/data/$$set || exit 1
 	@sha=$$(git rev-parse --short HEAD 2>/dev/null || echo nogit); dirty=$$(test -z "$$(git status --porcelain -- . 2>/dev/null)" || echo "+uncommitted"); \
 	  echo "$$sha$$dirty $$(date -u +%FT%TZ)" > KIT-VERSION; \
-	  tar -h -C .. -czf - --exclude=lab/.venv --exclude=lab/.venv-train --exclude=lab/data --exclude=lab/runs --exclude=lab/unsloth_compiled_cache --exclude='__pycache__' --exclude=.pytest_cache --exclude='*.egg-info' lab | \
+	  tar -h -C .. -czf - --exclude=lab/.venv --exclude=lab/.venv-train --exclude=lab/.cache --exclude=lab/data --exclude=lab/runs --exclude=lab/unsloth_compiled_cache --exclude='__pycache__' --exclude=.pytest_cache --exclude='*.egg-info' lab | \
 	    gcloud storage cp - '$(TRAIN_KIT)' && echo "train-remote-push: the lab's working tree ($$sha$$dirty) → $(TRAIN_KIT); on the VM: sous-chef-kit-pull (the bootstrap does it at boot)"; \
 	  rm -f KIT-VERSION
 	@case '$(BASE)' in skip) echo "train-remote-push: base tar skipped (BASE=skip)";; \
@@ -280,4 +291,4 @@ fake-model: ## run the tests' fake /v1/messages model on 127.0.0.1:8091 (STEPS=s
 	$(LABPY) -m tests.fake_model --port 8091 $(if $(STEPS),--steps $(STEPS),)
 
 clean: ## remove caches (keeps data/ and runs/)
-	rm -rf .pytest_cache souschef_lab/__pycache__ tests/__pycache__ $(DATA)/engine-cache
+	rm -rf .pytest_cache .cache souschef_lab/__pycache__ tests/__pycache__ $(DATA)/engine-cache

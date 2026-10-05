@@ -18,6 +18,7 @@ No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_re
 | `ok.set_field.contentBlock-1.title` | `{"ok":true,"written":[…]}` | 2 | pass |
 | `error.set_field.contentBlock-1.tagline` | `{"code":"E_FIELD","message":…,"key":"showButton"}` with `is_error`, then the retry's ok | 3 | invalid_op (the scripted bad op) |
 | `warnings-sectionid.list_add.home.sections.loyaltyForm` | `{"ok":true,"sectionId":"loyaltyForm","written":[…]}` and `{"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":[…]}` — two results in ONE user message | 2 | extra_writes (the scripted gated write) |
+| `fields-context.set_field.contentBlock-1.title` | the `ok.` turn again on route `lab-fake-fields` (`fields_context: on`): the user turn carries the `<candidate_fields>` block between `</context>` and the text; `plan.json` names the route; the row logs the block as `candidate_fields` (captured 2026-10-04) | 2 | pass |
 | `pick_asset.image.gallery.bgImage` | `turn.suspended` → the bare `api.Asset` `{"public_url":…,"srcset":{…}}`, then the set_fields' ok | 3 | pass |
 
 `tests/test_render.py` asserts, for every capture: the row's `messages` == `render.messages_from_events(row.events)` ==
@@ -37,12 +38,14 @@ cd lab
 docker compose -f ../docker-compose.yml up -d postgres           # or: make -C .. db-up (Postgres 16 on 5433)
 .venv/bin/python tests/capture_real.py --default-plan data/e2e/cases.jsonl --out fixtures/prompt/real
 #   --from fixtures/prompt/real --out <dir>   re-runs the stored case.json + steps.json instead of the default plan
+#   --only <capture name>                     run one capture of the plan (repeatable)
 #   --binary <path>                           skip the `go build`; --db-url, --engine, --manifest, --port, --model-port
 ```
 
 What the script does: `go build` the binary into a temp dir; start `FakeModel` (free port) and the binary
-(`DATABASE_URL` = `…/souschef_lab`, `MIGRATE_AT_BOOT=on`, `SERVICE_KEYS=test-key`, `MODEL_ROUTES` = the one `lab-fake`
-route, `BUILD_ID=lab-e2e`); per capture, append the steps, `POST /v1/manifests` (`fixtures/manifest.snapshot.json`),
+(`DATABASE_URL` = `…/souschef_lab`, `MIGRATE_AT_BOOT=on`, `SERVICE_KEYS=test-key`, `MODEL_ROUTES` = `lab-fake` with
+`fields_context: off` — a `messages-compatible` route defaults to on since 2026-10-04, and the four tool_result captures
+are the block-less bytes — and `lab-fake-fields` with it on, `BUILD_ID=lab-e2e`); per capture, append the steps, `POST /v1/manifests` (`fixtures/manifest.snapshot.json`),
 `run_case` (which first `DELETE`s the site's open conversation — a turn without `conversationId` continues it, README §1.1,
 and the lab's `siteId` is `lab-<case id>` for every sample), then write the four files. The default plan takes the cases
 from `data/e2e/cases.jsonl` (+ `fixtures/traces/` for the two `set_field.contentBlock-1.*` cases); the `pick_asset` plan

@@ -81,6 +81,13 @@ locals {
     # rest): the base's chat default of temperature 1 cost 7 points on the
     # paired exam slice against 0.3 (2026-10-04, thinking already off).
     temperature = var.gpu_model_route.temperature
+    # Hybrid: when the student's op is refused, it reports unsupported, or its
+    # call fails, the same turn continues on this route (at most once). ""
+    # turns it off. Needs a service build that knows the option (after 3b15f6b).
+    fallback = var.gpu_model_route.fallback
+    # What usage rows (the thermometer) and turn.done call this model: the
+    # route's name, not the Ollama tag the server echoes back.
+    report_as = var.gpu_model_route.name
   }
 
   model_routes          = local.inhouse_live ? jsonencode(merge(local.base_routes, { (var.gpu_model_route.name) = local.inhouse_route })) : var.model_routes

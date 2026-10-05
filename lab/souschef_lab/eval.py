@@ -7,6 +7,10 @@ The run lands in `runs/eval-<label>-<UTC>.json`:
   summary.overall / by_kind / by_container / by_field_type
             n, passed, pass_rate (points, 0–100), errors, verdict
             histogram, ops per turn (mean, p50, max), latency p50/p95 ms
+  summary.hybrid   on a route with a `fallback` (README §4): the student-only
+            pass (rows that never escalated), the hybrid pass (those plus
+            the escalated rows the fallback finished correctly) and the
+            escalation rate with its reasons (collect.hybrid_summary)
   usage     summed input/output/cache tokens and model calls
   results   one row per sample (the collect row: events, ops, messages,
             verdict, reasons), so --rescore can re-verify under new rules
@@ -105,7 +109,7 @@ def _field_type_of(row: dict) -> str:
 
 
 def summarize(rows: list[dict]) -> dict:
-    out = {"overall": group(rows), "by_kind": {}, "by_container": {}, "by_field_type": {}}
+    out = {"overall": group(rows), "hybrid": C.hybrid_summary(rows), "by_kind": {}, "by_container": {}, "by_field_type": {}}
     for k in sorted({str((r.get("meta") or {}).get("kind")) for r in rows}, key=lambda k: (KINDS.index(k) if k in KINDS else 99, k)):
         out["by_kind"][k] = group([r for r in rows if str((r.get("meta") or {}).get("kind")) == k])
     for key, fn in (("by_container", _container_of), ("by_field_type", _field_type_of)):
@@ -118,12 +122,16 @@ def summarize(rows: list[dict]) -> dict:
 
 def build_report(rows: list[dict], *, label: str, route: str | None, manifest_hash: str | None, started: str,
                  finished: str | None = None, rule_version: str = RULE_VERSION, samples: int = 1,
-                 cases: int | None = None, engine_fingerprint: str | None = None) -> dict:
+                 cases: int | None = None, engine_fingerprint: str | None = None,
+                 fields_context: bool | None = None, fields_record: dict | None = None) -> dict:
+    if fields_context is None:  # a rescore: what the rows themselves say
+        fields_context = any(r.get("fields_context") or "candidate_fields" in r for r in rows)
     for r in rows:  # passk.py's contract: results[] rows carry `passed` and `kind` at the top level
         r["passed"] = passed(r)
         r.setdefault("kind", (r.get("meta") or {}).get("kind"))
     return {"label": label, "route": route, "manifest_hash": manifest_hash, "rule_version": rule_version,
-            "engine_fingerprint": engine_fingerprint, "samples": samples, "cases": cases if cases is not None else len({r.get("case_id") for r in rows}),
+            "engine_fingerprint": engine_fingerprint, "fields_context": fields_context, "samples": samples, "cases": cases if cases is not None else len({r.get("case_id") for r in rows}),
+            **{k: v for k, v in (fields_record or {}).items() if k in ("fields_context_by", "route_info")},
             "started_at": started, "finished_at": finished or C.utc_now(), "summary": summarize(rows),
             "usage": usage_of(rows), "results": rows}
 
@@ -131,24 +139,29 @@ def build_report(rows: list[dict], *, label: str, route: str | None, manifest_ha
 def run_exam(cases: list[dict], client: C.Client, engine: C.Engine, *, label: str, route: str | None = None,
              samples: int = 1, verifier: Callable[[dict, dict], Any] | None = None, assets: Iterable[dict] = (),
              out_dir: Path = DEFAULT_RUNS, tools: list | None = None, progress: Callable[[str], None] | None = None,
-             rule_version: str = RULE_VERSION) -> tuple[Path, dict]:
-    """Ask every exam case `samples` times and save the run. Returns (path, report)."""
+             rule_version: str = RULE_VERSION, fields: Any | None = None,
+             fields_record: dict | None = None) -> tuple[Path, dict]:
+    """Ask every exam case `samples` times and save the run. Returns (path, report).
+    `fields_record` (collect.resolve_fields) says who decided `fields`; a
+    turn.done that contradicts it raises collect.FieldsContextMismatch."""
     exam = exam_cases(cases)
     started = C.utc_now()
     rows: list[dict] = []
     assets = list(assets)
     for k in range(1, samples + 1):
         for i, case in enumerate(exam, 1):
-            row = C.run_case(case, client, engine, route=route, sample=k, assets=assets, verifier=verifier, tools=tools)
+            row = C.run_case(case, client, engine, route=route, sample=k, assets=assets, verifier=verifier, tools=tools,
+                             fields=fields)
             rows.append(row)
             if progress:
-                progress(f"[{k}/{samples} {i}/{len(exam)}] {row['id']} {row.get('verdict') or row.get('code')} "
+                esc = f" · escalated→{row['escalated'].get('to')} ({row['escalated'].get('reason')})" if row.get("escalated") else ""
+                progress(f"[{k}/{samples} {i}/{len(exam)}] {row['id']} {row.get('verdict') or row.get('code')}{esc} "
                          f"· {row['latency_ms'] / 1000:.1f}s")
     hashes = {c.get("manifest_hash") for c in exam}
     fp = C.engine_fingerprint_of(engine)
     report = build_report(rows, label=label, route=route, manifest_hash=next(iter(hashes)) if len(hashes) == 1 else None,
                           started=started, rule_version=rule_version, samples=samples, cases=len(exam),
-                          engine_fingerprint=fp)
+                          engine_fingerprint=fp, fields_context=fields is not None, fields_record=fields_record)
     stale = sorted({str(c.get("id")) for c in exam if fp and c.get("engine_fingerprint") and c.get("engine_fingerprint") != fp})
     if stale:
         report["stale_cases"] = stale
@@ -227,6 +240,9 @@ def format_summary(report: dict) -> str:
     for k, g in s["by_kind"].items():
         lines.append(f"  {k:<14} {g['passed']}/{g['scored']} ({g['pass_rate']})")
     lines.append("  verdicts " + ", ".join(f"{k} {v}" for k, v in o["verdicts"].items()))
+    h = s.get("hybrid")
+    if h and h.get("fallback_seen"):
+        lines.append("  hybrid   " + C.format_hybrid(h))
     return "\n".join(lines)
 
 
@@ -258,6 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=C.DEFAULT_TIMEOUT_S)
     p.add_argument("--compare", nargs=2, type=Path, metavar=("A", "B"), help="two saved runs")
     p.add_argument("--rescore", type=Path, metavar="RUN", help="a saved run to re-verify")
+    p.add_argument("--fields-context", choices=C.FIELDS_FLAGS, default="auto",
+                   help="whether the route sends the candidate-fields block: auto = what the service's /version says "
+                        "(default), on / off are refused when it says otherwise (see collect --help; on needs go)")
     return p
 
 
@@ -301,12 +320,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cannot start: {e}", file=sys.stderr)
         return 1
     try:
+        fields, fields_record = C.resolve_fields(args.fields_context, args.manifest, client, args.route)
+    except RuntimeError as e:  # C.FieldsContextMismatch, fields.FieldsError
+        print(f"cannot start: {e}", file=sys.stderr)
+        return 1
+    print(f"fields_context {'on' if fields is not None else 'off'} for {args.route or 'the default route'} "
+          f"(says {'the service' if fields_record['fields_context_by'] == 'service' else '--fields-context'})")
+    try:
         path, report = run_exam(exam, client, engine, label=label, route=args.route, samples=args.samples,
                                 verifier=C.default_verifier(engine), assets=C.load_assets(args.assets),
-                                out_dir=args.out_dir, progress=print)
+                                out_dir=args.out_dir, progress=print, fields=fields, fields_record=fields_record)
     except KeyboardInterrupt:
         print("stopped (Ctrl-C): nothing saved", file=sys.stderr)
         return C.INTERRUPTED
+    except C.FieldsContextMismatch as e:
+        print(f"stopped: {e}\nnothing saved", file=sys.stderr)
+        return 1
     print(format_summary(report))
     print(f"saved {path}")
     return 0

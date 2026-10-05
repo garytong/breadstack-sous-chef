@@ -16,6 +16,10 @@ What the service does (read-only references):
   so the compact form of what the collector sends is what the model reads —
   the collector serialises its request body with the same encoder and the
   same options as ``compact_json`` (see ``collect.Client``).
+  On a route with `fields_context` on, `prompt.UserText` puts the turn's
+  candidate-fields block (`internal/fields`, computed for the lab by
+  fields.py through the service's own CLI) between `</context>\n` and the
+  text, followed by one newline.
 * `service/internal/loop/pending.go` browserResult — a browser op's
   tool_result is Go ``json.Marshal`` of ``map[string]any{"ok": true,
   "written"?, "warnings"?, "sectionId"?}`` (map keys SORTED; empty lists
@@ -68,22 +72,55 @@ def go_marshal(value: Any, *, sort_keys: bool = True) -> str:
     return _go_escape(json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=sort_keys))
 
 
+# --- Go's strings.TrimSpace ---------------------------------------------------------------------------------------------
+
+# unicode.IsSpace: Go's White_Space set. Python's str.strip() also trims U+001C–U+001F; Go does not.
+_GO_SPACE = frozenset("\t\n\v\f\r \u0085            "
+                      "     　")
+
+
+def go_trim_space(s: str) -> str:
+    """Go's ``strings.TrimSpace``: what the service trims the merchant's text
+    and the candidate-fields block with (prompt.UserText, loop.candidateFields).
+    ``str.strip()`` would also cut U+001C–U+001F, which Go keeps."""
+    a, b = 0, len(s)
+    while a < b and s[a] in _GO_SPACE:
+        a += 1
+    while b > a and s[b - 1] in _GO_SPACE:
+        b -= 1
+    return s[a:b]
+
+
 # --- the user block -----------------------------------------------------------------------------------------------------
 
-def context_block(context: dict | None, text: str) -> str:
-    """prompt.ContextBlock: the context compacted inside <context> tags on
-    their own lines, then the trimmed merchant text. ``None`` = no context
-    (the service accepts an absent/null context); ``{}`` is still an object
-    and is rendered as one, exactly as the collector sends it."""
-    text = (text or "").strip()
+def context_block(context: dict | None, text: str, candidates: str = "") -> str:
+    """prompt.UserText (prompt.ContextBlock when ``candidates`` is empty):
+    the context compacted inside <context> tags on their own lines, then —
+    on a route with ``fields_context`` on — the turn's candidate-fields block
+    (fields.py; trimmed, on its own lines), then the trimmed merchant text.
+    ``None`` = no context (the service accepts an absent/null context; the
+    block then opens the message); ``{}`` is still an object and is rendered
+    as one, exactly as the collector sends it."""
+    text = go_trim_space(text or "")
+    candidates = go_trim_space(candidates or "")
+    if candidates:
+        candidates += "\n"
     if context is None:
-        return text
-    return "<context>\n" + compact_json(context) + "\n</context>\n" + text
+        return candidates + text
+    return "<context>\n" + compact_json(context) + "\n</context>\n" + candidates + text
 
 
-def user_message(context: dict | None, text: str) -> dict:
+def user_message(context: dict | None, text: str, candidates: str = "") -> dict:
     """The turn's user message as an Anthropic block list."""
-    return {"role": "user", "content": [{"type": "text", "text": context_block(context, text)}]}
+    return {"role": "user", "content": [{"type": "text", "text": context_block(context, text, candidates)}]}
+
+
+def turn_candidates(row: dict | None) -> str:
+    """The candidate-fields block a logged turn was SENT with, as the
+    collector recorded it (``row.candidate_fields``; collect on a route
+    whose ``fields_context`` the service says is on): "" for a row without one — an Anthropic route,
+    a turn nothing matched, a log from before the block."""
+    return str((row or {}).get("candidate_fields") or "")
 
 
 def turn_context(case: dict | None) -> dict:
@@ -180,9 +217,10 @@ def tool_results_message(items: Iterable[dict], names: dict[str, str]) -> dict:
 
 # --- a whole turn from its events ----------------------------------------------------------------------------------------
 
-def messages_from_events(events: list[dict], context: dict | None, text: str) -> list[dict]:
+def messages_from_events(events: list[dict], context: dict | None, text: str, candidates: str = "") -> list[dict]:
     """Anthropic-shaped messages rebuilt from a turn's events (LAB.md §4):
-    user = the context block; assistant = joined ``text.delta`` + one
+    user = the context block (with ``candidates``, the turn's
+    candidate-fields block, when it had one); assistant = joined ``text.delta`` + one
     ``tool_use`` per ``tool.call`` of the stream; one user message of
     ``tool_result`` blocks per posted batch (``tool.result`` events, the
     posted item rendered as the service renders it). Nothing is fabricated:
@@ -190,7 +228,7 @@ def messages_from_events(events: list[dict], context: dict | None, text: str) ->
     tools) has no result in the trace and gets none here."""
     from .verify import events_of  # lazy: verify imports nothing from here, but keep the import graph one-way
 
-    msgs: list[dict] = [user_message(context, text)]
+    msgs: list[dict] = [user_message(context, text, candidates)]
     blocks: list[dict] = []
     text_parts: list[str] = []
     results: list[dict] = []

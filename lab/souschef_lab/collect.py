@@ -29,11 +29,38 @@ Row (a superset of the thermometer log row, so dataset.to_hf copies over):
    error, latency_ms, context, text, messages:[Anthropic blocks], tools, ops,
    events (the streams' + one tool.result per posted item, the trace's shape),
    verdict, reasons, written_paths, usage, stop, turn_id, conversation_id,
-   conversation_ended, batches, at, meta:{kind, section, template, field_type,
-   holdout, manifest_hash, buildId, engine_fingerprint}}
+   conversation_ended, batches, at, candidate_fields?, fields_context,
+   fields_context_by, routes, escalated,
+   meta:{kind, section, template, field_type, holdout, manifest_hash, buildId,
+   engine_fingerprint}}
 
-`messages` is a cache: render.messages_from_events(events, context, text)
-rebuilds it exactly (dataset.to_hf reads only the rebuild). Every sample is
+`messages` is a cache: render.messages_from_events(events, context, text,
+candidate_fields) rebuilds it exactly (dataset.to_hf reads only the rebuild).
+
+Candidate fields (`--fields-context auto|on|off`, LAB.md §5): a route with
+`fields_context` on (the default for the student's `messages-compatible`
+kind, README §5) gets a `<candidate_fields>` block in the user turn. The
+collector cannot see the prompt, so the SERVICE says: `GET /version` states
+each route's `{kind, fields_context, fallback}` (`route_info`, by name, and
+`default_route`) and `turn.done` carries the turn's (`route.fields_context`). `auto` (the default) follows /version; `on` /
+`off` are refused when /version says otherwise, and a `turn.done` that
+contradicts what the collector rendered stops the run (FieldsContextMismatch)
+— a row's `messages` are never silently another prompt than the model read.
+With the block on, the collector computes the same block with the service's
+own code (fields.py; needs go) and logs it as `row.candidate_fields` ("" when
+nothing matched). `row.fields_context` records it, `row.fields_context_by`
+whether the service's turn.done said so ("service") or only the flag ("flag":
+a service older than the statement, or an errored turn).
+
+Hybrid (README §4): on a route with a `fallback` the service may hand the turn
+to the fallback route once. The row records it — `routes` (turn.done's list:
+the routes that answered, in order; None on a route without a fallback) and
+`escalated` (`{from, to, reason}` of the turn.escalated event, else None) —
+and `hybrid_summary` reports the student-only pass (labelled with the model
+id the service reported for the route — `row.models`, from turn.done — else
+the route's name; never a fixed name), the hybrid pass and the escalation
+rate. An escalated row is Claude-completed: dataset.py keeps it
+as a teacher row, flagged, never as the student's. Every sample is
 a fresh conversation: the site's open one is ended first (README §1.1 would
 otherwise continue it — see run_case).
 
@@ -92,6 +119,8 @@ DEFAULT_TEMPLATE = "editorial"
 DEFAULT_TIMEOUT_S = 300.0
 INTERRUPTED = 130
 PASS_VERDICTS = frozenset(("pass", "clarify_ok", "unsupported_ok"))
+# verify.FAILING: the reasons that are verdicts (the rest of a row's `reasons` are notes such as turn_error:<code>).
+FAILING_REASONS = frozenset(("invalid_op", "no_answer", "wrong_value", "missing_writes", "extra_writes"))
 # A sample of a held-out case: never training material (Adaptive "excluded").
 EXCLUDED_REASONS = frozenset(("holdout",))
 
@@ -366,11 +395,101 @@ def ctx_for(case: dict) -> dict:
     return ctx
 
 
-def user_text(context: dict | None, text: str) -> str:
+# --- what the service says about a route (GET /version, turn.done) -----------------------------------------------------
+
+# /version: `routes` stays the list of names; the detail sits beside it — the service's `route_info`
+# (name → {kind, fields_context, fallback}, with `default_route`), or a list of {name, kind, fields_context, fallback}.
+ROUTE_DETAIL_KEYS = ("route_info", "routes_detail", "route_details", "routesDetail", "routeDetails")
+DEFAULT_ROUTE = "default"
+
+
+class FieldsContextMismatch(RuntimeError):
+    """The service says the route's user turn is not what the collector
+    rendered (candidate-fields block on one side, none on the other)."""
+
+
+def on_off(value: Any) -> bool | None:
+    """A stated `fields_context` as a bool: true/false, "on"/"off"; None when
+    it is not stated (absent, null, or a shape this lab does not know)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("on", "off", "true", "false"):
+        return value.strip().lower() in ("on", "true")
+    return None
+
+
+def route_details(version: dict | None) -> dict[str, dict]:
+    """name → `{name, kind, fields_context, fallback}` from a /version
+    answer; {} when the service states none (a build before the statement).
+    A `routes` list of objects is read too."""
+    version = version if isinstance(version, dict) else {}
+    for key in ROUTE_DETAIL_KEYS + ("routes",):
+        items = version.get(key)
+        if isinstance(items, dict):  # name → detail
+            items = [{"name": k, **v} for k, v in items.items() if isinstance(v, dict)]
+        if isinstance(items, list) and items and all(isinstance(x, dict) and x.get("name") for x in items):
+            return {str(x["name"]): x for x in items}
+    return {}
+
+
+def route_info(version: dict | None, route: str | None) -> dict | None:
+    """The stated detail of `route` (None = the service's default route:
+    /version's `default_route` when it names one, else "default", else the
+    only route there is). None when the service does not state it."""
+    details = route_details(version)
+    if not details:
+        return None
+    if route:
+        return details.get(route)
+    named = (version or {}).get("default_route")
+    if isinstance(named, str) and named in details:
+        return details[named]
+    if DEFAULT_ROUTE in details:
+        return details[DEFAULT_ROUTE]
+    return next(iter(details.values())) if len(details) == 1 else None
+
+
+def done_fields_context(done: dict, requested: str | None = None) -> bool | None:
+    """turn.done's statement for the turn's user message: `route.fields_context`
+    (the service's `route` = `{name, fields_context, fallback}` of the route
+    the turn STARTED on — the block is rendered once, for that route;
+    loop.candidateFields), else a top-level `fields_context`: a bool (or
+    on/off), or a per-route object — then the requested route's (the first
+    of `routes`). None when turn.done does not say."""
+    started = done.get("route")
+    if isinstance(started, dict) and on_off(started.get("fields_context")) is not None:
+        return on_off(started.get("fields_context"))
+    value = done.get("fields_context")
+    if isinstance(value, dict):
+        routes = done.get("routes") if isinstance(done.get("routes"), list) else []
+        for name in ([requested] if requested else []) + [str(r) for r in routes[:1]] + [DEFAULT_ROUTE]:
+            if name in value:
+                return on_off(value[name])
+        return on_off(next(iter(value.values()))) if len(value) == 1 else None
+    return on_off(value)
+
+
+def done_models(done: dict) -> dict[str, str]:
+    """route name → the model id that route's calls of the turn were REPORTED
+    under (the service's usage rows carry the same id; README §5
+    `report_as`): turn.done's `route.model` for the route the turn started
+    on, and `models` (a hybrid turn: every route it called). {} from a build
+    that does not say."""
+    out: dict[str, str] = {}
+    started = done.get("route")
+    if isinstance(started, dict) and started.get("name") and started.get("model"):
+        out[str(started["name"])] = str(started["model"])
+    if isinstance(done.get("models"), dict):
+        out.update({str(k): str(v) for k, v in done["models"].items() if v})
+    return out
+
+
+def user_text(context: dict | None, text: str, candidates: str = "") -> str:
     """The turn's user message as the service renders it (render.py,
-    prompt.ContextBlock): the compacted `<context>` JSON on its own lines,
-    then the trimmed merchant text."""
-    return render.context_block(context, text)
+    prompt.UserText): the compacted `<context>` JSON on its own lines, the
+    candidate-fields block when the route sends one, then the trimmed
+    merchant text."""
+    return render.context_block(context, text, candidates)
 
 
 def load_assets(path: Path | None) -> list[dict]:
@@ -529,7 +648,7 @@ class TurnRecorder:
 def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = None, sample: int = 1,
              assets: Iterable[dict] = (), verifier: Callable[[dict, dict], Any] | None = None,
              max_batches: int = MAX_BATCHES, build_id: str | None = None, tools: list | None = None,
-             store_id: str = "lab", fresh_conversation: bool = True) -> dict:
+             store_id: str = "lab", fresh_conversation: bool = True, fields: Any | None = None) -> dict:
     """Ask the service one case once, emulating the browser, and return the
     log row. Never raises for a service answer: errors are rows with
     status "error" (resumable).
@@ -541,7 +660,15 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
     prompt — measured 2026-10-01 against the real binary: the first model
     request of a re-collected case carried the earlier run's four messages.
     `fresh_conversation` ends the site's conversation first
-    (`Client.end_conversation`); the row records whether one was ended."""
+    (`Client.end_conversation`); the row records whether one was ended.
+
+    `fields` (a fields.Fields on the registered manifest) says the route
+    sends the candidate-fields block: the same block is computed here and
+    logged (`row.candidate_fields`), so `messages` are the bytes the model
+    read. None = the route sends none (an Anthropic route). The service has
+    the last word: a `turn.done` whose `fields_context` says the opposite
+    raises FieldsContextMismatch (the one exception this function raises for
+    a service answer — such a row would log a prompt the model never read)."""
     case_id = str(case.get("id"))
     context = render.turn_context(case)  # the object sent, logged (row.context) and rendered — one and the same
     text = str(case.get("request") or "")
@@ -552,12 +679,17 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
     if route:
         body["model"] = route
     rec = TurnRecorder(case)
-    rec.messages.append(render.user_message(context, text))
+    candidates = fields.block(context, text) if fields is not None else None
+    rec.messages.append(render.user_message(context, text, candidates or ""))
     state = copy.deepcopy(case.get("site_state") or {})
     ctx = ctx_for(case)
     row: dict[str, Any] = {"id": f"{case_id}#{sample}", "case_id": case_id, "sample": sample, "model": route or "",
                            "status": "ok", "http_status": 200, "code": None, "error": None, "latency_ms": 0,
-                           "turn_id": None, "conversation_id": None, "stop": None, "usage": None}
+                           "turn_id": None, "conversation_id": None, "stop": None, "usage": None,
+                           "routes": None, "escalated": None,
+                           "fields_context": fields is not None, "fields_context_by": "flag"}
+    if candidates is not None:
+        row["candidate_fields"] = candidates
     t0 = time.monotonic()
 
     def fail(status: int, code: str, message: str) -> None:
@@ -591,6 +723,8 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
                 done = data
             elif name == "turn.error":
                 err = data
+            elif name == "turn.escalated" and row["escalated"] is None:  # at most once per turn (README §4)
+                row["escalated"] = {k: data.get(k) for k in ("from", "to", "reason")}
         joined = "".join(chunk)
         if joined:
             rec.text.append(joined)
@@ -600,8 +734,22 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
             row["stop"] = done.get("stop")
             row["usage"] = done.get("usage")
             row["conversation_id"] = done.get("conversationId")
+            if isinstance(done.get("routes"), list):  # only on a route with a fallback
+                row["routes"] = [str(r) for r in done["routes"]]
+            models = done_models(done)
+            if models:  # route name → the model id its calls were reported under (README §5 report_as)
+                row["models"] = models
             if done.get("stop") not in (None, "end_turn"):
                 row["code"] = str(done.get("stop"))
+            stated = done_fields_context(done, route)
+            if stated is not None:
+                if stated != (fields is not None):
+                    raise FieldsContextMismatch(
+                        f"turn {row['turn_id']} ({row['id']}): the service says fields_context is "
+                        f"{'on' if stated else 'off'} for route {route or 'the default'}, but the collector rendered the "
+                        f"user turn {'with' if fields is not None else 'without'} the candidate-fields block — run with "
+                        f"--fields-context auto (or {'on' if stated else 'off'})")
+                row["fields_context_by"] = "service"
             break
         if err is not None:
             fail(200, str(err.get("code") or "turn_error"), str(err.get("message") or ""))
@@ -750,11 +898,177 @@ def passed(row: dict) -> bool | None:
     return row["verdict"] in PASS_VERDICTS
 
 
+# --- hybrid: the student's route with a fallback (README §4) ----------------------------------------------------------------
+
+def escalation_of(row: dict) -> dict | None:
+    """`{from, to, reason}` when the turn was handed to the fallback route:
+    the row's `escalated`, else its `turn.escalated` event (a trace, or a row
+    logged without the field)."""
+    esc = row.get("escalated")
+    if isinstance(esc, dict) and esc:
+        return esc
+    for e in row.get("events") or []:
+        if isinstance(e, dict) and (e.get("event") or e.get("type")) == "turn.escalated":
+            d = e.get("data") or {}
+            return {k: d.get(k) for k in ("from", "to", "reason")}
+    return None
+
+
+def routes_of(row: dict) -> list[str]:
+    """The routes that answered the turn's model calls, in order: turn.done's
+    `routes`, else the row's requested route followed by the fallback it
+    escalated to."""
+    if isinstance(row.get("routes"), list) and row["routes"]:
+        return [str(r) for r in row["routes"]]
+    esc = escalation_of(row)
+    out = [str(row.get("model"))] if row.get("model") else []
+    if esc and esc.get("to"):
+        out = [str(esc.get("from") or (out[0] if out else "")), str(esc["to"])]
+    return out
+
+
+def completed_by(row: dict) -> str:
+    """The route whose model finished the turn (the fallback once escalated)."""
+    esc = escalation_of(row)
+    if esc and esc.get("to"):
+        return str(esc["to"])
+    routes = routes_of(row)
+    return routes[-1] if routes else str(row.get("model") or "")
+
+
+def student_of(rows: Iterable[dict]) -> dict:
+    """Who "the student" of a run is, from the rows — never a fixed name:
+    `route` = the route the turns were asked on (an escalation's `from`, the
+    row's requested route, else the first of turn.done's `routes`), the most
+    common one; `model` = the model id the service reported that route's
+    calls under (turn.done, `row.models`), None when no row states it."""
+    names: Counter = Counter()
+    reported: dict[str, Counter] = {}
+    for r in rows:
+        esc = escalation_of(r) or {}
+        routes = r.get("routes") if isinstance(r.get("routes"), list) else []
+        name = str(esc.get("from") or r.get("model") or (routes[0] if routes else "") or "")
+        models = r.get("models") if isinstance(r.get("models"), dict) else {}
+        if not name and len(models) == 1:  # the default route, named only by turn.done
+            name = next(iter(models))
+        if not name:
+            continue
+        names[name] += 1
+        if models.get(name):
+            reported.setdefault(name, Counter())[str(models[name])] += 1
+    if not names:
+        return {"route": None, "model": None}
+    route = names.most_common(1)[0][0]
+    return {"route": route, "model": reported[route].most_common(1)[0][0] if route in reported else None}
+
+
+def student_label(h: dict) -> str:
+    """What a summary line calls the student: the model id the service
+    reported, else the route's name, else "student"."""
+    s = h.get("student") or {}
+    return str(s.get("model") or s.get("route") or "student")
+
+
+def refused_after_escalation(row: dict) -> int:
+    """Browser ops refused AFTER the turn escalated — the fallback's own
+    refusals (the student's come before the turn.escalated event)."""
+    n, seen = 0, False
+    for e in row.get("events") or []:
+        name = e.get("event") or e.get("type")
+        if name == "turn.escalated":
+            seen = True
+        elif seen and name == "tool.result" and not (e.get("data") or {}).get("ok"):
+            n += 1
+    return n
+
+
+def outcome_passed(row: dict) -> bool | None:
+    """Whether the turn's RESULT is right, for the hybrid pass.
+
+    The verifier is strict about the path: one refused op makes the row
+    `invalid_op` even when the turn then lands the expected diff (a refused
+    op applies nothing). On an escalated turn the student's refused op is
+    exactly what the fallback is there to correct, so it is forgiven here:
+    the row passes when `invalid_op` is its ONLY failing reason and every
+    refusal came before the escalation (a refusal of the fallback's own op
+    stays a failure, as on a Claude-only route). A row that did not escalate
+    is judged as always."""
+    p = passed(row)
+    if p is None or p or not escalation_of(row):
+        return p
+    failing = [r for r in row.get("reasons") or [] if r in FAILING_REASONS]
+    return failing == ["invalid_op"] and refused_after_escalation(row) == 0
+
+
+def hybrid_summary(rows: Iterable[dict]) -> dict:
+    """The three figures of a run on a route with a fallback, in points
+    (0–100) over the SCORED rows (a row with a verdict):
+
+      student_only  rows that never escalated and passed — what the student
+                    did by itself (`pass_rate` over all scored rows;
+                    `pass_rate_unescalated` over the rows it kept)
+      hybrid        what the merchant gets: those, plus the escalated rows the
+                    fallback finished correctly (`outcome_passed`);
+                    `strict_pass_rate` is the verifier's verdict as is
+      escalation_rate  escalated rows over all rows, with the reasons
+
+    `fallback_seen` is False when no row names a fallback (no `routes`, no
+    escalation): the route has none and the figures equal the plain pass.
+    `student` = `{route, model}`: the route the run was asked on and the
+    model id the service reported for it (`student_of`) — the label the
+    printed line uses."""
+    rows = list(rows)
+    scored = [r for r in rows if passed(r) is not None]
+    esc = [r for r in rows if escalation_of(r)]
+    alone = [r for r in scored if not escalation_of(r)]
+    alone_pass = sum(1 for r in alone if passed(r))
+    esc_scored = [r for r in scored if escalation_of(r)]
+    esc_pass = sum(1 for r in esc_scored if outcome_passed(r))
+    strict = sum(1 for r in scored if passed(r))
+
+    def pts(a: int, b: int) -> float | None:
+        return round(100.0 * a / b, 1) if b else None
+
+    return {"rows": len(rows), "scored": len(scored),
+            "fallback_seen": bool(esc) or any(r.get("routes") for r in rows),
+            "escalated": len(esc), "escalation_rate": pts(len(esc), len(rows)),
+            "reasons": dict(sorted(Counter(str((escalation_of(r) or {}).get("reason")) for r in esc).items())),
+            "student": student_of(rows),
+            "student_only": {"n": len(alone), "passed": alone_pass, "pass_rate": pts(alone_pass, len(scored)),
+                             "pass_rate_unescalated": pts(alone_pass, len(alone))},
+            "escalated_rows": {"scored": len(esc_scored), "passed": esc_pass, "pass_rate": pts(esc_pass, len(esc_scored))},
+            "hybrid": {"passed": alone_pass + esc_pass, "pass_rate": pts(alone_pass + esc_pass, len(scored)),
+                       "strict_passed": strict, "strict_pass_rate": pts(strict, len(scored))}}
+
+
+def format_hybrid(h: dict) -> str:
+    s, y = h["student_only"], h["hybrid"]
+    reasons = ", ".join(f"{k} {v}" for k, v in h["reasons"].items()) or "none"
+    return (f"{student_label(h)}-only pass {s['passed']}/{h['scored']} ({s['pass_rate']} pts; {s['pass_rate_unescalated']} of the "
+            f"{s['n']} it kept) · hybrid pass {y['passed']}/{h['scored']} ({y['pass_rate']} pts; strict "
+            f"{y['strict_pass_rate']}) · escalated {h['escalated']}/{h['rows']} ({h['escalation_rate']}%: {reasons})")
+
+
+def latest_rows(rows: Iterable[dict]) -> list[dict]:
+    """One row per sample id, the LAST logged: an error row that a later
+    start asked again (errors are resumable) is not the sample's outcome and
+    must not be counted beside its retry."""
+    last: dict[str, dict] = {}
+    anonymous: list[dict] = []
+    for r in rows:
+        if r.get("id") is None:
+            anonymous.append(r)
+        else:
+            last.pop(str(r["id"]), None)  # re-insert: keep the log's order of the kept rows
+            last[str(r["id"])] = r
+    return anonymous + list(last.values())
+
+
 def collect(cases: list[dict], client: Client, engine: Engine, log: Path, *, route: str | None = None, samples: int = 1,
             adaptive: Adaptive | None = None, workers: int = 1, max_cases: int | None = None,
             assets: Iterable[dict] = (), verifier: Callable[[dict, dict], Any] | None = None,
             tools: list | None = None, build_id: str | None = None, progress: Callable[[str], None] | None = None,
-            settings: dict | None = None) -> dict:
+            settings: dict | None = None, fields: Any | None = None) -> dict:
     """Ask every case `samples` times, in rounds (every open case's first
     sample, then every open case's second …), resumable from `log`; with
     `adaptive`, stop a case early (Adaptive). Returns the counts
@@ -795,8 +1109,9 @@ def collect(cases: list[dict], client: Client, engine: Engine, log: Path, *, rou
     todo = [c for c in cases if state_of(c) == "open"]
     if max_cases is not None:
         todo = todo[:max_cases]
-    counts: Counter = Counter(asked=0, ok=0, failed=0, passed=0)
+    counts: Counter = Counter(asked=0, ok=0, failed=0, passed=0, escalated=0)
     record = {"at": utc_now(), "cases": len(cases), "open": len(todo), "samples": samples, "route": route,
+              "fields_context": fields is not None,  # settings.fields_context_by / route_info say who decided (main)
               "workers": workers, "adaptive": adaptive.to_dict(samples) if adaptive is not None else None,
               "already_logged": sum(len(v) for v in finished.values()), **(settings or {})}
     if not todo:
@@ -813,10 +1128,11 @@ def collect(cases: list[dict], client: Client, engine: Engine, log: Path, *, rou
         if stop.is_set():
             return
         row = run_case(case, client, engine, route=route, sample=k, assets=assets, verifier=verifier, tools=tools,
-                       build_id=build_id)
+                       build_id=build_id, fields=fields)
         with lock:
             append_row(log, row)
             counts["asked"] += 1
+            counts["escalated"] += bool(row.get("escalated"))
             cid = str(case.get("id"))
             if row["status"] == "ok":
                 finished[cid][k] = row
@@ -830,6 +1146,8 @@ def collect(cases: list[dict], client: Client, engine: Engine, log: Path, *, rou
                 counts["failed"] += 1
             if progress:
                 mark = (f"error {row.get('code')}" if row["status"] != "ok" else (row.get("verdict") or "no verdict"))
+                if row.get("escalated"):
+                    mark += f" · escalated→{row['escalated'].get('to')} ({row['escalated'].get('reason')})"
                 progress(f"[{counts['asked']}] {row['id']} {mark} · {row['latency_ms'] / 1000:.1f}s · "
                          f"passed {counts['passed']}/{counts['ok']} · {(time.monotonic() - t0) / 60:.1f} min")
 
@@ -905,7 +1223,67 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="seconds per HTTP call (default: %(default)s)")
     p.add_argument("--build-id", default="lab", help="buildId sent with every turn (default: %(default)s)")
     p.add_argument("--no-verify", action="store_true", help="log rows without a verdict (verify later)")
+    p.add_argument("--fields-context", choices=FIELDS_FLAGS, default="auto",
+                   help="whether the route sends the candidate-fields block (fields_context): auto = what the service's "
+                        "/version says for the route; on / off = say it yourself (refused when /version says "
+                        "otherwise). With the block on, the same block is computed and logged with the row; needs go "
+                        "(default: %(default)s)")
     return p
+
+
+FIELDS_FLAGS = ("auto", "on", "off")
+
+
+def fields_for(flag: str, manifest: Path) -> Any | None:
+    """The fields.Fields of `--fields-context on` (None when off). Raises
+    RuntimeError (fields.FieldsError) when the CLI cannot be had."""
+    if flag != "on":
+        return None
+    from . import fields as mod  # lazy: only this flag needs go
+    return mod.Fields(manifest)
+
+
+def resolve_fields(flag: str, manifest: Path, client: Client, route: str | None) -> tuple[Any | None, dict]:
+    """`(fields, record)` for a run on `route`: the truth comes from the
+    service. /version's detail of the route decides `auto` and vetoes an
+    `on`/`off` that contradicts it; a service that states nothing (a build
+    before the statement) cannot answer `auto`, and an explicit flag is then
+    taken on trust (turn.done still checks every turn when it says).
+    `record` = `{fields_context, fields_context_by, route_info}` for the
+    run's record. Raises RuntimeError (FieldsContextMismatch, or
+    fields.FieldsError when the block is on and the CLI cannot be had)."""
+    if flag not in FIELDS_FLAGS:
+        raise ValueError(f"fields_context must be one of {FIELDS_FLAGS}")
+    try:
+        version = client.version()
+    except (ServiceError, OSError, json.JSONDecodeError):
+        version = {}
+    name = route or "the default route"
+    info = route_info(version, route)
+    details = route_details(version)
+    if details and info is None and route:
+        raise FieldsContextMismatch(f"the service's /version states its routes ({', '.join(sorted(details))}) and "
+                                    f"{name} is not one of them")
+    stated = on_off(info.get("fields_context")) if info else None
+    if flag == "auto":
+        if stated is None:
+            raise FieldsContextMismatch(
+                f"--fields-context auto: the service's /version does not state fields_context for {name}"
+                + (f" (it lists {', '.join(sorted(details))} and does not say which is the default) — name the route "
+                   f"with --route, or" if details else " (a build before the statement?) —")
+                + " say it yourself: --fields-context on when the route sends the candidate-fields block (the default "
+                  "of a messages-compatible route), off when it does not")
+        on = stated
+    else:
+        on = flag == "on"
+        if stated is not None and stated != on:
+            raise FieldsContextMismatch(
+                f"--fields-context {flag}, but the service's /version says fields_context is "
+                f"{'on' if stated else 'off'} for {name}: the logged messages would not be what the model reads — "
+                f"drop the flag (auto follows the service)")
+    record = {"fields_context": on, "fields_context_by": "service" if stated is not None else "flag",
+              "route_info": {k: info.get(k) for k in ("name", "kind", "fields_context", "fallback", "report_as")} if info else None}
+    return (fields_for("on", manifest) if on else None), record
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -934,14 +1312,23 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as e:  # engine.EngineError: no node / no headless.mjs
         print(f"cannot start: {e}", file=sys.stderr)
         return 1
+    try:
+        fields, fields_record = resolve_fields(args.fields_context, args.manifest, client, args.route)
+    except RuntimeError as e:  # FieldsContextMismatch; fields.FieldsError: no go / no CLI
+        print(f"cannot start: {e}", file=sys.stderr)
+        return 1
+    print(f"fields_context {'on' if fields is not None else 'off'} for {args.route or 'the default route'} "
+          f"(says {'the service' if fields_record['fields_context_by'] == 'service' else '--fields-context'})")
     verifier = None if args.no_verify else default_verifier(engine)
     rule_cls, _ = adaptive_classes()
     rule = rule_cls(enough=args.enough, hopeless_after=args.hopeless_after) if args.adaptive else None
     try:
         counts = collect(cases, client, engine, args.log, route=args.route, samples=args.samples, adaptive=rule,
                          workers=args.workers, max_cases=args.max_cases, assets=load_assets(args.assets),
-                         verifier=verifier, build_id=args.build_id, progress=print,
-                         settings={"cases_file": str(args.cases), "sse": args.sse, "engine": str(args.engine or "")})
+                         verifier=verifier, build_id=args.build_id, progress=print, fields=fields,
+                         settings={"cases_file": str(args.cases), "sse": args.sse, "engine": str(args.engine or ""),
+                                   "fields_context_by": fields_record["fields_context_by"],
+                                   "route_info": fields_record["route_info"]})
     except KeyboardInterrupt:
         print(f"\nstopped (Ctrl-C) — rows already logged in {args.log}; run again to resume", file=sys.stderr)
         return INTERRUPTED
@@ -950,6 +1337,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"asked {counts['asked']}: {counts['ok']} answered, {counts['failed']} failed, {counts['passed']} passed. "
           f"Log: {args.log}")
+    hybrid = hybrid_summary(latest_rows(read_jsonl(args.log)))
+    if hybrid["fallback_seen"]:  # the whole log, earlier starts included — a retried error counted once, as its retry
+        print(f"hybrid ({hybrid['rows']} samples logged): {format_hybrid(hybrid)}")
     return 0
 
 

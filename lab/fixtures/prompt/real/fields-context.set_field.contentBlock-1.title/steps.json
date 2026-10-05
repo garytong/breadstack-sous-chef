@@ -1,0 +1,45 @@
+[
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Updating the title."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_1",
+     "name": "set_fields",
+     "input": {
+      "target": {
+       "kind": "section",
+       "page": "home",
+       "sectionId": "contentBlock-1"
+      },
+      "values": {
+       "title": "<p>Fresh from the oven</p>"
+      }
+     }
+    }
+   ],
+   "usage": {
+    "input_tokens": 120,
+    "output_tokens": 30
+   }
+  }
+ },
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Done — the title now reads as asked."
+    }
+   ],
+   "usage": {
+    "input_tokens": 160,
+    "output_tokens": 12
+   }
+  }
+ }
+]

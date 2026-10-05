@@ -21,6 +21,7 @@ infra/**/crash.log
 # Lab (Phase 5) data
 lab/data/
 lab/runs/
+lab/.cache/
 
 # Editors / OS
 .idea/

@@ -50,7 +50,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import serving, trainkit
+from . import fields, serving, trainkit
 from .train import served_markers
 from .trainkit import die, estimate_tokens, read_jsonl, say, updates_for, utc_now, val_subset
 
@@ -62,7 +62,8 @@ THERMOMETER_RPO_ALPHA = 1.0  # what --rpo-alpha 1.0 restores
 PAIR_COLUMNS = ("prompt_input_ids", "chosen_input_ids", "rejected_input_ids")
 REF_FILE = "ref_logps.jsonl"
 CONFIG_KEYS = tuple(k for k in RECIPE if k != "loss_type") + ("sft_adapter", "pairs", "name", "output", "max_steps",
-                                                             "max_length", "max_pair_tokens", "reference")
+                                                             "max_length", "max_pair_tokens", "reference",
+                                                             "fields_context")
 
 
 # --- Pairs -----------------------------------------------------------------------------------------------------------
@@ -332,6 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
                         f"{REF_FILE}; checked against this run's fingerprint)")
     p.add_argument("--reference-only", action="store_true",
                    help="compute the reference log-probs (the SFT model's, of every pair), write them, and stop")
+    p.add_argument("--fields-context", choices=["auto", "on", "off"], default="auto",
+                   help="the candidate-fields block in the pairs' prompts, CHECKED like train.py checks its rows: on "
+                        "refuses pairs where no prompt carries one, off pairs where any does; auto = what the SFT "
+                        "adapter was trained with (its run.json fields_context.enabled; an adapter from before the "
+                        "block = off) (default: %(default)s)")
     p.add_argument("--dry-run", "--check", dest="dry_run", action="store_true",
                    help="validate the pairs and print the resolved plan, then stop (no GPU, no torch)")
     return p
@@ -368,6 +374,44 @@ def adapter_sha256(adapter: Path) -> str:
     return trainkit.data_sha256(files) if files else ""
 
 
+def fields_context_of(args, sft: dict, train_rows: list[dict], val_rows: list[dict]) -> dict:
+    """What run.json records about the candidate-fields block (LAB.md §5,
+    train.fields_context_of for pairs): whether the pairs' prompts must
+    carry it — the flag, or with `auto` what the SFT adapter this run
+    continues was trained with — how many do, and what the pairs' own
+    manifest says they were built with."""
+    sft_fc = sft.get("fields_context") if isinstance(sft.get("fields_context"), dict) else None
+    mode = getattr(args, "fields_context", "auto")
+    enabled = bool(sft_fc and sft_fc.get("enabled")) if mode == "auto" else mode == "on"
+    stats = fields.block_stats({"messages": r.get("prompt") or []} for r in train_rows + val_rows)
+    declared = pairs_manifest(args.pairs).get("fields_context")
+    return {"enabled": enabled, "by": "sft_run" if mode == "auto" else "flag", "sft_enabled": sft_fc.get("enabled") if sft_fc else None,
+            "pairs": stats["rows"], "pairs_with_block": stats["with_block"],
+            "pairs_manifest": declared if isinstance(declared, (dict, str)) else None}
+
+
+def check_fields_context(fc: dict, pairs_dir: Path) -> str | None:
+    """The reason the pairs are not the prompt the student is served, if any
+    (train.check_fields_context for pairs)."""
+    why = ("--fields-context " + ("on" if fc["enabled"] else "off") if fc["by"] == "flag" else
+           "the SFT adapter was trained " + ("with" if fc["enabled"] else "without") + " the <candidate_fields> block")
+    if fc["by"] == "flag" and fc["sft_enabled"] is not None and bool(fc["sft_enabled"]) != fc["enabled"]:
+        return (f"{why}, but the SFT adapter's run.json says it was trained "
+                f"{'with' if fc['sft_enabled'] else 'without'} the <candidate_fields> block: DPO continues that adapter, "
+                f"so its pairs must be the same prompt — drop the flag (auto follows the adapter)")
+    if fc["enabled"] and fc["pairs_with_block"] == 0:
+        return (f"{why}, but no pair in {trainkit.rel(pairs_dir)} carries one: the samples were collected (or paired) "
+                f"without the block, so DPO would train on a prompt the student is never served. Re-collect with the "
+                f"route's fields_context on (collect --fields-context auto follows the service), or rebuild the pairs "
+                f"with `souschef-lab pairs --fields-context on --manifest <the cases' manifest.json>`")
+    if not fc["enabled"] and fc["pairs_with_block"]:
+        return (f"{why}, but {fc['pairs_with_block']} of {fc['pairs']} pairs in {trainkit.rel(pairs_dir)} carry one: "
+                f"rebuild the pairs with `souschef-lab pairs --fields-context off`"
+                + ("" if fc["by"] == "flag" else ", or pass --fields-context on if the adapter was in fact trained with "
+                                                 "the block (its run.json predates the record)"))
+    return None
+
+
 def plan(args, sft: dict, train_rows: list[dict] | None = None, val_rows: list[dict] | None = None) -> dict:
     name = args.name or Path(args.output).name
     out = Path(args.output) if args.output else trainkit.ADAPTERS_DIR / name
@@ -392,6 +436,7 @@ def plan(args, sft: dict, train_rows: list[dict] | None = None, val_rows: list[d
     }
     if train_rows is not None:
         val_rows = val_rows or []
+        d["fields_context"] = fields_context_of(args, sft, train_rows, val_rows)
         est = [estimate_tokens({"messages": r["prompt"] + r["chosen"], "tools": r["tools"]}) for r in train_rows]
         kinds: dict[str, int] = {}
         for r in train_rows:
@@ -406,6 +451,7 @@ def plan(args, sft: dict, train_rows: list[dict] | None = None, val_rows: list[d
 
 
 PLAN_ORDER = ("kind", "name", "output", "adapter", "base", "sft_adapter", "sft_run", "pairs", "config", "manifest_hash",
+              "fields_context",
               "precision", "lora", "loss_type", "beta", "rpo_alpha", "lr", "epochs", "max_steps", "updates", "batch",
               "grad_accum", "effective_batch", "warmup_ratio", "optim", "scheduler", "max_length", "max_pair_tokens",
               "tiled_mlp", "eval_steps", "val_max_pairs", "seed", "reference", "reference_file", "rows",
@@ -431,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
     if not has_adapter and not args.dry_run:
         die(f"{args.sft_adapter} has no adapter_config.json — pass the SFT run's adapter folder (…/adapter)")
     p = plan(args, sft, train_rows, val_rows)
+    if mismatch := check_fields_context(p["fields_context"], args.pairs):
+        die(mismatch)
     say(render_plan(p))
     if not has_adapter:
         say(f"note: {args.sft_adapter} has no adapter_config.json yet (train.py writes it); the run would stop here.")

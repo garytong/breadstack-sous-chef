@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/breadstack/sous-chef/internal/auth"
+	"github.com/breadstack/sous-chef/internal/config"
 )
 
 const goodHash = "3e18656a3e18656a3e18656a3e18656a3e18656a3e18656a3e18656a3e18656a"
@@ -87,6 +88,31 @@ func TestOpenRoutes(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(body), &v); err != nil || v.BuildID != "test-build" || !strings.HasPrefix(v.Go, "go") || len(v.Routes) != 2 {
 		t.Errorf("version body = %s (%v)", body, err)
+	}
+	// Without route info the body is what it always was.
+	if strings.Contains(body, "route_info") || strings.Contains(body, "default_route") {
+		t.Errorf("version body = %s", body)
+	}
+	// With it: the existing members, plus each route's kind, effective
+	// fields_context, fallback and report_as (null when unset), and the
+	// default route.
+	backstop, muffin := "default", "blueberry-muffin"
+	ts2 := newTestServer(t, Deps{DB: pinger{}}, func(o *Options) {
+		o.Routes = []string{"default", "student"}
+		o.DefaultRoute = "student"
+		o.RouteInfo = map[string]config.RouteInfo{
+			"default": {Kind: config.RouteAnthropic},
+			"student": {Kind: config.RouteMessagesCompatible, FieldsContext: true, Fallback: &backstop, ReportAs: &muffin},
+		}
+	})
+	res, body = do(t, ts2, "GET", "/version", "", "")
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &doc); err != nil || res.StatusCode != 200 {
+		t.Fatalf("version = %d %s (%v)", res.StatusCode, body, err)
+	}
+	if string(doc["build_id"]) != `"test-build"` || string(doc["routes"]) != `["default","student"]` || doc["go"] == nil || string(doc["default_route"]) != `"student"` ||
+		string(doc["route_info"]) != `{"default":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null},"student":{"kind":"messages-compatible","fields_context":true,"fallback":"default","report_as":"blueberry-muffin"}}` {
+		t.Errorf("version body = %s", body)
 	}
 	// Method mismatch on an open route is a 405 from the mux.
 	res, _ = do(t, ts, "POST", "/healthz", "", "")

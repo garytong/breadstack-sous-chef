@@ -27,6 +27,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "retrain-check": ("retrain_check", "should the model be retrained? exit 0/1/2 + Slack text"),
     "train": ("train", "SFT (Qwen3.5-9B LoRA); --dry-run needs no torch"),
     "dpo": ("dpo", "DPO against the frozen SFT reference; --dry-run"),
+    "fields": ("fields", "the service's candidate-fields block: rerender a built dataset with it, print one, build the CLI"),
     "export": ("export", "GGUF q4_k_m/q8_0 + Ollama Modelfile; --dry-run"),
     "fake-service": ("tests.fake_service", "run the scripted fake service (tests)"),
     "fake-model": ("tests.fake_model", "run the scripted fake /v1/messages model (for the real service binary)"),

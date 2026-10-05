@@ -1,0 +1,27 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"section","page":"home","sectionId":"heroBanner"}
+list slides (edit_list; add|remove|update; the section's own fields are slide index 0)
+  btnColor — {item} Color (color)
+  btnTextColor — {item} Color (color)
+  bulletDescriptionColor — Bullet Colors › Description (color)
+  bulletDescriptionFont — Bullet Description Font › Bullet description font family (select Alice|Anton|Bangers|Bebas Neue|blambot-fx-pro|DM Sans|EB Garamond|Fraunces|…+14)
+  bulletIconSize — Icon Size (range 16..96 step 2)
+  bulletItemLayout — Bullet Item Layout (enum icon-left|icon-top|icon-right)
+  bulletLayout — Bullet Layout (enum horizontal|vertical)
+  bulletPlacement — Bullet Position (enum null=Default|separated)
+  bulletTitleColor — Bullet Colors › Title (color)
+  certTop — Certification Position (range 0..400 step 5)
+  layout — Layout (enum classic|centered|split|showcase)
+  overlayColor — Overlay {item} (color)
+list slides[].bullets (edit_list; add|remove|reorder|update; index [parent, child])
+  description — Description (richtext)
+  icon — Upload an icon image (image)
+  title — Title (text)
+target {"kind":"page","page":"home"}
+  published — Published (bool)
+list sections (edit_list; add|remove|reorder|update|duplicate; index = the section's position on the page, from 0; order = the section ids)
+  enabled — Section shown on the page (bool)
+  id — Section id (text)
+  type — Section type (text)
+</candidate_fields>

@@ -27,7 +27,13 @@ spend. It speaks the parts of the API the collector touches:
                                     so); a pending pick_asset must be
                                     answered with `asset`
   POST /v1/feedback                 204, recorded
-  GET  /healthz /readyz /version    open
+  GET  /healthz /readyz /version    open; /version = {build_id, go, routes:
+                                    [names], route_info: {name: {kind,
+                                    fields_context, fallback}},
+                                    default_route} — from the server's
+                                    `routes` attribute (None = a build
+                                    before the statement: names only, and
+                                    turn.done carries no `route`)
 
 A SCRIPT is a list of streams; a stream is a list of (event, data) pairs
 without turnId/seq — the server injects both, seq continuing across the
@@ -185,6 +191,12 @@ class FakeService:
         self.conversation_ends: list[str] = []  # DELETE /v1/conversations/{siteId}, in order
         self.manifest_posts: int = 0
         self.unauthorized: int = 0
+        # What /version states per route (`route_info`), and what turn.done repeats as `route` = {name,
+        # fields_context, fallback} of the route the turn asked for, unless the script's turn.done says it itself.
+        # Tests replace or edit the list; None = an older build.
+        self.routes: list[dict] | None = [
+            {"name": "default", "kind": "anthropic", "fields_context": False, "fallback": None},
+            {"name": "fake", "kind": "messages-compatible", "fields_context": False, "fallback": None}]
         self.lock = threading.Lock()
         if manifest is not None:
             self._register(manifest)
@@ -276,7 +288,12 @@ class FakeService:
         if parts in (["healthz"], ["readyz"]):
             return self._json(h, 200, {"ok": True})
         if parts == ["version"]:
-            return self._json(h, 200, {"build_id": "fake", "go": "none", "routes": ["default", "fake"]})
+            doc: dict = {"build_id": "fake", "go": "none",
+                         "routes": [r["name"] for r in self.routes] if self.routes is not None else ["default", "fake"]}
+            if self.routes is not None:
+                doc["route_info"] = {r["name"]: {k: v for k, v in r.items() if k != "name"} for r in self.routes}
+                doc["default_route"] = "default"
+            return self._json(h, 200, doc)
         auth = h.headers.get("Authorization", "")
         if auth != f"Bearer {self.key}":
             self.unauthorized += 1
@@ -349,6 +366,7 @@ class FakeService:
         self.turn_requests.append(body)
         script = self.script_for(str(body["siteId"]), str(body.get("text", "")))
         turn = _Turn(uuid.uuid4().hex, str(body["siteId"]), str(body["storeId"]), script)
+        turn.route = str(body.get("model") or "default")
         with self.lock:
             self.turns[turn.id] = turn
         self._stream(h, turn)
@@ -417,6 +435,12 @@ class FakeService:
                     turn.pending.append(turn.suspended_id)
             elif name in ("turn.done", "turn.error"):
                 turn.status = "done" if name == "turn.done" else "error"
+                detail = next((r for r in self.routes or [] if r.get("name") == getattr(turn, "route", "default")), None)
+                if name == "turn.done" and detail is not None and not {"route", "fields_context"} & set(payload):
+                    payload["route"] = {"name": detail["name"], "fields_context": bool(detail.get("fields_context")),
+                                        "fallback": detail.get("fallback")}
+                    if detail.get("report_as"):  # the service: route.model = the id its calls were reported under
+                        payload["route"]["model"] = detail["report_as"]
         if "application/json" in (h.headers.get("Accept") or "") and "text/event-stream" not in (h.headers.get("Accept") or ""):
             return self._json(h, 200, {"turnId": turn.id, "events": framed})
         out = []

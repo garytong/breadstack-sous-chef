@@ -5,7 +5,8 @@
 //   - breadstack-thermometer server/internal/chat/chat.go recordUsage: one
 //     row per Messages API call, written with context.WithoutCancel so a
 //     caller hanging up never loses it; the response's own model field wins
-//     over the one asked for (a fallback may have served the call).
+//     over the one asked for (a fallback may have served the call) — unless
+//     the route sets `report_as`, which then names every row of its calls.
 //   - cookie-cutter branch sous-chef launcher/server/thermometer.go
 //     (reportSousChefUsage/postUsage): config-gated on THERMOMETER_API_URL +
 //     THERMOMETER_API_KEY, fire-and-forget in its own goroutine with a 5 s
@@ -61,14 +62,17 @@ type Call struct {
 	TurnID       string
 	Operation    string // OpChat | OpToolTurn
 	RequestModel string // the route's model id, used when Resp names none
-	SiteID       string
-	SiteHost     string
-	StoreID      string
-	UserEmail    string
-	Latency      time.Duration
-	Resp         *Response
-	Err          error
-	OccurredAt   time.Time // zero = now
+	// ReportAs is the route's `report_as`: when set the row's model is this,
+	// whatever the response names and whether or not the call answered.
+	ReportAs   string
+	SiteID     string
+	SiteHost   string
+	StoreID    string
+	UserEmail  string
+	Latency    time.Duration
+	Resp       *Response
+	Err        error
+	OccurredAt time.Time // zero = now
 }
 
 // Response is the slice of a Messages API response the row reads.
@@ -130,6 +134,9 @@ func RowFor(c Call, now time.Time) store.UsageRow {
 		if row.StopReason == "refusal" {
 			row.Status = "refusal"
 		}
+	}
+	if c.ReportAs != "" {
+		row.Model = c.ReportAs
 	}
 	return row
 }

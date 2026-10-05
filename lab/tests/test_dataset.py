@@ -291,7 +291,8 @@ def test_the_cli_writes_the_six_files(tmp_path, engine):
     (tmp_path / "rules.txt").write_text(SYSTEM[0])
     out = tmp_path / "out"
     rc = D.main(["--log", str(tmp_path / "log.jsonl"), "--cases", str(tmp_path / "cases.jsonl"), "--out", str(out),
-                 "--recorded", str(RECORDED), "--system-rules", str(tmp_path / "rules.txt")])
+                 "--recorded", str(RECORDED), "--system-rules", str(tmp_path / "rules.txt"),
+                 "--fields-context", "off"])  # on needs go: tests/test_fields.py
     assert rc == 0
     assert sorted(p.name for p in out.iterdir()) == ["dataset-manifest.json", "exam.jsonl", "rejects.jsonl", "stats.json",
                                                      "train.jsonl", "val.jsonl"]

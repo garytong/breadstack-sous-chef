@@ -1,0 +1,18 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"page","page":"faq"}
+  answerColor — Answer Text Style (color)
+  answerFontFamily — Answer Text Style › Answer font family (select Alice|Anton|Bangers|Bebas Neue|blambot-fx-pro|DM Sans|EB Garamond|Fraunces|…+13)
+  answerFontSize — Answer Text Style › Answer text size in pixels (number 10..48)
+  answerFontWeight — Answer Text Style › Answer font weight (select 300=Light (300)|400=Regular (400)|500=Medium (500)|600=Semibold (600)|700=Bold (700)|800=Extra-bold (800)|900=Black (900))
+  answerUppercase — Answer Text Style (bool)
+  questionColor — Question Text Style (color)
+  questionFontFamily — Question Text Style › Question font family (select Alice|Anton|Bangers|Bebas Neue|blambot-fx-pro|DM Sans|EB Garamond|Fraunces|…+13)
+  questionFontSize — Question Text Style › Question text size in pixels (number 10..64)
+  questionFontWeight — Question Text Style › Question font weight (select 300=Light (300)|400=Regular (400)|500=Medium (500)|600=Semibold (600)|700=Bold (700)|800=Extra-bold (800)|900=Black (900))
+  questionUppercase — Question Text Style (bool)
+list faqCategories (edit_list; add|remove|reorder|update)
+  name — Category Name (text)
+list faqCategories[].items (edit_list; add|remove|update; index [parent, child])
+  a — Answer (richtext)
+</candidate_fields>

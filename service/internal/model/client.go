@@ -293,6 +293,31 @@ func dropThinking(msgs []anthropic.BetaMessageParam) []anthropic.BetaMessagePara
 	return out
 }
 
+// WithoutThinkingBefore returns msgs with the thinking blocks of its first n
+// messages removed (dropThinking) and the rest as they are. A hybrid turn
+// that escalated from a messages-compatible route to an anthropic one sends
+// its history through here (README §4 "Hybrid"): the blocks written before
+// the escalation are another model's — Claude rejects a thinking block whose
+// signature it did not issue — while the blocks Claude writes afterwards go
+// back to it unchanged, as its tool loop needs. Thinking blocks of earlier
+// turns may always be left out of a request. The caller's slices are not
+// touched.
+func WithoutThinkingBefore(msgs []anthropic.BetaMessageParam, n int) []anthropic.BetaMessageParam {
+	if n <= 0 {
+		return msgs
+	}
+	if n > len(msgs) {
+		n = len(msgs)
+	}
+	head := dropThinking(msgs[:n:n])
+	if len(head) == n && (n == 0 || &head[0] == &msgs[0]) {
+		return msgs // nothing dropped
+	}
+	out := make([]anthropic.BetaMessageParam, 0, len(head)+len(msgs)-n)
+	out = append(out, head...)
+	return append(out, msgs[n:]...)
+}
+
 func hasThinking(blocks []anthropic.BetaContentBlockParamUnion) bool {
 	for _, c := range blocks {
 		if c.OfThinking != nil || c.OfRedactedThinking != nil {

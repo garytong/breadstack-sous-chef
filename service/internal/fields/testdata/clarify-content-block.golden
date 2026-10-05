@@ -1,0 +1,18 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"section","page":"home","sectionId":"contentBlock-1"}
+target {"kind":"section","page":"home","sectionId":"contentBlock-2"}
+target {"kind":"section","page":"home","sectionId":"contentBlock-features"}
+  answerBgColor — Answer Background Color (color)
+  backgroundColor — Background Color (color)
+  bgImage — Background Image (image)
+  bgImageMobile — Background Image (Mobile) (image)
+  bgImageOpacity — Background Opacity › Background opacity (range 0..100)
+  buttonBgColor — Button Background (color)
+  colBgColor — Column Background Color (color)
+  fullwidthMinHeight — Section Height (range 100..800 step 10)
+  iconBgColor — Icon Background Color (color)
+  mapDirBtnBg — Get Direction Button Background (color)
+  secondaryButtonBgColor — Secondary Button Background (color)
+  splitContentBg — Content Panel Background (color)
+</candidate_fields>

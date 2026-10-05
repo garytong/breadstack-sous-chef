@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breadstack/sous-chef/internal/auth"
+	"github.com/breadstack/sous-chef/internal/config"
 )
 
 // Options are the static settings of the HTTP layer.
@@ -25,6 +26,12 @@ type Options struct {
 	BuildID string
 	// Routes are the configured model route names, for /version.
 	Routes []string
+	// RouteInfo states, per configured route, the options a caller cannot
+	// see from outside but that decide what the model is sent (/version
+	// `route_info`); DefaultRoute is the route a turn naming none runs on
+	// (`default_route`). Both are omitted from /version when unset.
+	RouteInfo    map[string]config.RouteInfo
+	DefaultRoute string
 	// DefaultRouteConfigured gates /readyz: the default route must exist.
 	DefaultRouteConfigured bool
 	// Heartbeat is the SSE heartbeat interval; 0 → DefaultHeartbeat, <0 → off.
@@ -236,7 +243,14 @@ func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	if routes == nil {
 		routes = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"build_id": s.opts.BuildID, "go": runtime.Version(), "routes": routes})
+	doc := map[string]any{"build_id": s.opts.BuildID, "go": runtime.Version(), "routes": routes}
+	if s.opts.RouteInfo != nil {
+		doc["route_info"] = s.opts.RouteInfo
+	}
+	if s.opts.DefaultRoute != "" {
+		doc["default_route"] = s.opts.DefaultRoute
+	}
+	writeJSON(w, http.StatusOK, doc)
 }
 
 // ---- helpers ----

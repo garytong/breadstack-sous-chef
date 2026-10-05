@@ -222,7 +222,8 @@ halves, as for the thermometer's Sourdough:
    (`auth: id-token` route).
 3. The route is composed by the env root, not typed into a tfvar: while
    `gpu_model_serve` is on, `envs/int/main.tf` adds
-   `{"inhouse":{"kind":"messages-compatible","url":<module url>,"auth":"id-token","model":"sous-chef","max_tokens":4096,"stream":false}}`
+   `{"blueberry-muffin":{"kind":"messages-compatible","url":<module url>,"auth":"id-token","model":"sous-chef","max_tokens":4096,"stream":false,"temperature":0.3,"fallback":"default","report_as":"blueberry-muffin"}}`
+   (the name is `gpu_model_route.name`; `report_as` = that name, what usage rows report — README §5)
    to the table in force (`model_routes`, or the server's two defaults when
    that is empty), appends the name to `model_route_allowlist`, and runs the
    service with `MODEL_CALL_TIMEOUT` 180 s (the thermometer's L4 needed

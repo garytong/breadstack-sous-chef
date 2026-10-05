@@ -1154,3 +1154,83 @@ func TestJWTExpiry(t *testing.T) {
 		t.Error("NewMetadataTokens")
 	}
 }
+
+func TestRouteFallbackLinked(t *testing.T) {
+	fake := modeltest.New()
+	defer fake.Close()
+	routes := func() map[string]config.Route {
+		return map[string]config.Route{
+			"default": {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-sonnet-5-5", MaxTokens: 1024},
+			"student": {Kind: config.RouteMessagesCompatible, URL: fake.URL, Auth: config.AuthNone, Model: "student", MaxTokens: 512, Fallback: "default"},
+		}
+	}
+	opts := func(r map[string]config.Route) Options {
+		return Options{Routes: r, Default: "default", Allowlist: []string{"student"}, APIKey: "sk-test", BaseURL: fake.URL}
+	}
+	tbl, err := NewTable(opts(routes()))
+	if err != nil {
+		t.Fatalf("NewTable: %v", err)
+	}
+	b, err := tbl.Route("student")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fallback is reachable from its route although it is not allowlisted.
+	if fb := b.Fallback(); fb == nil || fb.Name() != "default" || fb.Kind() != config.RouteAnthropic || fb.Fallback() != nil {
+		t.Fatalf("fallback = %+v", fb)
+	}
+	if _, err := tbl.Route("default"); !errors.Is(err, ErrRouteNotAllowed) {
+		t.Errorf("default by name: %v", err)
+	}
+	for name, mutate := range map[string]func(map[string]config.Route){
+		"unknown": func(r map[string]config.Route) { x := r["student"]; x.Fallback = "ghost"; r["student"] = x },
+		"itself":  func(r map[string]config.Route) { x := r["student"]; x.Fallback = "student"; r["student"] = x },
+		"chained": func(r map[string]config.Route) { x := r["default"]; x.Fallback = "student"; r["default"] = x },
+	} {
+		r := routes()
+		mutate(r)
+		if _, err := NewTable(opts(r)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// WithoutThinkingBefore strips the thinking blocks of the first n messages
+// only (a hybrid turn's pre-escalation history) and never touches the
+// caller's slices.
+func TestWithoutThinkingBefore(t *testing.T) {
+	thinking := func(s string) anthropic.BetaContentBlockParamUnion {
+		return anthropic.BetaContentBlockParamUnion{OfThinking: &anthropic.BetaThinkingBlockParam{Thinking: s, Signature: "sig"}}
+	}
+	asst := func(blocks ...anthropic.BetaContentBlockParamUnion) anthropic.BetaMessageParam {
+		return anthropic.BetaMessageParam{Role: anthropic.BetaMessageParamRoleAssistant, Content: blocks}
+	}
+	msgs := []anthropic.BetaMessageParam{
+		UserTextTurn("one"),
+		asst(thinking("student"), anthropic.NewBetaTextBlock("a")),
+		UserTextTurn("two"),
+		asst(thinking("only thinking")),
+		UserTextTurn("three"),
+		asst(thinking("claude"), anthropic.NewBetaTextBlock("b")),
+	}
+	got := WithoutThinkingBefore(msgs, 5)
+	// The thinking-only turn is dropped whole; the last assistant turn,
+	// past the boundary, keeps its block.
+	if len(got) != 5 || len(got[1].Content) != 1 || got[1].Content[0].OfText == nil || got[3].Role != anthropic.BetaMessageParamRoleUser ||
+		len(got[4].Content) != 2 || got[4].Content[0].OfThinking == nil {
+		t.Fatalf("got %d messages: %+v", len(got), got)
+	}
+	if len(msgs) != 6 || len(msgs[1].Content) != 2 || len(msgs[3].Content) != 1 {
+		t.Fatal("the caller's history was modified")
+	}
+	// Nothing to drop, n ≤ 0, n past the end: the input itself / all of it.
+	if same := WithoutThinkingBefore(msgs, 1); len(same) != 6 || &same[0] != &msgs[0] {
+		t.Error("no-op call copied")
+	}
+	if same := WithoutThinkingBefore(msgs, 0); &same[0] != &msgs[0] {
+		t.Error("n=0 copied")
+	}
+	if all := WithoutThinkingBefore(msgs, 99); len(all) != 5 || hasThinking(all[1].Content) || hasThinking(all[4].Content) {
+		t.Errorf("n past the end: %d messages", len(all))
+	}
+}

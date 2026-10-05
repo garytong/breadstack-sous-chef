@@ -20,6 +20,34 @@ type pendingDoc struct {
 	Seq           int            `json:"seq"`
 	SuspendedID   string         `json:"suspended_id,omitempty"`
 	Rotated       bool           `json:"rotated,omitempty"`
+	// Hybrid turns only (README §4 "Hybrid"). Route above is the route the
+	// turn continues on — the fallback once Escalated is set, which is also
+	// what stops a second escalation after a rebuild. Routes lists every
+	// route the turn has called so far, in first-use order (turn.done).
+	Escalated *escalation `json:"escalated,omitempty"`
+	Routes    []string    `json:"routes,omitempty"`
+	// Models is, per route called so far, the model id its calls were
+	// reported under (turn.models) — turn.done's `route.model` and `models`.
+	Models map[string]string `json:"models,omitempty"`
+	// ForeignBefore is set when the turn escalated from a messages-compatible
+	// route to an anthropic one: the number of leading conversation messages
+	// written before the escalation, whose thinking blocks are left out of
+	// the requests the fallback is sent (turn.foreignBefore).
+	ForeignBefore int `json:"foreign_before,omitempty"`
+	// FieldsContext is whether the turn's user message was built with the
+	// candidate-fields option on (the route it STARTED on decided, at
+	// Start); turn.done states it. nil on a doc written before the member
+	// existed: the starting route's current option is used.
+	FieldsContext *bool `json:"fields_context,omitempty"`
+}
+
+// escalation is a hybrid turn's one move from its route to the route's
+// fallback: the turn.escalated payload, and what the pending doc and the
+// turns.usage column keep of it.
+type escalation struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
 }
 
 // pendingCall is one tool_use block of the waiting batch.

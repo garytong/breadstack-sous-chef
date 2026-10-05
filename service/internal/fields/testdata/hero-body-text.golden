@@ -1,0 +1,18 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"section","page":"home","sectionId":"heroBanner"}
+list slides (edit_list; add|remove|update; the section's own fields are slide index 0)
+  bodyColor — Body Text (color)
+  bodyFontFamily — Body Font › Body font family (select Alice|Anton|Bangers|Bebas Neue|blambot-fx-pro|DM Sans|EB Garamond|Fraunces|…+14)
+  bodyFontSize — Body Text › Text size in pixels (number 10..32)
+  bodyFontWeight — body font weight (select 300=Light (300)|400=Regular (400)|500=Medium (500)|600=Semibold (600)|700=Bold (700)|800=Extra bold (800)|900=Black (900)|null=Default weight)
+  btnLink — Button Link (text)
+  btnText — Button Text (text)
+  btnTextColor — {item} Color (color)
+  headlineFontSize — Headline › Text size in pixels (number 20..96)
+  subtitle — Body Text › Rich text (richtext)
+  tagline — Tagline (text)
+  taglineFontSize — Tagline › Text size in pixels (number 10..32)
+list slides[].bullets (edit_list; add|remove|reorder|update; index [parent, child])
+  title — Title (text)
+</candidate_fields>

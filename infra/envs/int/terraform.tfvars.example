@@ -45,7 +45,7 @@ thermometer_api_url = ""
 # (gpu_model_enabled) creates the repository + roleless SA; after the image is
 # pushed as <gpu_model_repo output>/model:<gpu_model_image_tag>, half 2
 # (gpu_model_serve) creates the L4 service in us-east4 (no GPU region in
-# Canada) and main.tf adds the `inhouse` route (gpu_model_route) to the
+# Canada) and main.tf adds the `blueberry-muffin` route (gpu_model_route) to the
 # service's MODEL_ROUTES + allowlist; default_route stays `default`.
 # min_instances 0 sleeps between demos (~1 min wake, ~US$0.19 per wake);
 # 1 keeps the model loaded at ~US$1.05/hour.

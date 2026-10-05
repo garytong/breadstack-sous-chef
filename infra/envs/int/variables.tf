@@ -155,13 +155,15 @@ variable "gpu_model_route" {
     max_tokens   = number
     call_timeout = string
     temperature  = optional(number, 0.3)
+    fallback     = optional(string, "default")
   })
   default = {
-    name         = "inhouse"
-    model        = "sous-chef"
+    name         = "blueberry-muffin" # the in-house model's name (2026-10-04): the route a turn's `model` names, the drawer badge, and what usage rows report
+    model        = "sous-chef"        # the Ollama model name inside the image (infrastructure name, like the thermometer's "sourdough")
     max_tokens   = 4096
     call_timeout = "180s"
     temperature  = 0.3
+    fallback     = "default"
   }
   description = "The messages-compatible route main.tf adds to MODEL_ROUTES (and to MODEL_ROUTE_ALLOWLIST) while gpu_model_serve is on: its name (what a turn's `model` says), the Ollama model name inside the image, max_tokens, and the MODEL_CALL_TIMEOUT the service runs with meanwhile (the thermometer's L4 needed ~120 s per call; the model service's own timeout is 300 s). Its url is the module's output; its auth is id-token."
   validation {

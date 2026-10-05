@@ -21,12 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/breadstack/sous-chef/internal/api"
+	"github.com/breadstack/sous-chef/internal/fields"
 	"github.com/breadstack/sous-chef/internal/model"
 	"github.com/breadstack/sous-chef/internal/prompt"
 	"github.com/breadstack/sous-chef/internal/registry"
@@ -217,7 +219,7 @@ func (r *Runner) start(ctx context.Context, req api.TurnRequest, compiled *regis
 	// row as error so it is not left running until the reaper.
 	st, err := r.d.Store.StartTurn(ctx, store.StartTurn{
 		SiteID: req.SiteID, StoreID: req.StoreID, ConversationID: req.ConversationID, RotateAt: r.d.RotateAt,
-		ManifestHash: req.ManifestHash, BuildID: req.BuildID, Model: backend.Model(), UserEmail: req.UserEmail,
+		ManifestHash: req.ManifestHash, BuildID: req.BuildID, Model: backend.ReportedModel(""), UserEmail: req.UserEmail,
 	})
 	switch {
 	case errors.Is(err, store.ErrConversationEnded):
@@ -266,6 +268,7 @@ func (r *Runner) begin(ctx context.Context, req api.TurnRequest, compiled *regis
 	// conversation is the tail repaired below, with the stashed server
 	// results it holds.
 	superseded := r.superseded(ctx, req.SiteID, conv.ID, row, st.Superseded)
+	candidates := r.candidateFields(req, compiled, backend)
 	for attempt := 1; ; attempt++ {
 		history, tailSeq, err := r.history(ctx, conv.ID)
 		if err != nil {
@@ -275,13 +278,14 @@ func (r *Runner) begin(ctx context.Context, req api.TurnRequest, compiled *regis
 		// the history (a rebuild, by contrast, is about to answer its tail
 		// itself).
 		history, repair := r.repairHistory(ctx, conv.ID, row.ID, history, superseded)
-		next, err := prompt.Build(compiled.Prefix, history, req.Context, req.Text)
+		next, err := prompt.BuildWithFields(compiled.Prefix, history, req.Context, req.Text, candidates)
 		if err != nil {
 			return nil, api.ErrBadRequest(err.Error())
 		}
 		t := &turn{
 			r: r, id: row.ID, conv: conv, rotated: st.Rotated, compiled: compiled, backend: backend,
 			req: req, history: next.Messages, next: next, operation: usage.OpChat, started: row.Started, tailSeq: tailSeq,
+			origin: backend, fieldsContext: backend.FieldsContext(),
 		}
 		if repair != nil {
 			// The stored tail dangles too: persist the repair before this
@@ -353,6 +357,25 @@ func (r *Runner) begin(ctx context.Context, req api.TurnRequest, compiled *regis
 			return nil, err
 		}
 	}
+}
+
+// candidateFields is the candidate-fields block of this turn's user message
+// (README §3), "" when the route does not carry one (fields_context off —
+// every anthropic route unless it says otherwise) or nothing in the manifest
+// matches the text. It is computed from the turn's own context and text
+// only, once per turn, and becomes part of the stored user message: later
+// turns replay it as it was sent and get a block of their own. A context
+// the retrieval cannot read costs the block, never the turn.
+func (r *Runner) candidateFields(req api.TurnRequest, compiled *registry.Compiled, backend *model.Backend) string {
+	if !backend.FieldsContext() || compiled.Manifest == nil {
+		return ""
+	}
+	fc, err := fields.ParseContext(req.Context)
+	if err != nil {
+		r.d.Logf("loop: candidate fields skipped for site %s: %v", req.SiteID, err)
+		return ""
+	}
+	return fields.Candidates(compiled.Manifest, fc, strings.TrimSpace(req.Text), fields.Options{}).Block
 }
 
 // storeUnavailableStart is the exit of a Start whose row status could not
@@ -591,9 +614,13 @@ func (r *Runner) rebuild(ctx context.Context, row *store.Turn) (*turn, error) {
 	if err != nil {
 		return nil, err
 	}
-	backend, err := r.d.Models.Route(pd.Route)
+	backend, origin, err := r.pendingBackend(&pd)
 	if err != nil {
 		return nil, fmt.Errorf("loop: rebuild turn %s: %w", row.ID, err)
+	}
+	fieldsContext := origin.FieldsContext()
+	if pd.FieldsContext != nil {
+		fieldsContext = *pd.FieldsContext
 	}
 	conv, err := r.d.Store.GetConversation(ctx, row.ConversationID)
 	if err != nil {
@@ -608,7 +635,33 @@ func (r *Runner) rebuild(ctx context.Context, row *store.Turn) (*turn, error) {
 		r: r, id: row.ID, conv: conv, rotated: pd.Rotated, compiled: compiled, backend: backend,
 		req:     api.TurnRequest{SiteID: conv.SiteID, StoreID: conv.StoreID, ManifestHash: row.ManifestHash, BuildID: row.BuildID, UserEmail: row.UserEmail},
 		history: history, calls: pd.CallCount, usage: pd.Usage, seq: pd.Seq, started: row.Started, pending: &pd, tailSeq: tailSeq,
+		escalated: pd.Escalated, routes: pd.Routes, models: pd.Models, foreignBefore: pd.ForeignBefore,
+		origin: origin, fieldsContext: fieldsContext,
 	}, nil
+}
+
+// pendingBackend is the route a waiting turn continues on. A turn that has
+// not escalated names an allowlisted route, checked as at Start. One that
+// has (pd.Escalated) continues on its fallback, which no request may name
+// and the allowlist need not hold: it is reached through the route the turn
+// started on, and only while that route still falls back to it.
+//
+// origin is the route the turn started on: the same backend, or the
+// escalated turn's `from`.
+func (r *Runner) pendingBackend(pd *pendingDoc) (backend, origin *model.Backend, err error) {
+	if pd.Escalated == nil {
+		b, err := r.d.Models.Route(pd.Route)
+		return b, b, err
+	}
+	origin, err = r.d.Models.Route(pd.Escalated.From)
+	if err != nil {
+		return nil, nil, err
+	}
+	fb := origin.Fallback()
+	if fb == nil || fb.Name() != pd.Route {
+		return nil, nil, fmt.Errorf("route %q no longer falls back to %q, the route this turn escalated to", pd.Escalated.From, pd.Route)
+	}
+	return fb, origin, nil
 }
 
 // ownsRow reports whether this parked turn's pending doc is the one the row

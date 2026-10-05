@@ -276,6 +276,56 @@ func TestAliasSections_LongestNameIsCanonical(t *testing.T) {
 
 // --- context -----------------------------------------------------------------
 
+func TestUserTextWithCandidates(t *testing.T) {
+	raw := json.RawMessage(`{"page": "home"}`)
+	const block = "<candidate_fields>\nx\n</candidate_fields>"
+	got, err := UserText(raw, " hi \n", block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "<context>\n{\"page\":\"home\"}\n</context>\n" + block + "\nhi"; got != want {
+		t.Errorf("user text =\n%s\nwant\n%s", got, want)
+	}
+	// A trailing newline on the block (the CLI prints one) changes nothing.
+	if again, _ := UserText(raw, "hi", block+"\n"); again != got {
+		t.Errorf("trailing newline changed the turn: %q", again)
+	}
+	if got, _ := UserText(nil, "hi", block); got != block+"\nhi" {
+		t.Errorf("no context: %q", got)
+	}
+	// No block = ContextBlock, byte for byte.
+	for _, empty := range []string{"", " \n"} {
+		plain, _ := ContextBlock(raw, "hi")
+		if got, _ := UserText(raw, "hi", empty); got != plain {
+			t.Errorf("empty block %q: %q != %q", empty, got, plain)
+		}
+	}
+	if _, err := UserText(raw, "  ", block); err == nil {
+		t.Error("empty text must be refused with a block too")
+	}
+	// Build = BuildWithFields without a block.
+	idx, err := RenderIndex([]byte(smallManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewPrefix(idx, sampleTools())
+	a, err := Build(p, nil, raw, "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := BuildWithFields(p, nil, raw, "hi", "")
+	aj, _ := json.Marshal(a.Messages)
+	bj, _ := json.Marshal(b.Messages)
+	if string(aj) != string(bj) {
+		t.Error("Build and BuildWithFields(\"\") differ")
+	}
+	c, _ := BuildWithFields(p, nil, raw, "hi", block)
+	cj, _ := json.Marshal(c.Messages)
+	if !strings.Contains(string(cj), "candidate_fields") || len(c.Messages) != 1 {
+		t.Errorf("BuildWithFields dropped the block: %s", cj)
+	}
+}
+
 func TestContextBlock(t *testing.T) {
 	raw := json.RawMessage(`{
 	  "page": "home",

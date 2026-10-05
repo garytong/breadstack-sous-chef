@@ -1,7 +1,7 @@
 # The in-house model's image (lab/model-image/README.md): Ollama serving the
 # lab's trained 9B student on the Anthropic-compatible POST /v1/messages, for
 # the private Cloud Run GPU service in infra/modules/model-gpu (the
-# `inhouse` route, kind messages-compatible, auth id-token). A copy of the
+# `blueberry-muffin` route, kind messages-compatible, auth id-token). A copy of the
 # thermometer's lab/sourdough/Dockerfile with the model named sous-chef, as
 # infra/README.md's route example expects.
 #

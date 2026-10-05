@@ -116,7 +116,7 @@ def test_importing_the_modules_never_imports_torch():
 
 
 def test_dry_runs_never_import_torch(dataset, pairs, sft_adapter, tmp_path, capsys):
-    assert train.main(["--data", str(dataset), "--name", "t", "--output", str(tmp_path / "o1"), "--dry-run"]) == 0
+    assert train.main(["--data", str(dataset), "--name", "t", "--output", str(tmp_path / "o1"), "--fields-context", "off", "--dry-run"]) == 0
     assert dpo.main(["--pairs", str(pairs), "--sft-adapter", str(sft_adapter), "--name", "d", "--dry-run"]) == 0
     mf = tmp_path / "base.modelfile"
     mf.write_text(STOCK_MODELFILE, encoding="utf-8")
@@ -225,7 +225,7 @@ def test_the_sft_plan_holds_the_recipe_and_the_counts(dataset, tmp_path):
 
 def test_the_sft_dry_run_prints_the_plan(dataset, tmp_path, capsys):
     out = tmp_path / "out"
-    assert train.main(["--data", str(dataset), "--name", "v1", "--output", str(out), "--dry-run"]) == 0
+    assert train.main(["--data", str(dataset), "--name", "v1", "--output", str(out), "--fields-context", "off", "--dry-run"]) == 0
     text = capsys.readouterr().out
     for want in ("SFT plan", "unsloth/Qwen3.5-9B", '"r": 16, "alpha": 16', "0.0002", '"train": 5, "val": 1', str(out),
                  str(out / "adapter"), "Dry run"):

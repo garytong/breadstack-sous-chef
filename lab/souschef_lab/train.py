@@ -41,7 +41,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import serving, trainkit
+from . import fields, serving, trainkit
 from .trainkit import (MARKERS, check_rows, die, estimate_tokens, history_turns, leaked_tool_results, load_split,
                        mask_history_turns, say, template_kind, trained_spans, updates_for, utc_now, utc_stamp,
                        val_subset, weighted_loss)
@@ -56,7 +56,8 @@ RECIPE = {
     "save_steps": 0, "val_max_rows": None, "tiled_mlp": "auto", "seed": 3407, "thinking": False,
 }
 
-CONFIG_KEYS = tuple(RECIPE) + ("data", "name", "output", "max_steps", "instruction_part", "response_part")
+CONFIG_KEYS = tuple(RECIPE) + ("data", "name", "output", "max_steps", "instruction_part", "response_part",
+                                "fields_context")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -95,6 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--thinking", action="store_true", default=RECIPE["thinking"],
                    help="refused: the rows are rendered as the service serves them, thinking disabled (the empty think "
                         "block); the traces carry no thinking (docs/LAB.md §5)")
+    p.add_argument("--fields-context", choices=["on", "off"], default="on",
+                   help="what the rows' user turns must carry: on = the candidate-fields block the served student's "
+                        "route sends (dataset --fields-context on, or `souschef-lab fields rerender`), off = none (the "
+                        "form adapters before 2026-10-04 were trained on). Checked against the rows — training never "
+                        "renders the block itself — and recorded in run.json (default: %(default)s)")
     p.add_argument("--instruction-part", help="override the masking marker that starts a non-assistant turn")
     p.add_argument("--response-part", help="override the masking marker that starts an assistant turn")
     p.add_argument("--dry-run", "--check", dest="dry_run", action="store_true",
@@ -182,6 +188,34 @@ def dataset_manifest(data_dir: Path) -> dict:
     return trainkit.read_json(Path(data_dir) / "dataset-manifest.json", {}) or {}
 
 
+def fields_context_of(args, train_rows: list[dict], val_rows: list[dict]) -> dict:
+    """What run.json records about the candidate-fields block (LAB.md §5):
+    the option, how many rows' user turns carry the block, and what the
+    dataset's own manifest says it was built with (retrieval source hash
+    included) — so an adapter trained with the block is distinguishable from
+    one trained without."""
+    stats = fields.block_stats(train_rows + val_rows)
+    declared = dataset_manifest(args.data).get("fields_context")
+    return {"enabled": args.fields_context == "on", "rows": stats["rows"], "rows_with_block": stats["with_block"],
+            "dataset": declared if isinstance(declared, dict) else None}
+
+
+def check_fields_context(fc: dict, data: Path) -> str | None:
+    """The reason the rows are not what --fields-context asks for, if any."""
+    if fc["enabled"] and fc["rows_with_block"] == 0:
+        return (f"--fields-context on (the default), but no row in {trainkit.rel(data)} carries a <candidate_fields> "
+                f"block: the served student's route sends one (README §5 fields_context), so an adapter trained on "
+                f"these rows would read a prompt it never trained on. Rebuild with `souschef-lab build "
+                f"--fields-context on`, or re-render this set with `souschef-lab fields rerender --data "
+                f"{trainkit.rel(data)} --manifest <the cases' manifest.json> --out <new folder>`; pass "
+                f"--fields-context off to train the old form on purpose (and serve it with fields_context off)")
+    if not fc["enabled"] and fc["rows_with_block"]:
+        return (f"--fields-context off, but {fc['rows_with_block']} of {fc['rows']} rows in {trainkit.rel(data)} carry "
+                f"a <candidate_fields> block: drop the flag, or strip the blocks with `souschef-lab fields rerender "
+                f"--fields-context off`")
+    return None
+
+
 def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None = None) -> dict:
     """The resolved plan: what --dry-run prints and run.json records. With
     the rows, their counts and estimated sizes (bytes/3 — the base's
@@ -203,6 +237,7 @@ def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None
         "manifest_hash": dataset_manifest(args.data).get("manifest_hash"),
     }
     if train_rows is not None:
+        d["fields_context"] = fields_context_of(args, train_rows, val_rows or [])
         est = [estimate_tokens(r) for r in train_rows]
         val_rows = val_rows or []
         val_n = len(val_subset(val_rows, args.val_max_rows, args.seed))
@@ -215,7 +250,8 @@ def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None
     return d
 
 
-PLAN_ORDER = ("kind", "base", "name", "output", "adapter", "data", "config", "manifest_hash", "precision", "lora",
+PLAN_ORDER = ("kind", "base", "name", "output", "adapter", "data", "config", "manifest_hash", "fields_context",
+              "precision", "lora",
               "lr", "epochs", "max_steps", "updates", "batch", "grad_accum", "effective_batch", "max_seq_length",
               "optim", "scheduler", "warmup_ratio", "weight_decay", "packing", "tiled_mlp", "thinking", "eval_steps",
               "save_steps", "val_max_rows", "seed", "rows", "tokens_estimate")
@@ -238,6 +274,9 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         die("the dataset has problems:\n  " + "\n  ".join(problems[:20]))
     p = plan(args, train_rows, val_rows)
+    mismatch = check_fields_context(p["fields_context"], args.data)
+    if mismatch:
+        die(mismatch)
     say(render_plan(p))
     if p["rows"]["followups"]:
         say(f"{p['rows']['followups']} rows are follow-ups: their earlier replies are masked out of the loss.")

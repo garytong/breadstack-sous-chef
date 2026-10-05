@@ -297,11 +297,35 @@ def length_guard(pairs: list[Pair], share: float = 0.5) -> tuple[list[Pair], int
 
 # --- CLI --------------------------------------------------------------------------------------------------------------
 
+def logged_fields_context(rows: list[dict]) -> dict:
+    """How many collector rows were logged with the candidate-fields block
+    in their user turn and how many without: `row.fields_context` (the
+    collector's record — the service's word since /version states it), else
+    whether the row carries `candidate_fields` at all (older logs)."""
+    n = {"with": 0, "without": 0}
+    for r in rows:
+        on = r["fields_context"] if isinstance(r.get("fields_context"), bool) else "candidate_fields" in r
+        n["with" if on else "without"] += 1
+    return n
+
+
+def pair_block_stats(rows: list[dict]) -> dict:
+    """How many pair rows (Pair.to_row's shape) carry the candidate-fields
+    block in their prompt's first user turn — fields.block_stats for pairs;
+    what dpo.py checks and records."""
+    from .fields import block_stats
+
+    return block_stats({"messages": r.get("prompt") or []} for r in rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     from pathlib import Path
 
+    import sys
+
     from .bestofn import Judge, is_sample_log, unique_samples
+    from .collect import escalation_of
     from .dataset import MANIFEST_NAME, estimate_tokens as _est, split_of, utc_now, write_jsonl
     from .verify import RULE_VERSION, RecordedEngine, default_engine, read_jsonl
 
@@ -318,6 +342,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--system-index")
     p.add_argument("--tools")
     p.add_argument("--recorded", help="replay recorded engine output (tests)")
+    p.add_argument("--fields-context", choices=("as-logged", "on", "off"), default="as-logged",
+                   help="the user turn's candidate-fields block (dataset.py): as-logged = what the student's samples "
+                        "were collected with (collect follows the service's fields_context; a log collected both ways is refused), on = recomputed (needs go, --manifest), "
+                        "off = none (default: %(default)s)")
+    p.add_argument("--manifest", type=Path, help="the cases' manifest, for --fields-context on")
     args = p.parse_args(argv)
     rows = [r for path in args.log for r in read_jsonl(path)]
     if is_sample_log(rows) is not True:
@@ -331,25 +360,52 @@ def main(argv: list[str] | None = None) -> int:
     system = tuple(Path(f).read_text(encoding="utf-8") for f in (args.system_rules, args.system_index) if f)
     tools = json.loads(Path(args.tools).read_text(encoding="utf-8")) if args.tools else None
     engine = RecordedEngine(args.recorded) if args.recorded else default_engine()
-    judge = Judge(cases, engine, system=system, tools=tools)
-    judged = [judge(r) for r in rows if r.get("status") == "ok" and str(r.get("model") or "") == model]
+    fields = None
+    if args.fields_context == "on":
+        from .dataset import fields_for_cases
+        try:
+            fields = fields_for_cases(args.manifest, Path(args.cases), cases)
+        except RuntimeError as e:
+            print(f"cannot build with --fields-context on: {e}", file=sys.stderr)
+            return 2
+    judge = Judge(cases, engine, system=system, tools=tools, fields_context=args.fields_context, fields=fields)
+    mine = [r for r in rows if r.get("status") == "ok" and str(r.get("model") or "") == model]
+    if args.fields_context == "as-logged":
+        mixed = logged_fields_context([r for r in mine if not escalation_of(r)])
+        if mixed["with"] and mixed["without"]:
+            print(f"cannot pair as logged: {mixed['with']} of {model}'s samples were collected with the candidate-fields "
+                  f"block and {mixed['without']} without it (two collects with different --fields-context, or a route "
+                  f"whose fields_context changed) — the student is served ONE prompt: pass --fields-context on (every "
+                  f"prompt gets the block; needs go and --manifest) or off (none does)", file=sys.stderr)
+            return 2
+    # A turn that escalated (hybrid, README §4) was finished by the fallback route's model: neither a chosen nor a
+    # rejected answer of THIS route.
+    escalated = [r for r in mine if escalation_of(r)]
+    judged = [judge(r) for r in mine if not escalation_of(r)]
     pairs, rep = build_pairs(judged, PairConfig(max_per_prompt=args.max_per_prompt, max_pairs=args.max_pairs,
                                                 max_tokens=args.max_tokens), _est)
     train, val = [], []
     for pr in pairs:
         (val if split_of(pr.case_id, args.val_pct) == "val" else train).append(pr.to_row())
+    with_block = pair_block_stats(train + val)["with_block"]
+    fc = {"mode": args.fields_context, "enabled": with_block > 0, "pairs": len(train) + len(val),
+          "pairs_with_block": with_block, **(fields.identity() if fields is not None else {})}
     out = Path(args.out)
     write_jsonl(out / "train.jsonl", train)
     write_jsonl(out / "val.jsonl", val)
     (out / "stats.json").write_text(json.dumps({"built_at": utc_now(), **rep, "train": len(train), "val": len(val),
-                                                "sample_ids": renamed}, indent=2), encoding="utf-8")
+                                                "sample_ids": renamed, "escalated_excluded": len(escalated),
+                                                "fields_context": fc}, indent=2), encoding="utf-8")
     (out / "pairs-manifest.json").write_text(json.dumps({
         "built_at": utc_now(), "logs": list(args.log), "model": model, "rule_version": RULE_VERSION,
+        "fields_context": fc, "escalated_excluded": len(escalated),
         "max_per_prompt": args.max_per_prompt, "max_tokens": args.max_tokens, "max_pairs": args.max_pairs,
         "length_guard": PairConfig.length_guard, "rejected_verdicts": list(REJECTED_VERDICTS),
         "incomplete_reasons": list(INCOMPLETE_REASONS), "dataset_manifest": MANIFEST_NAME}, indent=2), encoding="utf-8")
     print(f"samples {len(judged)} · pairs {rep['pairs']} (train {len(train)} / val {len(val)}) · by type {rep['by_type']} "
           f"· by category {rep['by_category']}")
+    print(f"fields_context {args.fields_context}: {with_block} of {fc['pairs']} pairs carry the <candidate_fields> block "
+          f"— `dpo` checks that against the SFT adapter it continues (dpo --fields-context)")
     return 0 if pairs else 1
 
 

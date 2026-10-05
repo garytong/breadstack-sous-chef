@@ -168,7 +168,7 @@ func newEnvWith(t *testing.T, mutate func(*loop.Deps)) *env {
 		t.Fatal(err)
 	}
 	_, defaultOK := cfg.ModelRoutes[cfg.DefaultRoute]
-	srv := api.New(auth.NewKeys(cfg.ServiceKeys), api.Options{BuildID: "e2e", Routes: cfg.RouteNames(), DefaultRouteConfigured: defaultOK, Heartbeat: -1, Logf: t.Logf},
+	srv := api.New(auth.NewKeys(cfg.ServiceKeys), api.Options{BuildID: "e2e", Routes: cfg.RouteNames(), RouteInfo: cfg.RouteInfo(), DefaultRoute: cfg.DefaultRoute, DefaultRouteConfigured: defaultOK, Heartbeat: -1, Logf: t.Logf},
 		api.Deps{Manifests: reg, HashManifest: manifest.HashBytes, Turns: runner, Conversations: loop.Conversations{St: st, Logf: t.Logf}, Feedback: &loop.Feedback{St: st, Logf: t.Logf}, OptOut: loop.OptOut{St: st}, DB: st})
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
@@ -292,7 +292,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("readyz %d %s", status, body)
 	}
 	status, body, _ = e.do("GET", "/version", nil)
-	if status != 200 || !strings.Contains(string(body), `"build_id":"e2e"`) || !strings.Contains(string(body), `"opus"`) {
+	if status != 200 || !strings.Contains(string(body), `"build_id":"e2e"`) || !strings.Contains(string(body), `"opus"`) ||
+		!strings.Contains(string(body), `"route_info":{"default":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null}`) || !strings.Contains(string(body), `"default_route":"default"`) {
 		t.Fatalf("version %d %s", status, body)
 	}
 	// Auth gate.

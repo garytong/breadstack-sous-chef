@@ -101,6 +101,28 @@ func TestRowFor(t *testing.T) {
 	if nilResp.Status != "error" {
 		t.Errorf("nil response must be error: %+v", nilResp)
 	}
+	// A route with report_as: every row carries it — the echoed tag is
+	// ignored on an answered call, a failed one and one with no response.
+	echo := &Response{ID: "msg_2", Model: "sous-chef", StopReason: "end_turn", Usage: Tokens{InputTokens: 7, OutputTokens: 3}}
+	for name, c := range map[string]Call{
+		"ok":       {RequestModel: "sous-chef", ReportAs: "blueberry-muffin", Resp: echo},
+		"error":    {RequestModel: "sous-chef", ReportAs: "blueberry-muffin", Resp: echo, Err: errors.New("cut")},
+		"no reply": {RequestModel: "sous-chef", ReportAs: "blueberry-muffin", Err: errors.New("timeout")},
+	} {
+		if r := RowFor(c, fixed); r.Model != "blueberry-muffin" {
+			t.Errorf("report_as, %s: model = %q", name, r.Model)
+		}
+	}
+	if r := RowFor(Call{RequestModel: "sous-chef", ReportAs: "blueberry-muffin", Resp: echo}, fixed); r.InputTokens != 7 || r.OutputTokens != 3 || r.Status != "ok" || r.RequestID != "msg_2" {
+		t.Errorf("report_as changes only the model: %+v", r)
+	}
+	if w := IngestRow(RowFor(Call{RequestModel: "sous-chef", ReportAs: "blueberry-muffin", Resp: echo}, fixed)); w.Model != "blueberry-muffin" {
+		t.Errorf("wire model = %q", w.Model)
+	}
+	// Without it the same call reports the echoed tag, as before.
+	if r := RowFor(Call{RequestModel: "sous-chef", Resp: echo}, fixed); r.Model != "sous-chef" {
+		t.Errorf("no report_as: model = %q", r.Model)
+	}
 	// Explicit OccurredAt wins.
 	at := fixed.Add(-time.Hour)
 	if r := RowFor(Call{RequestModel: "m", OccurredAt: at}, fixed); !r.OccurredAt.Equal(at) {

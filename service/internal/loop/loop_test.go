@@ -63,15 +63,33 @@ type harness struct {
 
 func newHarness(t *testing.T, mutate func(*Deps), steps ...modeltest.Step) *harness {
 	t.Helper()
+	return newHarnessRoutes(t, nil, mutate, steps...)
+}
+
+// newHarnessRoutes is newHarness with extra routes next to default and opus
+// (all allowlisted); a messages-compatible route with no url gets the fake's.
+func newHarnessRoutes(t *testing.T, extra map[string]config.Route, mutate func(*Deps), steps ...modeltest.Step) *harness {
+	t.Helper()
 	c := snapshotCompiled(t)
 	fake := modeltest.New(steps...)
 	t.Cleanup(fake.Close)
+	routes := map[string]config.Route{
+		"default": {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-sonnet-5-5", MaxTokens: 1024, Effort: "medium"},
+		"opus":    {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-opus-5-5", MaxTokens: 1024, Effort: "medium"},
+	}
+	allow := []string{"default", "opus"}
+	for name, r := range extra {
+		if r.Kind == config.RouteMessagesCompatible && r.URL == "" {
+			r.URL = fake.URL
+		}
+		if _, ok := routes[name]; !ok {
+			allow = append(allow, name)
+		}
+		routes[name] = r
+	}
 	tbl, err := model.NewTable(model.Options{
-		Routes: map[string]config.Route{
-			"default": {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-sonnet-5-5", MaxTokens: 1024, Effort: "medium"},
-			"opus":    {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-opus-5-5", MaxTokens: 1024, Effort: "medium"},
-		},
-		Default: "default", Allowlist: []string{"default", "opus"},
+		Routes:  routes,
+		Default: "default", Allowlist: allow,
 		APIKey: "sk-test", BaseURL: fake.URL, CallTimeout: 5 * time.Second, MaxRetries: intp(0),
 	})
 	if err != nil {

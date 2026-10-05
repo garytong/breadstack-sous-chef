@@ -1,0 +1,16 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"global","panel":"HeaderSection"}
+  headerShopMegaMenu — Shop link: mega menu on hover (bool)
+  pageVisibility.about.inHeaderNav — Hide About Us from header nav (bool)
+  pageVisibility.blog.inHeaderNav — Hide Blog from header nav (bool)
+  pageVisibility.careers.inHeaderNav — Hide Careers from header nav (bool)
+  pageVisibility.contact.inHeaderNav — Hide Contact from header nav (bool)
+  pageVisibility.delivery.inHeaderNav — Hide Delivery from header nav (bool)
+  pageVisibility.faq.inHeaderNav — Hide FAQ from header nav (bool)
+  pageVisibility.locations.inHeaderNav — Hide Locations from header nav (bool)
+  pageVisibility.loyalty.inHeaderNav — Hide Loyalty from header nav (bool)
+  pageVisibility.mail-order.inHeaderNav — Hide Mail Order from header nav (bool)
+  pageVisibility.our-story.inHeaderNav — Show {item} in header nav (bool)
+  pageVisibility.products.inHeaderNav — Hide Shop from header nav (bool)
+</candidate_fields>

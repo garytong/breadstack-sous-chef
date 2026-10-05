@@ -38,6 +38,9 @@ const (
 	EventToolCall      = "tool.call"
 	EventTurnSuspended = "turn.suspended"
 	EventTurnWaiting   = "turn.waiting"
+	// EventTurnEscalated is informational: the turn moved from its route to
+	// the route's fallback (`{from, to, reason}`); a client may ignore it.
+	EventTurnEscalated = "turn.escalated"
 	EventTurnDone      = "turn.done"
 	EventTurnError     = "turn.error"
 	EventHeartbeat     = "heartbeat"

@@ -1,0 +1,16 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"page","page":"home"}
+  published — Published (bool)
+list sections (edit_list; add|remove|reorder|update|duplicate; index = the section's position on the page, from 0; order = the section ids)
+  enabled — Section shown on the page (bool)
+  id — Section id (text)
+  type — Section type (text; types this page takes: blog|blogSection|content|contentBlock|featuredCategories|gallery|hero|heroBanner|locations|loyaltyForm|milestones|newsletter|perksCards|perksIcons|productCarousel|promotion|reviews|sectionDivider|testimonials)
+target {"kind":"global","panel":"LayoutSection"}
+  pageHeaderAlignment — Page Header Alignment (enum left|center|right)
+  pageHeaderHiddenPages.about — About Us (bool)
+  pageHeaderHiddenPages.account — Account (bool)
+  pageHeaderHiddenPages.blog — Blog (bool)
+  pageHeaderHiddenPages.loyalty — Loyalty (bool)
+  pageHeaderUppercase — Page Header Headline Style (bool)
+</candidate_fields>

@@ -45,7 +45,10 @@ type Op struct {
 // apart from the tool calls (which are Ops). Text is the model's prose for
 // that call; thinking is never recorded.
 type ModelCall struct {
-	Call       int    `json:"call"`
+	Call int `json:"call"`
+	// Route is the route that answered this call: the turn's own (ops.route)
+	// or, after a hybrid escalation, its fallback.
+	Route      string `json:"route,omitempty"`
 	Model      string `json:"model"`
 	StopReason string `json:"stop_reason"`
 	Text       string `json:"text,omitempty"`
@@ -86,11 +89,21 @@ type Outcome struct {
 	Usage  Usage  `json:"usage"`
 }
 
+// Escalation is a hybrid turn's one move to its route's fallback (README §4
+// "Hybrid"): the calls up to AfterCall ran on From, the later ones on To.
+type Escalation struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Reason    string `json:"reason"`
+	AfterCall int    `json:"after_call"` // the last model call made on From (0 = none answered)
+}
+
 // opsDoc is the traces.ops column.
 type opsDoc struct {
 	ManifestHash string      `json:"manifest_hash"`
 	BuildID      string      `json:"build_id"`
-	Route        string      `json:"route"`
+	Route        string      `json:"route"` // the route the turn started on
+	Escalated    *Escalation `json:"escalated,omitempty"`
 	UserEmail    string      `json:"user_email,omitempty"`
 	Text         string      `json:"text"` // the merchant's message
 	Calls        []ModelCall `json:"calls"`
@@ -201,6 +214,16 @@ func (r *Recorder) ModelCall(mc ModelCall, blocks json.RawMessage) {
 	r.ops.Outcome.Usage.OutputTokens += mc.Usage.OutputTokens
 	r.ops.Outcome.Usage.CacheReadInputTokens += mc.Usage.CacheReadInputTokens
 	r.ops.Outcome.Usage.CacheCreationInputTokens += mc.Usage.CacheCreationInputTokens
+}
+
+// Escalated records the turn's move to its fallback route.
+func (r *Recorder) Escalated(e Escalation) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ops.Escalated = &e
 }
 
 // MarkServer flags the op with toolUseID as answered server-side.

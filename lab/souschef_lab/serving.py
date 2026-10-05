@@ -154,20 +154,9 @@ FIXTURE = LAB_DIR / "fixtures" / "parity" / "served.json"
 CAPTURES = LAB_DIR / "fixtures" / "prompt" / "real"
 
 
-# --- Go's strings.TrimSpace ---------------------------------------------------------------------------------------------
+# --- Go's strings.TrimSpace: render.go_trim_space (the user turn's trim is the same one) --------------------------------
 
-# unicode.IsSpace: Go's White_Space set. Python's str.strip() also trims U+001C–U+001F; Go does not.
-_GO_SPACE = frozenset("\t\n\v\f\r \u0085            "
-                      "     　")
-
-
-def go_trim_space(s: str) -> str:
-    a, b = 0, len(s)
-    while a < b and s[a] in _GO_SPACE:
-        a += 1
-    while b > a and s[b - 1] in _GO_SPACE:
-        b -= 1
-    return s[a:b]
+from .render import _GO_SPACE, go_trim_space  # noqa: E402,F401
 
 
 # --- Go's encoding/json and fmt, for the values Ollama holds as `any` -----------------------------------------------

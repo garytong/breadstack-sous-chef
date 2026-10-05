@@ -70,13 +70,31 @@ func ParseContext(raw json.RawMessage) (TurnContext, error) {
 // text. It sits after the cached prefix, so it may change every turn. A
 // context that is not a JSON object is refused; none at all is allowed.
 func ContextBlock(raw json.RawMessage, text string) (string, error) {
+	return UserText(raw, text, "")
+}
+
+// UserText is ContextBlock with the turn's candidate-fields block
+// (internal/fields Result.Block) on its own lines between the context and
+// the merchant's text:
+//
+//	<context>\n{…}\n</context>\n<candidate_fields>\n…\n</candidate_fields>\n<text>
+//
+// An empty (or all-blank) candidates block gives exactly ContextBlock's
+// bytes, so a route without the option — and a turn nothing matched — is
+// unchanged. The rule that goes with the block ("copy the keys exactly;
+// for any other key call lookup_fields first") is the block's own header
+// line, not a system rule: system[0] stays byte-identical on every route.
+func UserText(raw json.RawMessage, text, candidates string) (string, error) {
+	if candidates = strings.TrimSpace(candidates); candidates != "" {
+		candidates += "\n"
+	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", errors.New("turn text is empty")
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
-		return text, nil
+		return candidates + text, nil
 	}
 	if len(raw) > MaxContextBytes {
 		return "", fmt.Errorf("context exceeds %d bytes", MaxContextBytes)
@@ -88,12 +106,13 @@ func ContextBlock(raw json.RawMessage, text string) (string, error) {
 	if err := json.Compact(&compact, raw); err != nil {
 		return "", fmt.Errorf("context: %w", err)
 	}
-	return "<context>\n" + compact.String() + "\n</context>\n" + text, nil
+	return "<context>\n" + compact.String() + "\n</context>\n" + candidates + text, nil
 }
 
-// UserTurn is the user message that starts a turn.
-func UserTurn(contextRaw json.RawMessage, text string) (anthropic.BetaMessageParam, error) {
-	block, err := ContextBlock(contextRaw, text)
+// UserTurn is the user message that starts a turn; candidates is the
+// candidate-fields block, "" for none.
+func UserTurn(contextRaw json.RawMessage, text, candidates string) (anthropic.BetaMessageParam, error) {
+	block, err := UserText(contextRaw, text, candidates)
 	if err != nil {
 		return anthropic.BetaMessageParam{}, err
 	}
@@ -137,13 +156,20 @@ func (p Prefix) Bytes() ([]byte, error) {
 // was (append-only, never edited), and the new user turn with its context
 // block. history may be nil for a fresh conversation.
 func Build(p Prefix, history []anthropic.BetaMessageParam, contextRaw json.RawMessage, text string) (model.Request, error) {
+	return BuildWithFields(p, history, contextRaw, text, "")
+}
+
+// BuildWithFields is Build with the turn's candidate-fields block in the
+// new user turn (UserText). Only the NEW turn gets one: the history is
+// replayed as stored, with whatever block each earlier turn was sent.
+func BuildWithFields(p Prefix, history []anthropic.BetaMessageParam, contextRaw json.RawMessage, text, candidates string) (model.Request, error) {
 	if strings.TrimSpace(p.Rules) == "" || strings.TrimSpace(p.Index) == "" {
 		return model.Request{}, errors.New("prompt: rules and index are required")
 	}
 	if len(p.Tools) == 0 {
 		return model.Request{}, errors.New("prompt: no tools")
 	}
-	turn, err := UserTurn(contextRaw, text)
+	turn, err := UserTurn(contextRaw, text, candidates)
 	if err != nil {
 		return model.Request{}, err
 	}

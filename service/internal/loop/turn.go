@@ -10,6 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/breadstack/sous-chef/internal/api"
+	"github.com/breadstack/sous-chef/internal/config"
 	"github.com/breadstack/sous-chef/internal/model"
 	"github.com/breadstack/sous-chef/internal/prompt"
 	"github.com/breadstack/sous-chef/internal/registry"
@@ -38,6 +39,26 @@ const (
 	StopRefusal   = "refusal"
 )
 
+// Escalation reasons (turn.escalated `reason`, README §4 "Hybrid").
+const (
+	// EscalateToolError: an op the model wrote was refused — the browser's
+	// engine answered it is_error, or the service refused it before it was
+	// shown (an unknown tool, a reset without keys). Nothing was applied
+	// for that op.
+	EscalateToolError = "tool_error"
+	// EscalateUnsupported: the model called report_unsupported.
+	EscalateUnsupported = "unsupported"
+	// EscalateModelError: the model call failed or timed out.
+	EscalateModelError = "model_error"
+	// EscalateMaxTokens: the reply stopped at max_tokens.
+	EscalateMaxTokens = "max_tokens"
+)
+
+// reasonRecheck answers a report_unsupported that escalated the turn: the
+// fallback model reads it as "not accepted", so it looks for itself instead
+// of agreeing with a verdict it did not reach.
+const reasonRecheck = "not accepted: a second model is re-checking this request. Look it up again (the index, lookup_fields, describe_target) and make the edit if a field or list covers it; call report_unsupported again only if it really cannot be done by editing this site's configuration"
+
 // turn is one turn's state, alive on this instance from Start/Continue
 // through Run; parked while it waits for the browser.
 type turn struct {
@@ -63,6 +84,158 @@ type turn struct {
 	pending   *pendingDoc
 	finished  bool
 	lostAs    string // row status that ended the turn (expired/superseded); the trace's status
+
+	// Hybrid (README §4): backend is the route the NEXT model call uses —
+	// the route the turn started on until it escalates, its fallback after.
+	escalated    *escalation // set once; a turn escalates at most once
+	wantEscalate string      // reason of an escalation decided outside Run (resume), applied before the next call
+	routes       []string    // every route called so far, first-use order
+	// foreignBefore: the turn escalated from a messages-compatible route to
+	// an anthropic one when the history held this many messages. Their
+	// thinking blocks (the student's, whatever its route's `thinking` says —
+	// a server may return one unasked — and any earlier turn's) are left out
+	// of every request the fallback is sent: Claude rejects a thinking block
+	// it did not sign, which would end the turn in turn.error exactly when
+	// the fallback is meant to rescue it. The stored history is untouched.
+	foreignBefore int
+
+	// origin is the route the turn STARTED on (backend until it escalates);
+	// fieldsContext whether its user message was built with the
+	// candidate-fields option on. turn.done states both (`route`).
+	origin        *model.Backend
+	fieldsContext bool
+
+	// models is, per route name, the model id the turn's calls on that route
+	// were reported under (noteModel); turn.done states it.
+	models map[string]string
+}
+
+// sendable is the request the next model call sends: t.next, without the
+// thinking blocks an anthropic fallback did not write (foreignBefore).
+func (t *turn) sendable() model.Request {
+	req := t.next
+	if t.foreignBefore > 0 {
+		req.Messages = model.WithoutThinkingBefore(req.Messages, t.foreignBefore)
+	}
+	return req
+}
+
+// routeDoc is turn.done's `route`: the route the turn started on, whether
+// its user message was built with the candidate-fields option on (the block
+// itself is absent when nothing matched), and the route it falls back to
+// (null for none). The lab's collector and eval render their rows from it
+// rather than from a setting of their own.
+func (t *turn) routeDoc() map[string]any {
+	origin := t.origin
+	if origin == nil {
+		origin = t.backend
+	}
+	doc := map[string]any{"name": origin.Name(), "fields_context": t.fieldsContext, "fallback": nil,
+		"model": t.reportedModel(origin)}
+	if fb := origin.Fallback(); fb != nil {
+		doc["fallback"] = fb.Name()
+	}
+	return doc
+}
+
+// noteModel records the model id a call on the turn's current route was
+// reported under (its usage row's and trace entry's `model`).
+func (t *turn) noteModel(responseModel string) {
+	if t.models == nil {
+		t.models = map[string]string{}
+	}
+	t.models[t.backend.Name()] = t.backend.ReportedModel(responseModel)
+}
+
+// reportedModel is the model id b's calls of this turn were reported under:
+// the last one noted, else (no call of b answered) what a call that names
+// none reports — `report_as`, else the route's model id.
+func (t *turn) reportedModel(b *model.Backend) string {
+	if m := t.models[b.Name()]; m != "" {
+		return m
+	}
+	return b.ReportedModel("")
+}
+
+// modelsDoc is turn.done's `models` on a hybrid turn: for each route the
+// turn called (`routes`), the model id its calls were reported under — per
+// route, so the student's and the fallback's are told apart.
+func (t *turn) modelsDoc() map[string]string {
+	out := make(map[string]string, len(t.routes))
+	for _, name := range t.routes {
+		if m := t.models[name]; m != "" {
+			out[name] = m
+			continue
+		}
+		// A route whose calls all failed: one of the turn's own backends.
+		for _, b := range []*model.Backend{t.origin, t.backend, t.backend.Fallback()} {
+			if b != nil && b.Name() == name {
+				out[name] = b.ReportedModel("")
+				break
+			}
+		}
+	}
+	return out
+}
+
+// canEscalate reports whether the turn may still move to a fallback route:
+// its current route names one and it has not escalated yet.
+func (t *turn) canEscalate() bool {
+	return t.escalated == nil && t.backend.Fallback() != nil
+}
+
+// hybrid reports whether the turn runs (or started) on a route with a
+// fallback; only such turns report `routes`.
+func (t *turn) hybrid() bool {
+	return t.escalated != nil || t.backend.Fallback() != nil
+}
+
+// escalate moves the turn to its route's fallback: every later model call
+// of the turn — on this stream, after a tool-results continuation, after a
+// rebuild on another instance (the pending doc carries it) — goes there,
+// with the history as it stands. The event is informational.
+func (t *turn) escalate(em api.Emitter, reason string) {
+	from, to := t.backend, t.backend.Fallback()
+	if to == nil || t.escalated != nil {
+		return
+	}
+	t.escalated = &escalation{From: from.Name(), To: to.Name(), Reason: reason}
+	t.backend = to
+	if from.Kind() != config.RouteAnthropic && to.Kind() == config.RouteAnthropic {
+		// Everything in the history so far was written before Claude took
+		// the turn; none of its thinking blocks is Claude's to read back.
+		t.foreignBefore = len(t.history)
+	}
+	t.rec.Escalated(trace.Escalation{From: from.Name(), To: to.Name(), Reason: reason, AfterCall: t.calls})
+	t.r.d.Logf("loop: turn %s: escalated %s → %s after %d call(s): %s", t.id, from.Name(), to.Name(), t.calls, reason)
+	t.emit(em, api.EventTurnEscalated, t.escalated)
+}
+
+// noteRoute records that the turn is calling route.
+func (t *turn) noteRoute(route string) {
+	for _, r := range t.routes {
+		if r == route {
+			return
+		}
+	}
+	t.routes = append(t.routes, route)
+}
+
+// isOp reports whether a tool name is (or was meant as) an edit: a browser
+// op, or a tool the service does not know. The lookups, report_unsupported
+// and pick_asset are not.
+func isOp(name string) bool {
+	runs, known := toolgen.RunsWhere(name)
+	return !known || runs == toolgen.RunsBrowser
+}
+
+func hasTool(uses []model.Block, name string) bool {
+	for _, u := range uses {
+		if u.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ID implements api.Turn.
@@ -86,24 +259,64 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		if err := t.checkRunning(ctx); err != nil {
 			return t.fail(ctx, em, err)
 		}
+		// An escalation decided while the turn was not streaming (a refused
+		// op in the tool-results just posted, or in an all-server batch):
+		// this call is the fallback's.
+		if t.wantEscalate != "" {
+			t.escalate(em, t.wantEscalate)
+			t.wantEscalate = ""
+		}
 		t.calls++
 		last := t.calls >= t.r.d.MaxCalls
+		// A call that may still be escalated away from (hybrid route, not
+		// escalated yet, another call allowed) holds its text back until the
+		// reply is known to stand: a reply that is discarded (error,
+		// max_tokens) or overruled (report_unsupported) is never shown.
+		mayEscalate := t.canEscalate() && !last
+		var held []string
 		var streamedText int
 		onText := func(s string) {
 			if s == "" {
 				return
 			}
 			streamedText += len(s)
+			if mayEscalate {
+				held = append(held, s)
+				return
+			}
 			t.emit(em, api.EventTextDelta, map[string]string{"text": s})
 		}
+		flush := func() {
+			for _, s := range held {
+				t.emit(em, api.EventTextDelta, map[string]string{"text": s})
+			}
+			held = nil
+		}
+		t.noteRoute(t.backend.Name())
 		callStart := t.r.d.Now()
-		resp, err := t.backend.Message(ctx, t.next, onText)
+		resp, err := t.backend.Message(ctx, t.sendable(), onText)
 		t.recordUsage(ctx, resp, err, t.r.d.Now().Sub(callStart))
 		if err != nil {
+			if mayEscalate && ctx.Err() == nil {
+				// The same request goes to the fallback: nothing of the
+				// failed call is in the history.
+				t.r.d.Logf("loop: turn %s: model call %d on route %s failed, escalating: %v", t.id, t.calls, t.backend.Name(), err)
+				t.escalate(em, EscalateModelError)
+				continue
+			}
 			return t.fail(ctx, em, err)
 		}
 		t.usage = addUsage(t.usage, resp.Usage)
+		t.noteModel(resp.Model)
 		t.traceCall(resp)
+		if mayEscalate && resp.StopReason == string(anthropic.BetaStopReasonMaxTokens) {
+			// A cut-off reply is discarded whole — not stored, not shown (its
+			// usage and trace entry stay) — and the same request goes to the
+			// fallback. Storing it would leave the fallback a history ending
+			// in an assistant turn, which Claude refuses as prefill.
+			t.escalate(em, EscalateMaxTokens)
+			continue
+		}
 
 		// The assistant turn goes into the history before its results
 		// (thermometer); thinking blocks ride along unchanged — the API wants
@@ -128,6 +341,7 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		uses := resp.ToolUses()
 		wantsTools := resp.StopReason == string(anthropic.BetaStopReasonToolUse) && len(uses) > 0
 		if !wantsTools {
+			flush()
 			// end_turn/max_tokens/refusal with tool_use blocks still in the
 			// content: nothing runs them, so answer them is_error now or the
 			// next request fails on the unanswered ids.
@@ -147,7 +361,19 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 			return t.done(ctx, em, StopMaxCalls)
 		}
 
-		results, pending, calls := t.dispatch(uses)
+		// report_unsupported from a route with a fallback escalates the turn
+		// instead of ending it: the call is answered is_error (reasonRecheck)
+		// and not echoed to the page, the text that came with it is dropped,
+		// and the fallback decides. The event goes out before dispatch, which
+		// numbers the batch's tool.call events from t.seq.
+		overruled := mayEscalate && hasTool(uses, toolgen.ReportUnsupported)
+		if overruled {
+			held = nil
+			t.escalate(em, EscalateUnsupported)
+		} else {
+			flush()
+		}
+		results, pending, calls, refused := t.dispatch(uses, overruled)
 		if pending == nil {
 			// Every call was a server tool: tell the browser about the echoed
 			// ones, answer and go round again.
@@ -155,9 +381,21 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 			if err := t.appendResults(ctx, results); err != nil {
 				return t.fail(ctx, em, err)
 			}
+			if refused && t.canEscalate() {
+				t.wantEscalate = EscalateToolError
+			}
 			continue
 		}
 		pending.Route = t.backend.Name()
+		pending.Escalated = t.escalated
+		pending.Routes = t.routes
+		pending.Models = make(map[string]string, len(t.models))
+		for k, v := range t.models {
+			pending.Models[k] = v
+		}
+		pending.ForeignBefore = t.foreignBefore
+		fc := t.fieldsContext
+		pending.FieldsContext = &fc
 		pending.CallCount = t.calls
 		pending.Usage = t.usage
 		pending.Rotated = t.rotated
@@ -302,9 +540,14 @@ func (t *turn) lostRow(ctx context.Context, em api.Emitter, status string, cause
 // stored waiting, and their event seqs are assigned here on that
 // assumption (t.seq + 1, + 2, …). pending is nil when nothing needs the
 // browser.
-func (t *turn) dispatch(uses []model.Block) ([]model.ToolResult, *pendingDoc, []model.Block) {
-	var results []model.ToolResult
-	var calls []model.Block
+//
+// overruled is set when this batch's report_unsupported just escalated the
+// turn: the call is answered is_error (reasonRecheck) and not echoed.
+// refused reports that the service itself refused an op of the batch (an
+// unknown tool, a reset without keys) — the hybrid trigger for a batch that
+// never reaches the browser; a batch that does is judged again, whole, when
+// its results arrive (resume).
+func (t *turn) dispatch(uses []model.Block, overruled bool) (results []model.ToolResult, pending *pendingDoc, calls []model.Block, refused bool) {
 	pd := &pendingDoc{}
 	for _, u := range uses {
 		runs, known := toolgen.RunsWhere(u.Name)
@@ -312,7 +555,14 @@ func (t *turn) dispatch(uses []model.Block) ([]model.ToolResult, *pendingDoc, []
 		switch {
 		case !known:
 			call.Server = true
+			refused = true
 			res := model.ToolResult{ID: u.ID, IsError: true, Content: errJSON("E_OP", fmt.Sprintf("unknown tool %q", u.Name))}
+			results = append(results, res)
+			pd.ServerResults = append(pd.ServerResults, serverResult{ID: u.ID, Content: res.Content, IsError: true})
+		case runs == toolgen.RunsServer && overruled && u.Name == toolgen.ReportUnsupported:
+			call.Server = true
+			t.rec.MarkServer(u.ID)
+			res := model.ToolResult{ID: u.ID, IsError: true, Content: errJSON("E_ESCALATED", reasonRecheck)}
 			results = append(results, res)
 			pd.ServerResults = append(pd.ServerResults, serverResult{ID: u.ID, Content: res.Content, IsError: true})
 		case runs == toolgen.RunsServer:
@@ -346,6 +596,7 @@ func (t *turn) dispatch(uses []model.Block) ([]model.ToolResult, *pendingDoc, []
 				// whole target in the engine: answered here, is_error, and
 				// never emitted as a tool.call (README §2, §4 step 4).
 				call.Server = true
+				refused = true
 				t.rec.MarkServer(u.ID)
 				res := model.ToolResult{ID: u.ID, Content: out.Content, IsError: true}
 				results = append(results, res)
@@ -358,9 +609,9 @@ func (t *turn) dispatch(uses []model.Block) ([]model.ToolResult, *pendingDoc, []
 		pd.Calls = append(pd.Calls, call)
 	}
 	if len(pd.browserIDs()) == 0 {
-		return results, nil, calls
+		return results, nil, calls, refused
 	}
-	return results, pd, calls
+	return results, pd, calls, refused
 }
 
 // emitCalls streams the batch's tool.call events in dispatch order; emit
@@ -379,11 +630,20 @@ func (t *turn) resume(ctx context.Context, body api.ToolResultsRequest) error {
 		answered[res.ToolCallID] = res
 	}
 	var results []model.ToolResult
+	// refused: an op of this batch was refused — by the engine (the browser
+	// answered ok:false; nothing was applied for it) or by the service
+	// before it was shown. On a route with a fallback the next call
+	// escalates (Run applies it: this is not a stream). A cancelled or
+	// failed asset pick, and a result the browser never sent, are not the
+	// model's doing and do not count.
+	refused := false
 	for _, c := range t.pending.Calls {
 		if c.Server {
 			sr, ok := t.pending.serverResult(c.ID)
 			if !ok {
 				sr = serverResult{ID: c.ID, Content: errJSON("E_OP", reasonServerLost), IsError: true}
+			} else if sr.IsError && isOp(c.Name) {
+				refused = true
 			}
 			results = append(results, model.ToolResult{ID: c.ID, Content: sr.Content, IsError: sr.IsError})
 			continue
@@ -397,11 +657,17 @@ func (t *turn) resume(ctx context.Context, body api.ToolResultsRequest) error {
 		raw, _ := json.Marshal(res)
 		t.traceToolResult(c.Seq, raw)
 		results = append(results, browserResult(c.Name, res))
+		if !res.OK && isOp(c.Name) {
+			refused = true
+		}
 	}
 	if err := t.appendResults(ctx, results); err != nil {
 		return err // t.pending kept: failResume answers the batch from it
 	}
 	t.pending = nil
+	if refused && t.canEscalate() {
+		t.wantEscalate = EscalateToolError
+	}
 	return nil
 }
 
@@ -441,7 +707,7 @@ func (t *turn) failResume(ctx context.Context, cause error) {
 		}
 	}
 	t.pending = nil
-	usageJSON, _ := json.Marshal(t.usageDoc())
+	usageJSON, _ := json.Marshal(t.storedUsage())
 	if ferr := t.r.d.Store.FinishTurn(ctx, t.id, store.TurnError, usageJSON); ferr != nil && !errors.Is(ferr, store.ErrNotFound) {
 		t.r.d.Logf("loop: turn %s: finish error: %v", t.id, ferr)
 	}
@@ -496,7 +762,7 @@ func (t *turn) finishFinal(ctx context.Context, em api.Emitter, resp *model.Resp
 // would tell the launcher a turn completed that storage says did not.
 func (t *turn) done(ctx context.Context, em api.Emitter, stop string) error {
 	t.finished = true
-	usageJSON, _ := json.Marshal(t.usageDoc())
+	usageJSON, _ := json.Marshal(t.storedUsage())
 	if err := t.r.d.Store.FinishTurn(ctx, t.id, store.TurnDone, usageJSON); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			status, serr := t.rowStatus(ctx)
@@ -507,9 +773,15 @@ func (t *turn) done(ctx context.Context, em api.Emitter, stop string) error {
 		}
 		t.r.d.Logf("loop: turn %s: finish: %v", t.id, err)
 	}
-	data := map[string]any{"usage": t.usageDoc(), "stop": stop, "conversationId": t.conv.ID}
+	data := map[string]any{"usage": t.usageDoc(), "stop": stop, "conversationId": t.conv.ID, "route": t.routeDoc()}
 	if t.rotated {
 		data["conversationRotated"] = true
+	}
+	if t.hybrid() {
+		// Which routes this turn called, first-use order: the route alone,
+		// or the route and its fallback after an escalation.
+		data["routes"] = append([]string{}, t.routes...)
+		data["models"] = t.modelsDoc()
 	}
 	t.emit(em, api.EventTurnDone, data)
 	if err := t.rec.Finish(context.WithoutCancel(ctx), "done", stop, ""); err != nil {
@@ -551,7 +823,7 @@ func (t *turn) fail(ctx context.Context, em api.Emitter, err error) error {
 
 func (t *turn) errorOut(ctx context.Context, em api.Emitter, code, message string, cause error) error {
 	t.finished = true
-	usageJSON, _ := json.Marshal(t.usageDoc())
+	usageJSON, _ := json.Marshal(t.storedUsage())
 	if ferr := t.r.d.Store.FinishTurn(context.WithoutCancel(ctx), t.id, store.TurnError, usageJSON); ferr != nil && !errors.Is(ferr, store.ErrNotFound) {
 		t.r.d.Logf("loop: turn %s: finish error: %v", t.id, ferr)
 	}
@@ -615,7 +887,7 @@ func (t *turn) traceCall(resp *model.Response) {
 	}
 	blocks, _ := json.Marshal(resp.Content)
 	t.rec.ModelCall(trace.ModelCall{
-		Call: t.calls, Model: resp.Model, StopReason: resp.StopReason, RequestID: resp.RequestID,
+		Call: t.calls, Route: t.backend.Name(), Model: t.backend.ReportedModel(resp.Model), StopReason: resp.StopReason, RequestID: resp.RequestID,
 		LatencyMS: resp.Latency.Milliseconds(),
 		Usage: trace.Usage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
 			CacheReadInputTokens: resp.Usage.CacheReadInputTokens, CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens},
@@ -628,7 +900,7 @@ func (t *turn) recordUsage(ctx context.Context, resp *model.Response, err error,
 		return
 	}
 	c := usage.Call{
-		TurnID: t.id, Operation: t.operation, RequestModel: t.backend.Model(),
+		TurnID: t.id, Operation: t.operation, RequestModel: t.backend.Model(), ReportAs: t.backend.ReportAs(),
 		SiteID: t.req.SiteID, StoreID: t.req.StoreID, UserEmail: t.req.UserEmail,
 		Latency: latency, Err: err, OccurredAt: t.r.d.Now(),
 	}
@@ -650,6 +922,20 @@ func (t *turn) usageDoc() map[string]any {
 		"cache_creation_input_tokens": t.usage.CacheCreationInputTokens,
 		"calls":                       t.calls,
 	}
+}
+
+// storedUsage is the turns.usage column: usageDoc, plus — on a hybrid turn
+// only — the routes it called and its escalation.
+func (t *turn) storedUsage() map[string]any {
+	doc := t.usageDoc()
+	if t.hybrid() {
+		doc["routes"] = append([]string{}, t.routes...)
+		doc["models"] = t.modelsDoc()
+		if t.escalated != nil {
+			doc["escalated"] = t.escalated
+		}
+	}
+	return doc
 }
 
 func addUsage(a, b model.Usage) model.Usage {

@@ -1,0 +1,24 @@
+<candidate_fields>
+Fields this request most likely means, per target. Copy the target and the keys exactly as written; for any other key call lookup_fields first.
+target {"kind":"section","page":"home","sectionId":"contentBlock-2"}
+  body — Body Text (richtext)
+  bodyColor — Body Text (color)
+  bodyFontSize — Body Text › Text size in pixels (number 10..32)
+  bulletBodyFontSize — Bullet Body › Bullet body size in pixels (number 10..48)
+  stillQuestionBodyFontSize — Card body › Text size in pixels (number 10..32)
+  stillQuestionTitleFontSize — Card title › Text size in pixels (number 12..48)
+  tagline — Tagline (text)
+  taglineColor — Tagline (color)
+  taglineFontSize — Tagline › Text size in pixels (number 10..100)
+  taglineImageSize — Tagline Image Size (range 8..100 step 2)
+  titleFontSize — Headline › Text size in pixels (number 20..64)
+list bullets (edit_list; add|remove|update)
+  subtitle — Body Text (richtext)
+target {"kind":"section","page":"home","sectionId":"productCarousel-1"}
+  buttonTextColor — Text Color (color)
+  subtitle — Body Text (richtext)
+  subtitleColor — Body Text (color)
+  subtitleFontSize — Body Text › Text size in pixels (number 10..32)
+  taglineColor — Tagline (color)
+  taglineFontSize — Tagline › Text size in pixels (number 6..48)
+</candidate_fields>

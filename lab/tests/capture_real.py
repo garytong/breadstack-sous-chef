@@ -11,6 +11,13 @@ driven by the lab's own collector (collect.run_case), and stores under
     steps.json            the fake model's scripted replies (fake_model.py steps)
     collect-real.jsonl    the collector row (events incl. tool.result, messages, context, text)
     model-requests.jsonl  every POST /v1/messages body the service sent, as captured
+    plan.json             only for a capture off the default route: {route, fields_context}
+
+Two routes, both the fake model: `lab-fake` with `fields_context: off` (the
+bytes an Anthropic route sends — the four tool_result shapes) and
+`lab-fake-fields` with it on (the student's prompt: the candidate-fields
+block in the user turn, which the collector computes too — `run_case(…,
+fields=…)`, needs go — and logs as `row.candidate_fields`).
 
 `tests/test_render.py` rebuilds each turn from `collect-real.jsonl` and
 asserts the bytes equal `model-requests.jsonl`. Nothing here is a model
@@ -23,6 +30,7 @@ docker one on 5433; the lab uses its own database name).
 
     .venv/bin/python tests/capture_real.py --default-plan data/e2e/cases.jsonl --out fixtures/prompt/real
     .venv/bin/python tests/capture_real.py --from fixtures/prompt/real --out /tmp/recapture   # re-run the stored plan
+    … --only fields-context.set_field.contentBlock-1.title                                    # one capture of the plan
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from souschef_lab import collect as C  # noqa: E402
 
 KEY = "test-key"
 ROUTE = "lab-fake"
+FIELDS_ROUTE = "lab-fake-fields"  # the same fake model, with the candidate-fields block in the user turn
 BUILD_ID = "lab-e2e"
 DEFAULT_DB = "postgres://souschef:souschef@localhost:5433/souschef_lab?sslmode=disable"
 TRACES = LAB / "fixtures" / "traces"
@@ -79,8 +88,10 @@ def _op(op: dict) -> dict:
 
 
 def default_plan(cases_path: Path | None) -> list[dict]:
-    """Four captures: the ok/written shape (the original 2026-10-01 case), an
-    error result, a warnings + sectionId batch, and a pick_asset asset."""
+    """Five captures: the ok/written shape (the original 2026-10-01 case), an
+    error result, a warnings + sectionId batch, a pick_asset asset — and the
+    first again on the route with `fields_context` on (the candidate-fields
+    block in the user turn)."""
     cases: dict[str, dict] = {}
     if cases_path:
         for line in Path(cases_path).read_text(encoding="utf-8").splitlines():
@@ -142,14 +153,22 @@ def default_plan(cases_path: Path | None) -> list[dict]:
         _msg("Applying it to the gallery.", {"id": "toolu_lab_2", "name": "set_fields", "input": with_asset}, usage=(180, 60)),
         _msg("Done — the gallery has its new background image.", usage=(230, 12)),
     ]})
+
+    # 5. fields_context on — the title case again, on the route that puts the candidate-fields block in the user turn
+    plan.append({"name": "fields-context.set_field.contentBlock-1.title", "shape": "ok/written; <candidate_fields> in the user turn",
+                 "case": title, "route": FIELDS_ROUTE, "fields_context": True, "steps": [
+        _msg("Updating the title.", {"id": "toolu_lab_1", "name": t_op["op"], "input": _op(t_op)}),
+        _msg("Done — the title now reads as asked.", usage=(160, 12)),
+    ]})
     return plan
 
 
 def plan_from_dir(root: Path) -> list[dict]:
     plan = []
     for d in sorted(p for p in root.iterdir() if p.is_dir() and (p / "case.json").is_file()):
+        extra = json.loads((d / "plan.json").read_text(encoding="utf-8")) if (d / "plan.json").is_file() else {}
         plan.append({"name": d.name, "shape": "", "case": json.loads((d / "case.json").read_text(encoding="utf-8")),
-                     "steps": FM.load_steps(d / "steps.json")})
+                     "steps": FM.load_steps(d / "steps.json"), **{k: extra[k] for k in ("route", "fields_context") if k in extra}})
     return plan
 
 
@@ -185,9 +204,13 @@ class Service:
     def __init__(self, binary: Path, *, port: int, model_url: str, db_url: str, log: Path):
         self.binary, self.port, self.log = binary, port, log
         self.env = {**os.environ, "PORT": str(port), "DATABASE_URL": db_url, "MIGRATE_AT_BOOT": "on", "SERVICE_KEYS": KEY,
-                    "MODEL_ROUTES": json.dumps({ROUTE: {"kind": "messages-compatible", "url": model_url, "auth": "none",
-                                                        "model": "fake", "max_tokens": 4096, "stream": False}}),
-                    "DEFAULT_ROUTE": ROUTE, "MODEL_ROUTE_ALLOWLIST": ROUTE, "BUILD_ID": BUILD_ID}
+                    # fields_context is spelled out on both: a messages-compatible route defaults to on (README §5),
+                    # and the four tool_result captures are the block-less bytes.
+                    "MODEL_ROUTES": json.dumps({name: {"kind": "messages-compatible", "url": model_url, "auth": "none",
+                                                       "model": "fake", "max_tokens": 4096, "stream": False,
+                                                       "fields_context": fc}
+                                                for name, fc in ((ROUTE, "off"), (FIELDS_ROUTE, "on"))}),
+                    "DEFAULT_ROUTE": ROUTE, "MODEL_ROUTE_ALLOWLIST": f"{ROUTE},{FIELDS_ROUTE}", "BUILD_ID": BUILD_ID}
         self.proc: subprocess.Popen | None = None
 
     @property
@@ -219,6 +242,7 @@ def capture(plan: list[dict], out: Path, *, binary: Path, db_url: str, engine_pa
     verifier = C.default_verifier(engine)
     assets = C.load_assets(C.DEFAULT_ASSETS)
     report = []
+    fields = C.fields_for("on", manifest) if any(item.get("fields_context") for item in plan) else None
     with FM.FakeModel([], port=model_port) as fake, \
             Service(binary, port=port, model_url=fake.url, db_url=db_url, log=out / "service.log") as svc:
         version = json.loads(urllib.request.urlopen(svc.url + "/version", timeout=5).read())
@@ -230,18 +254,24 @@ def capture(plan: list[dict], out: Path, *, binary: Path, db_url: str, engine_pa
             fake.append(*steps)
             client, _ = C.connect(svc.url, KEY, manifest, [case], sse=False, timeout_s=120.0, build_id=BUILD_ID)
             t0 = time.monotonic()
-            row = C.run_case(case, client, engine, route=ROUTE, assets=assets, verifier=verifier, build_id=BUILD_ID)
+            route = item.get("route") or ROUTE
+            row = C.run_case(case, client, engine, route=route, assets=assets, verifier=verifier, build_id=BUILD_ID,
+                             fields=fields if item.get("fields_context") else None)
             wall = time.monotonic() - t0
             reqs = fake.requests[start:]
             if fake.next != len(fake.steps):
                 raise SystemExit(f"{name}: the fake model served {fake.next - start} of {len(steps)} steps")
             (d / "case.json").write_text(json.dumps(case, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
             (d / "steps.json").write_text(json.dumps(steps, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+            if route != ROUTE or item.get("fields_context"):
+                (d / "plan.json").write_text(json.dumps({"route": route, "fields_context": bool(item.get("fields_context"))},
+                                                        indent=1) + "\n", encoding="utf-8")
             (d / "collect-real.jsonl").write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
             with (d / "model-requests.jsonl").open("w", encoding="utf-8") as f:
                 for r in reqs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
-            summary = {"name": name, "shape": item.get("shape", ""), "case_id": case["id"], "status": row["status"],
+            summary = {"name": name, "shape": item.get("shape", ""), "route": route, "case_id": case["id"], "status": row["status"],
+                       "candidate_fields_chars": len(row.get("candidate_fields") or ""),
                        "verdict": row.get("verdict"), "batches": row["batches"], "model_calls": len(reqs),
                        "tool_results": [e["data"].get("ok") for e in row["events"] if e["event"] == "tool.result"],
                        "wall_s": round(wall, 1), "service_version": version}
@@ -262,8 +292,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", type=Path, default=LAB / "fixtures" / "manifest.snapshot.json")
     p.add_argument("--model-port", type=int, default=0, help="fake model port (default: free)")
     p.add_argument("--port", type=int, default=0, help="service port (default: free)")
+    p.add_argument("--only", action="append", metavar="NAME", help="run only this capture of the plan (repeatable)")
     a = p.parse_args(argv)
     plan = default_plan(Path(a.default_plan) if a.default_plan else None) if a.default_plan is not None else plan_from_dir(Path(a.from_dir))
+    if a.only:
+        plan = [item for item in plan if item["name"] in set(a.only)]
+        if len(plan) != len(set(a.only)):
+            raise SystemExit(f"--only: the plan has {[i['name'] for i in plan]} of {a.only}")
     tmp = Path(tempfile.mkdtemp(prefix="souschef-capture-"))
     try:
         binary = a.binary or build_binary(tmp)

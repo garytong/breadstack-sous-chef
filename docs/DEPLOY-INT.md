@@ -318,10 +318,16 @@ The trained Sous Chef (Qwen3.5-9B LoRA, exported to a q4_k_m GGUF) served by
 Ollama from a private Cloud Run **L4** service in `us-east4` (Cloud Run has
 no GPU region in Canada; the Toronto service calls it cross-region, as the
 thermometer does), reachable only by `sous-chef-run` with a Google ID token.
-The sous-chef service gets one extra route, `inhouse`; **`default_route`
+The sous-chef service gets one extra route, `blueberry-muffin` (the in-house
+model's name, user decision 2026-10-04; `gpu_model_route.name` — the route
+name is configuration, nothing keys on it); **`default_route`
 stays `default`**, so nobody's turns move to the model unless the request
-says `"model":"inhouse"` (the launcher drawer does that from
-`?sousChefModel=inhouse`). Shape and numbers come from the thermometer's
+says `"model":"blueberry-muffin"` (the launcher drawer does that from
+`?sousChefModel=blueberry-muffin`). The route sets `report_as` to its own
+name, so its usage rows reach the thermometer as `blueberry-muffin`, not as
+the Ollama tag `sous-chef` — **that id must be on the thermometer's rate
+card at $0 first** (`server/internal/therm/pricing.go` in the thermometer
+repo, not ours to edit; README §5 "Thermometer contract"). Shape and numbers come from the thermometer's
 Sourdough (`breadstack-thermometer/lab/sourdough/README.md`,
 `infra/sourdough.tf`). Status (2026-10-04): the Terraform is written and
 planned read-only; **nothing below has been applied** (no `sous-chef-model`
@@ -333,10 +339,10 @@ the same lines, both halves off):
 | tfvar | off | on | effect |
 |---|---|---|---|
 | `gpu_model_enabled` | `false` | `true` | **half 1**: Artifact Registry `sous-chef-model` (us-east4, immutable tags) + roleless SA `sous-chef-model-run`. Nothing else changes: the sous-chef service is not rolled |
-| `gpu_model_serve` | `false` | `true` | **half 2**: the Cloud Run GPU service `sous-chef-model` (1 x L4, 4 vCPU / 16Gi, max 1 instance, 300 s timeout, ingress all, authoritative `run.invoker` = `sous-chef-run`) **and** a new sous-chef revision with `MODEL_ROUTES` (+`inhouse`), `MODEL_ROUTE_ALLOWLIST=default,opus,inhouse`, `MODEL_CALL_TIMEOUT=180s` |
+| `gpu_model_serve` | `false` | `true` | **half 2**: the Cloud Run GPU service `sous-chef-model` (1 x L4, 4 vCPU / 16Gi, max 1 instance, 300 s timeout, ingress all, authoritative `run.invoker` = `sous-chef-run`) **and** a new sous-chef revision with `MODEL_ROUTES` (+`blueberry-muffin`), `MODEL_ROUTE_ALLOWLIST=default,opus,blueberry-muffin`, `MODEL_CALL_TIMEOUT=180s` |
 | `gpu_model_image_tag` | `"r1"` | | the tag the service runs; a new export = a new tag (tags are immutable) |
 | `gpu_model_min_instances` | `0` | `1` | asleep (scale to zero) / awake (model loaded, billed every second) |
-| `gpu_model_route` | default | | `{name="inhouse", model="sous-chef", max_tokens=4096, call_timeout="180s"}`; the url is the module output, auth is `id-token` |
+| `gpu_model_route` | default | | `{name="blueberry-muffin", model="sous-chef", max_tokens=4096, call_timeout="180s", temperature=0.3, fallback="default"}`; the url is the module output, auth is `id-token`, and `report_as` is the name |
 
 Plans measured 2026-10-04 (`terraform plan -lock=false`, read-only): both
 flags off → `No changes`; `-var=gpu_model_enabled=true` → exactly 2 creates
@@ -385,7 +391,7 @@ Verify, read-only:
 
 ```sh
 URL=$(terraform output -raw run_url)
-curl -s $URL/version                       # routes now ["default","inhouse","opus"]
+curl -s $URL/version                       # routes now ["blueberry-muffin","default","opus"]; route_info."blueberry-muffin".report_as = "blueberry-muffin"
 curl -s $URL/readyz                        # default_route still "ok" (Claude)
 gcloud run services describe sous-chef-model --project $PROJECT --region us-east4 \
   --format='value(status.url,spec.template.spec.containers[0].image)'
@@ -400,12 +406,12 @@ curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" $MODEL_UR
 gcloud run services logs read sous-chef-model --project $PROJECT --region us-east4 --limit 20   # "sous-chef loaded in N s", CUDA not library=cpu
 ```
 
-Then one turn through the launcher with `?sousChefModel=inhouse` on the int
+Then one turn through the launcher with `?sousChefModel=blueberry-muffin` on the int
 pantry (the launcher's half: cookie-cutter `launcher/client/src/sousChef/useSousChef.js`,
 deployed to `pantry-int`; its `SOUS_CHEF_URL`/key are the section 10 wiring).
 A 403 class in the model service's logs means the ID token's audience or the
 invoker binding is wrong; a `400 bad_request "model: …"` from sous-chef
-means `inhouse` is not in the allowlist the revision runs with.
+means `blueberry-muffin` is not in the allowlist the revision runs with.
 
 ### Warm and asleep (the only cost switch)
 
@@ -438,7 +444,7 @@ weekend is ~$75.
 
 `gpu_model_serve = false` + apply: removes the service and the binding, and
 the sous-chef revision goes back to `MODEL_CALL_TIMEOUT=60s`, the default
-route table and `default,opus` (a turn that still says `inhouse` gets `400
+route table and `default,opus` (a turn that still says `blueberry-muffin` gets `400
 bad_request`). `gpu_model_enabled = false` + apply then removes the SA and
 the repository **with its images** (push again after). There is no reason to
 retire the route while the service stays: with `default_route = "default"`

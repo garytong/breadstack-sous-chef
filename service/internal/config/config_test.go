@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,7 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"thinking is only valid":           {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x","max_tokens":1,"thinking":"disabled"}}`},
 		"temperature/top_p are only valid": {"MODEL_ROUTES": `{"default":{"kind":"anthropic","auth":"api-key","model":"x","max_tokens":1,"temperature":0.5}}`},
 		"temperature 3 is not":             {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","url":"https://x","auth":"none","model":"x","max_tokens":1,"temperature":3}}`},
+		"fields_context \"auto\"":          {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","url":"https://x","auth":"none","model":"x","max_tokens":1,"fields_context":"auto"}}`},
 		"top_p 1.5 is not":                 {"MODEL_ROUTES": `{"default":{"kind":"messages-compatible","url":"https://x","auth":"none","model":"x","max_tokens":1,"top_p":1.5}}`},
 	}
 	for want, extra := range cases {
@@ -157,6 +159,122 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: error %q lacks it", want, err)
+		}
+	}
+}
+
+func TestFieldsContextOption(t *testing.T) {
+	m := minimal()
+	m["MODEL_ROUTES"] = `{
+	 "default":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10},
+	 "claude-on":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10,"fields_context":"on"},
+	 "claude-off":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10,"fields_context":"off"},
+	 "student":{"kind":"messages-compatible","url":"http://gpu/v1/messages","auth":"none","model":"m","max_tokens":10},
+	 "student-on":{"kind":"messages-compatible","url":"http://gpu/v1/messages","auth":"none","model":"m","max_tokens":10,"fields_context":"on"},
+	 "student-off":{"kind":"messages-compatible","url":"http://gpu/v1/messages","auth":"none","model":"m","max_tokens":10,"fields_context":"off"}}`
+	m["MODEL_ROUTE_ALLOWLIST"] = "default"
+	c, err := Load(env(m))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for name, want := range map[string]bool{
+		"default": false, "claude-on": true, "claude-off": false,
+		"student": true, "student-on": true, "student-off": false,
+	} {
+		if got := c.ModelRoutes[name].FieldsContextEnabled(); got != want {
+			t.Errorf("%s: FieldsContextEnabled = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestFallbackOption(t *testing.T) {
+	const claude = `{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10}`
+	student := func(extra string) string {
+		return `{"kind":"messages-compatible","url":"http://gpu/v1/messages","auth":"none","model":"m","max_tokens":10` + extra + `}`
+	}
+	load := func(routes string) (*Config, error) {
+		m := minimal()
+		m["MODEL_ROUTES"] = routes
+		m["MODEL_ROUTE_ALLOWLIST"] = "default"
+		return Load(env(m))
+	}
+	// The fallback need not be allowlisted; the route without one has none.
+	c, err := load(`{"default":` + student(`,"fallback":"claude"`) + `,"claude":` + claude + `}`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ModelRoutes["default"].Fallback != "claude" || c.ModelRoutes["claude"].Fallback != "" {
+		t.Errorf("fallbacks = %q / %q", c.ModelRoutes["default"].Fallback, c.ModelRoutes["claude"].Fallback)
+	}
+	// /version's route_info: the effective fields_context and the fallback.
+	info, _ := json.Marshal(c.RouteInfo())
+	if string(info) != `{"claude":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null},"default":{"kind":"messages-compatible","fields_context":true,"fallback":"claude","report_as":null}}` {
+		t.Errorf("RouteInfo = %s", info)
+	}
+	c, err = load(`{"default":` + student(`,"fields_context":"off"`) + `,"claude":` + strings.TrimSuffix(claude, "}") + `,"fields_context":"on"}}`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if ri := c.RouteInfo(); ri["default"].FieldsContext || !ri["claude"].FieldsContext || ri["default"].Fallback != nil {
+		t.Errorf("RouteInfo with explicit options = %+v", ri)
+	}
+	for name, tc := range map[string]struct{ routes, want string }{
+		"unknown": {`{"default":` + student(`,"fallback":"ghost"`) + `}`, `fallback "ghost" is not in MODEL_ROUTES`},
+		"itself":  {`{"default":` + student(`,"fallback":"default"`) + `}`, "fallback names the route itself"},
+		"chained": {`{"default":` + student(`,"fallback":"mid"`) + `,"mid":` + student(`,"fallback":"claude"`) + `,"claude":` + claude + `}`, "has a fallback of its own"},
+	} {
+		if _, err := load(tc.routes); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %v lacks %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestReportAsOption(t *testing.T) {
+	const claude = `{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10`
+	const compat = `{"kind":"messages-compatible","url":"http://gpu","auth":"id-token","model":"sous-chef","max_tokens":10,"stream":false,"temperature":0.3,"fallback":"default"`
+	load := func(routes string) (*Config, error) {
+		m := minimal()
+		m["MODEL_ROUTES"] = routes
+		m["MODEL_ROUTE_ALLOWLIST"] = "default"
+		return Load(env(m))
+	}
+	// The int Terraform's shape; any kind may set it.
+	c, err := load(`{"default":` + claude + `},"blueberry-muffin":` + compat + `,"report_as":"blueberry-muffin"},"named":` + claude + `,"report_as":"claude.house_1"}}`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	muffin, def := c.ModelRoutes["blueberry-muffin"], c.ModelRoutes["default"]
+	if muffin.ReportAs != "blueberry-muffin" || muffin.Model != "sous-chef" || def.ReportAs != "" {
+		t.Errorf("report_as = %q (model %q) / %q", muffin.ReportAs, muffin.Model, def.ReportAs)
+	}
+	// report_as wins over the id the backend echoes and over a failed call;
+	// without it the response's id, else the route's model.
+	for _, tc := range []struct {
+		r          Route
+		resp, want string
+	}{
+		{muffin, "sous-chef", "blueberry-muffin"}, {muffin, "", "blueberry-muffin"},
+		{def, "claude-sonnet-5-5-20260901", "claude-sonnet-5-5-20260901"}, {def, "", "claude-sonnet-5-5"},
+		{c.ModelRoutes["named"], "claude-sonnet-5-5", "claude.house_1"},
+	} {
+		if got := tc.r.ReportedModel(tc.resp); got != tc.want {
+			t.Errorf("ReportedModel(%q) on %+v = %q, want %q", tc.resp, tc.r.ReportAs, got, tc.want)
+		}
+	}
+	info, _ := json.Marshal(c.RouteInfo())
+	if !strings.Contains(string(info), `"blueberry-muffin":{"kind":"messages-compatible","fields_context":true,"fallback":"default","report_as":"blueberry-muffin"}`) ||
+		!strings.Contains(string(info), `"default":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null}`) {
+		t.Errorf("RouteInfo = %s", info)
+	}
+	// A plain token only.
+	for _, bad := range []string{"Blueberry", "blueberry muffin", "-muffin", ".muffin", "muffin/1", "muffin:latest", "müffin", strings.Repeat("a", 65), " "} {
+		if _, err := load(`{"default":` + claude + `,"report_as":"` + bad + `"}}`); err == nil || !strings.Contains(err.Error(), "report_as") {
+			t.Errorf("report_as %q: error %v", bad, err)
+		}
+	}
+	for _, good := range []string{"a", "9", "blueberry-muffin", "sous-chef.v2_q4", strings.Repeat("a", 64)} {
+		if _, err := load(`{"default":` + claude + `,"report_as":"` + good + `"}}`); err != nil {
+			t.Errorf("report_as %q refused: %v", good, err)
 		}
 	}
 }

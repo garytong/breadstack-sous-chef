@@ -123,6 +123,9 @@ type Backend struct {
 	// compatible-route auth; nil/"" = send none
 	tokens TokenSource
 	apiKey string
+	// fallback is the backend of route.Fallback, nil when the route names
+	// none (linked by NewTable once every backend exists).
+	fallback *Backend
 }
 
 // NewTable validates the options and builds every route's client. Nothing
@@ -167,12 +170,23 @@ func NewTable(o Options) (*Table, error) {
 		}
 		t.backends[name] = b
 	}
+	if errs := config.ValidateFallbacks(o.Routes); len(errs) > 0 {
+		return nil, fmt.Errorf("model: %w", errors.Join(errs...))
+	}
+	for _, b := range t.backends {
+		if b.route.Fallback != "" {
+			b.fallback = t.backends[b.route.Fallback]
+		}
+	}
 	return t, nil
 }
 
 func newBackend(name string, r config.Route, o Options, retries int, now func() time.Time) (*Backend, error) {
 	if r.Model == "" || r.MaxTokens < 1 {
 		return nil, fmt.Errorf("model: route %q: model and max_tokens are required", name)
+	}
+	if r.ReportAs != "" && !config.ValidReportAs(r.ReportAs) {
+		return nil, fmt.Errorf("model: route %q: report_as %q is not a plain token", name, r.ReportAs)
 	}
 	b := &Backend{name: name, route: r, timeout: o.CallTimeout, now: now}
 	opts := []option.RequestOption{option.WithMaxRetries(retries)}
@@ -300,3 +314,21 @@ func (b *Backend) Model() string          { return b.route.Model }
 func (b *Backend) Kind() config.RouteKind { return b.route.Kind }
 func (b *Backend) Streams() bool          { return b.stream }
 func (b *Backend) Timeout() time.Duration { return b.timeout }
+
+// ReportAs is the route's `report_as` ("" when unset). ReportedModel is the
+// model id a call on this route is reported under — usage rows, the trace,
+// turn.done — given the id the response named ("" for none or a failed
+// call): `report_as` when set, else the response's id, else Model().
+func (b *Backend) ReportAs() string { return b.route.ReportAs }
+func (b *Backend) ReportedModel(responseModel string) string {
+	return b.route.ReportedModel(responseModel)
+}
+
+// Fallback is the backend a turn on this route escalates to (README §4
+// "Hybrid"), nil when the route names none. It is handed out without an
+// allowlist check: the route table chose it, not a request.
+func (b *Backend) Fallback() *Backend { return b.fallback }
+
+// FieldsContext reports whether this route's user turns carry the
+// candidate-fields block (config.Route.FieldsContextEnabled).
+func (b *Backend) FieldsContext() bool { return b.route.FieldsContextEnabled() }

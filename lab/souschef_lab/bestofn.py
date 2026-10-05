@@ -94,13 +94,26 @@ class Judge:
 
     def __init__(self, cases: dict[str, dict], engine: Engine, system: tuple[str, ...] | list[str] = (),
                  tools: list[dict] | None = None, max_seq: int | None = None,
-                 tokens: Callable[[dict], int] = estimate_tokens):
+                 tokens: Callable[[dict], int] = estimate_tokens, fields_context: str = "as-logged",
+                 fields: object | None = None):
         self.cases = cases
         self.engine = engine
         self.system = tuple(system)
         self.tools = tools
         self.max_seq = max_seq
         self.tokens = tokens
+        # The user turn's candidate-fields block (dataset.BuildConfig.fields_context): "on" = `fields` computes it,
+        # "off" = none, "as-logged" = the one the row was collected with.
+        self.fields_context = fields_context
+        self.fields = fields
+        if fields_context == "on" and fields is None:
+            raise ValueError("fields_context on needs fields (fields.Fields)")
+
+    def candidates(self, row: dict, case: dict) -> str | None:
+        if self.fields_context == "on":
+            from .render import turn_inputs
+            return self.fields.block(*turn_inputs(row, case))
+        return "" if self.fields_context == "off" else None
 
     def __call__(self, row: dict) -> Judged:
         case_id = str(row.get("case_id") or "")
@@ -111,7 +124,7 @@ class Judge:
         if case is None:
             return Judged(sid, case_id, sample, model, row.get("meta") or {}, row, None, False, ["no_case"])
         v = verify(row, case, self.engine)
-        hf = to_hf(row, case, self.system, self.tools)
+        hf = to_hf(row, case, self.system, self.tools, self.candidates(row, case))
         reasons = reasons_of(row, case, v, self.max_seq, self.tokens, hf)
         return Judged(sid, case_id, sample, model, row.get("meta") or {}, row, case, not reasons, reasons, v, hf)
 
