@@ -43,6 +43,18 @@ const (
 	OpToolTurn = "tool_turn" // a call that started from tool results
 )
 
+// LabSitePrefix is the reserved site-id prefix of the lab's synthetic
+// sites (lab/souschef_lab/collect.py: siteId "lab-<case id>", one per test
+// case). No real site id may start with it. Such a row is not a site to
+// the thermometer: IngestRow ships it with no site and LabOpPrefix on its
+// operation. The stored row keeps the real id.
+const LabSitePrefix = "lab-"
+
+// LabOpPrefix prefixes a lab row's operation on the wire ("lab_chat",
+// "lab_tool_turn"), so lab cost stays separable in the thermometer's
+// operation filter (operation is free-form there, cut at 64 bytes).
+const LabOpPrefix = "lab_"
+
 // ShipTimeout bounds one POST to the thermometer.
 const ShipTimeout = 5 * time.Second
 
@@ -257,14 +269,20 @@ type ingestRow struct {
 	OccurredAt       string `json:"occurred_at"`
 }
 
-// IngestRow maps a stored row onto the wire shape (pure; tested).
+// IngestRow maps a stored row onto the wire shape (pure; tested). A lab
+// row (LabSitePrefix) ships with no site and a LabOpPrefix operation; it
+// is mapped here, at ship time, so rows stored before the rule are covered.
 func IngestRow(r store.UsageRow) ingestRow {
+	op, siteID, siteHost := r.Operation, r.SiteID, r.SiteHost
+	if strings.HasPrefix(siteID, LabSitePrefix) {
+		op, siteID, siteHost = LabOpPrefix+op, "", ""
+	}
 	return ingestRow{
 		Source:           Source,
-		Operation:        r.Operation,
+		Operation:        op,
 		Model:            r.Model,
-		SiteID:           r.SiteID,
-		SiteHost:         r.SiteHost,
+		SiteID:           siteID,
+		SiteHost:         siteHost,
 		StoreID:          r.StoreID,
 		UserEmail:        r.UserEmail,
 		InputTokens:      r.InputTokens,

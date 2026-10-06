@@ -54,6 +54,11 @@ variable "default_route" {
   type    = string
   default = "default"
 }
+variable "gpu_model_default" {
+  type        = bool
+  default     = false
+  description = "Make the in-house route (gpu_model_route.name) the service's DEFAULT_ROUTE while it is live, so every turn that names no route goes to the in-house model, which falls back to gpu_model_route.fallback (Claude) within the turn. Ignored while gpu_model_serve is off."
+}
 variable "model_route_allowlist" {
   type    = string
   default = "default,opus"

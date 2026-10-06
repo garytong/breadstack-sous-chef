@@ -16,7 +16,7 @@ module "sous_chef" {
   deploy_nonce      = var.deploy_nonce
 
   model_routes          = local.model_routes
-  default_route         = var.default_route
+  default_route         = local.default_route
   model_route_allowlist = local.model_route_allowlist
   model_call_timeout    = local.model_call_timeout
   turn_ttl              = var.turn_ttl
@@ -58,10 +58,13 @@ module "model_gpu" {
 # 2 (thermometer run.tf: CHAT_SOURDOUGH_URL = sourdough_serve ? uri : null).
 # With the route off the three model_* tfvars pass through untouched, so a
 # plan with the flags off is the plan without Phase 5, and half 1 alone
-# (repository + SA) does not touch the sous-chef service. default_route is
-# never changed here: every caller that names no route keeps Claude.
+# (repository + SA) does not touch the sous-chef service. The in-house route
+# becomes the default only with gpu_model_default AND the route live: turning
+# serve off can never leave DEFAULT_ROUTE naming a route that is not there
+# (the service refuses to boot on that).
 locals {
-  inhouse_live = var.gpu_model_enabled && var.gpu_model_serve
+  inhouse_live  = var.gpu_model_enabled && var.gpu_model_serve
+  default_route = local.inhouse_live && var.gpu_model_default ? var.gpu_model_route.name : var.default_route
 
   # MODEL_ROUTES replaces the server's built-in table wholesale, so the
   # in-house route joins the table in force: the tfvar when set, else the

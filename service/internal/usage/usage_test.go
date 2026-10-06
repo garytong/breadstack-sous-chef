@@ -167,6 +167,70 @@ func TestIngestRowWireShape(t *testing.T) {
 	}
 }
 
+// TestIngestRowLabSite: a lab row ships with no site and a lab_ operation,
+// everything else as stored; any other row is untouched.
+func TestIngestRowLabSite(t *testing.T) {
+	lat := int64(321)
+	base := store.UsageRow{ID: 7, TurnID: "t", Operation: OpToolTurn, Model: "blueberry-muffin", SiteID: "site-1", SiteHost: "shop.example",
+		StoreID: "lab", UserEmail: "u", InputTokens: 1, OutputTokens: 2, CacheWriteTokens: 3, CacheReadTokens: 4, LatencyMS: &lat,
+		Status: "ok", StopReason: "end_turn", RequestID: "msg", OccurredAt: fixed}
+	normal := IngestRow(base)
+	if normal.SiteID != "site-1" || normal.SiteHost != "shop.example" || normal.Operation != OpToolTurn {
+		t.Errorf("normal row changed: %+v", normal)
+	}
+	lab := base
+	lab.SiteID, lab.SiteHost = "lab-set_field/branding/branding/logo", "lab.example"
+	got := IngestRow(lab)
+	want := normal
+	want.SiteID, want.SiteHost, want.Operation = "", "", "lab_tool_turn"
+	if got != want {
+		t.Errorf("lab row = %+v\nwant %+v", got, want)
+	}
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), `"operation":"lab_tool_turn"`) || !strings.Contains(string(raw), `"site_id":"","site_host":""`) {
+		t.Errorf("lab wire = %s", raw)
+	}
+	// Only the prefix counts: the bare word and a mid-string match are sites.
+	for _, id := range []string{"lab", "my-lab-site", "Lab-1", ""} {
+		r := base
+		r.SiteID = id
+		if w := IngestRow(r); w.SiteID != id || w.Operation != OpToolTurn || w.SiteHost != "shop.example" {
+			t.Errorf("site %q mapped: %+v", id, w)
+		}
+	}
+}
+
+// TestSweepMapsStoredLabRows: rows stored before the lab rule ship mapped
+// on a sweep, next to an untouched normal row; the store keeps the real id.
+func TestSweepMapsStoredLabRows(t *testing.T) {
+	therm := &fakeThermometer{}
+	srv := httptest.NewServer(therm.handler())
+	defer srv.Close()
+	ms := &memStore{rows: []store.UsageRow{
+		{ID: 1, Operation: OpChat, Model: "m", SiteID: "lab-toggle/LayoutSection/x", StoreID: "lab", Status: "ok", OccurredAt: fixed},
+		{ID: 2, Operation: OpToolTurn, Model: "m", SiteID: "site-1", StoreID: "st", UserEmail: "u", Status: "ok", OccurredAt: fixed},
+		{ID: 3, Operation: OpToolTurn, Model: "m", SiteID: "lab-set_field/a", StoreID: "lab", Status: "ok", OccurredAt: fixed},
+	}}
+	rec := NewRecorder(ms, NewShipper(srv.URL, "k"))
+	n, err := rec.Sweep(context.Background())
+	if err != nil || n != 3 {
+		t.Fatalf("Sweep = %d, %v", n, err)
+	}
+	if therm.count() != 1 || len(therm.batches[0]) != 3 {
+		t.Fatalf("batches = %v", therm.batches)
+	}
+	want := [][3]string{{"lab_chat", "", "lab"}, {"tool_turn", "site-1", "st"}, {"lab_tool_turn", "", "lab"}}
+	for i, w := range want {
+		got := therm.batches[0][i]
+		if got["operation"] != w[0] || got["site_id"] != w[1] || got["site_host"] != "" || got["store_id"] != w[2] || len(got) != 16 {
+			t.Errorf("row %d = %v, want operation %q site_id %q store_id %q", i, got, w[0], w[1], w[2])
+		}
+	}
+	if ms.rows[0].SiteID != "lab-toggle/LayoutSection/x" || ms.rows[0].Operation != OpChat || ms.shippedCount() != 3 {
+		t.Errorf("stored rows rewritten or unshipped: %+v", ms.rows)
+	}
+}
+
 func TestNewShipperFromEnvGate(t *testing.T) {
 	get := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	if NewShipperFromEnv(get(nil)) != nil {
