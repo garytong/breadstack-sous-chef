@@ -185,14 +185,14 @@ func TestTurnDone_StatesRouteOptions(t *testing.T) {
 	t.Run("anthropic route", func(t *testing.T) {
 		hy := newHybrid(t, nil, []modeltest.Step{reply(modeltest.Text("ok"))})
 		_, evs := hy.start(hy.req("default", "hello"))
-		if got := routeOf(t, last(evs)); got != `{"fallback":null,"fields_context":false,"model":"claude-sonnet-5-5","name":"default"}` {
+		if got := routeOf(t, last(evs)); got != `{"fallback":null,"fields_context":true,"model":"claude-sonnet-5-5","name":"default"}` {
 			t.Errorf("route = %s", got)
 		}
 		// No route named: the default route, by name.
 		hy.claude.Append(answering("claude-sonnet-5-5-20260901", []modeltest.Step{reply(modeltest.Text("ok"))})...)
 		_, evs = hy.start(hy.req("", "hello again"))
 		// `model` is the id the turn's calls were reported under: the response's.
-		if got := routeOf(t, last(evs)); got != `{"fallback":null,"fields_context":false,"model":"claude-sonnet-5-5-20260901","name":"default"}` {
+		if got := routeOf(t, last(evs)); got != `{"fallback":null,"fields_context":true,"model":"claude-sonnet-5-5-20260901","name":"default"}` {
 			t.Errorf("route (none named) = %s", got)
 		}
 	})

@@ -15,9 +15,13 @@
 //
 //	sous-chef-fields -manifest manifest.json -jsonl < rows.jsonl > blocks.jsonl
 //
-// reads one {"id"?, "context"?, "text"} object per line and writes one
-// {"id", "block", "targets"} line for each, in order. "request" is accepted
-// for "text" (the lab's case rows).
+// reads one {"id"?, "context"?, "text", "history"?} object per line and
+// writes one {"id", "block", "targets"} line for each, in order. "request"
+// is accepted for "text" (the lab's case rows). With "history" (the earlier
+// turns, oldest first, each {"user", "assistant"}) the block is the one a
+// turn after the last of them gets (fields.CandidatesAfter: a follow-up
+// such as "yes please" is read with the turn before it); -prev-user and
+// -prev-assistant do the same for one turn.
 package main
 
 import (
@@ -44,10 +48,19 @@ func main() {
 }
 
 type row struct {
-	ID      json.RawMessage `json:"id,omitempty"`
-	Context json.RawMessage `json:"context,omitempty"`
-	Text    string          `json:"text"`
-	Request string          `json:"request,omitempty"`
+	ID      json.RawMessage   `json:"id,omitempty"`
+	Context json.RawMessage   `json:"context,omitempty"`
+	Text    string            `json:"text"`
+	Request string            `json:"request,omitempty"`
+	History []fields.Previous `json:"history,omitempty"`
+}
+
+// previous is the last of a row's earlier turns (zero without history).
+func previous(h []fields.Previous) fields.Previous {
+	if len(h) == 0 {
+		return fields.Previous{}
+	}
+	return h[len(h)-1]
 }
 
 type out struct {
@@ -64,7 +77,9 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		contextPath  = fs.String("context", "", "turn context JSON file, or - for stdin (optional)")
 		text         = fs.String("text", "", "the merchant's text")
 		asJSON       = fs.Bool("json", false, "print {block, targets} instead of the block")
-		jsonl        = fs.Bool("jsonl", false, "read {id?, context?, text} lines on stdin, write {id, block, targets} lines")
+		jsonl        = fs.Bool("jsonl", false, "read {id?, context?, text, history?} lines on stdin, write {id, block, targets} lines")
+		prevUser     = fs.String("prev-user", "", "the merchant's previous message (a follow-up is read with it)")
+		prevReply    = fs.String("prev-assistant", "", "the assistant's reply to the previous message")
 		opts         fields.Options
 	)
 	fs.IntVar(&opts.MaxChars, "max-chars", def.MaxChars, "cap on the block's size")
@@ -92,8 +107,8 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	enc.SetEscapeHTML(false)
 
 	if *jsonl {
-		if *contextPath != "" || *text != "" {
-			return errors.New("-jsonl takes its turns from stdin: drop -context and -text")
+		if *contextPath != "" || *text != "" || *prevUser != "" || *prevReply != "" {
+			return errors.New("-jsonl takes its turns from stdin: drop -context, -text, -prev-user and -prev-assistant")
 		}
 		in := bufio.NewScanner(stdin)
 		in.Buffer(make([]byte, 1<<20), 64<<20)
@@ -112,7 +127,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("line %d: %w", n, err)
 			}
-			res := fields.Candidates(m, ctx, r.Text, opts)
+			res := fields.CandidatesAfter(m, ctx, r.Text, previous(r.History), opts)
 			if err := enc.Encode(out{ID: r.ID, Block: res.Block, Targets: nonNil(res.Targets)}); err != nil {
 				return err
 			}
@@ -136,7 +151,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	res := fields.Candidates(m, ctx, *text, opts)
+	res := fields.CandidatesAfter(m, ctx, *text, fields.Previous{User: *prevUser, Assistant: *prevReply}, opts)
 	if *asJSON {
 		return enc.Encode(out{Block: res.Block, Targets: nonNil(res.Targets)})
 	}

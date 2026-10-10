@@ -12,7 +12,14 @@ global / branding / pageVisibility slices come from the probe fixture
 `context_of` mirrors the browser's `turnContext.buildTurnContext`
 (launcher/client/src/sousChef/turnContext.js): `page`, `template`, `layout`
 (`layouts[page]` or `''`), `sections[{id,type,title,enabled}]`, `categories`,
-`customPages`, `nav` (from pageVisibility), `locations`.
+`customPages`, `nav` (the storefront's header links), `locations`, `focus`
+(tab / open section / open global panel), `shopMenu` and the manifest-derived
+list `outline` (+ `outlineTruncated`); with `text` (the request) the pages it
+names (`named_pages`, mirroring the browser's `pageNames.js`) join the
+outline after the viewed page. The shared golden
+`launcher/client/src/sousChef/__fixtures__/turnContext.parity.json` in the
+cookie-cutter checkout holds the browser's output; tests/test_state.py
+asserts this module reproduces it.
 
 Path helpers resolve a manifest field to its state path for a section row,
 a global panel, branding or a page, and `gate_writes` computes the values
@@ -26,7 +33,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -602,37 +611,504 @@ def section_summaries(sections: list[dict]) -> list[dict]:
     ]
 
 
-def nav_summaries(page_visibility: dict | None) -> list[dict]:
+# Copied from components/basicEditor/widgets/HeaderNavigationEditor.jsx via
+# turnContext.js HEADER_NAV_ITEMS / HEADER_NAV_DEFAULTS (= DefaultNavbar
+# BUILTIN_NAV_ITEMS / DEFAULT_HEADER_PAGES).
+HEADER_NAV_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Shop", "products"), ("Locations", "locations"), ("Delivery", "delivery"), ("Mail Order", "mail-order"),
+    ("About Us", "about"), ("FAQ", "faq"), ("Blog", "blog"), ("Contact", "contact"), ("Loyalty", "loyalty"),
+    ("Careers", "careers"),
+)
+HEADER_NAV_DEFAULTS = ("products", "locations", "about", "contact", "faq")
+
+# turnContext.js GLOBAL_PANEL_BY_SECTION: GlobalSettingsDrawer `data-section` id → manifest globalPanels name.
+GLOBAL_PANEL_BY_SECTION = {
+    "branding": "BrandingSection", "headerMenu": "HeaderSection", "shopMenu": "ShopMenuSection",
+    "footerMenu": "FooterSection", "typography": "TypographyColorsSection", "buttons": "ButtonsSection",
+    "productCard": "ProductCardSection", "social": "SocialMediaSection", "layout": "LayoutSection",
+    "sidebarCart": "SidebarCartSection", "notification": "NotificationSection", "insiderBanner": "InsiderBannerSection",
+}
+
+# turnContext.js outline constants
+LABEL_KEYS = ("q", "question", "name", "title", "label", "headline")
+LABEL_MAX = 60
+ROWS_MAX = 20
+OUTLINE_MAX = 4096
+LADDER = (ROWS_MAX, 10, 5, 3, 2, 1, 0)
+_LABEL_TEXT_TYPES = ("text", "richtext")
+_VALUE_LABEL_TYPES = ("text", "richtext", "enum", "select")
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_BLOCK_TAG_RE = re.compile(r"</?(?:p|div|br|li|ul|ol|h[1-6]|tr|td|th|blockquote|section|article|hr)\b[^>]*>", re.I | re.A)
+_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_TAG_OPEN_RE = re.compile(r"<(?=[/!A-Za-z])")
+_STRIP_PASSES = 5
+_ENTITIES = (("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'"), ("&#x27;", "'"), ("&amp;", "&"))
+_WS_RE = re.compile("[ \t\n\r\f\v\u00a0]+")
+_CTRL_RE = re.compile("[\u0000-\u001f\u007f\ud800-\udfff]")
+# Non-whitespace controls and lone surrogates, removed FIRST: removed after the tag strip they could
+# reassemble a tag (`<\u0001/context>` → `</context>`).
+_EARLY_CTRL_RE = re.compile("[\u0000-\u0008\u000e-\u001f\u007f\ud800-\udfff]")
+_LIST_SEG_RE = re.compile(r"^([^\[\]]*)((?:\[\])*)$")
+
+
+def _truthy(v: Any) -> bool:
+    """JavaScript truthiness for JSON values (`[]` and `{}` are truthy)."""
+    if isinstance(v, (list, dict)):
+        return True
+    return bool(v)
+
+
+def nav_summaries(page_visibility: dict | None, custom_pages: list | None = None) -> list[dict]:
+    """turnContext.navSummaries: the header links DefaultNavbar renders — built-in pages and published
+    custom pages whose `inHeaderNav` is true or, when unset, in HEADER_NAV_DEFAULTS; never a
+    `published:false` page; then `_meta.headerNavCustomLinks`; ordered by `_meta.headerNavOrder`."""
     pv = page_visibility if isinstance(page_visibility, dict) else {}
-    out = []
-    for page, cfg in pv.items():
-        if page == "_meta" or not isinstance(cfg, dict):
+    builtin = {page for _, page in HEADER_NAV_ITEMS}
+    items = list(HEADER_NAV_ITEMS)
+    for p in custom_pages if isinstance(custom_pages, list) else []:
+        if not isinstance(p, dict) or not _truthy(p.get("slug")) or not _truthy(p.get("title")):
             continue
-        if not cfg.get("inHeaderNav") or cfg.get("published") is False:
+        if p.get("status") == "draft" or p.get("slug") in builtin:
             continue
-        out.append({"label": _s(cfg.get("headerNavName")) or page, "href": "/" if page == "home" else f"/{page}"})
-    custom = (pv.get("_meta") or {}).get("headerNavCustomLinks") if isinstance(pv.get("_meta"), dict) else None
-    if isinstance(custom, list):
-        for link in custom:
-            if not isinstance(link, dict):
-                continue
-            href = _s(link.get("url") or link.get("href"))
-            if not href:
-                continue
-            out.append({"label": _s(link.get("label") or link.get("name")) or href, "href": href})
+        items.append((_s(p.get("title")), _s(p.get("slug"))))
+    rows = []
+    for name, page in items:
+        cfg = pv.get(page) if isinstance(pv.get(page), dict) else {}
+        if cfg.get("published", True) is False:
+            continue
+        shown = _truthy(cfg["inHeaderNav"]) if "inHeaderNav" in cfg else page in HEADER_NAV_DEFAULTS
+        if not shown:
+            continue
+        custom = cfg.get("headerNavName")
+        label = custom if isinstance(custom, str) and custom.strip() else name
+        rows.append({"key": page, "label": label, "href": f"/{page}"})
+    meta = pv.get("_meta") if isinstance(pv.get("_meta"), dict) else {}
+    links = meta.get("headerNavCustomLinks")
+    for link in links if isinstance(links, list) else []:
+        if not isinstance(link, dict):
+            continue
+        rows.append({"key": link.get("id"), "label": _s(link.get("label")) or "Link", "href": _s(link.get("url")) or "/"})
+    order = meta.get("headerNavOrder") if isinstance(meta.get("headerNavOrder"), list) else []
+    if order:
+        picked = [r for r in (next((r for r in rows if r["key"] == k), None) for k in order) if r is not None]
+        rows = picked + [r for r in rows if r["key"] not in order]
+    return [{"label": r["label"], "href": r["href"]} for r in rows]
+
+
+def focus_summary(view: dict | None) -> dict:
+    """turnContext.focusSummary: `area` (Pantry tab; `settings` → `global`), the open section editor, and the
+    open Global Settings panel as a manifest panel name (global area only)."""
+    v = view if isinstance(view, dict) else {}
+    tab = _s(v.get("tab"))
+    area = "global" if tab == "settings" else (tab or "editor")
+    gs = _s(v.get("globalSection"))
+    return {
+        "area": area,
+        "sectionId": _s(v.get("activeSectionId")),
+        "panel": (GLOBAL_PANEL_BY_SECTION.get(gs) or gs) if area == "global" and gs else "",
+    }
+
+
+def _js_number(v: Any) -> float:
+    """JavaScript `Number(v)` for JSON values (NaN when not numeric)."""
+    if isinstance(v, bool):
+        return float(v)
+    if isinstance(v, (int, float)):
+        return float(v)
+    if v is None:
+        return 0.0
+    if isinstance(v, str):
+        t = v.strip()
+        if t == "":
+            return 0.0
+        try:
+            return float(t)
+        except ValueError:
+            return float("nan")
+    return float("nan")
+
+
+def _num_out(n: float) -> int | float:
+    # JS prints whole numbers from 1e21 up in exponent form (`1e+21`), as Python's float repr does.
+    return int(n) if float(n).is_integer() and abs(n) < 1e21 else n
+
+
+def _js_num_str(n: float) -> str:
+    """String(n) for a finite JS number: shortest round-trip digits, positional for 1e-6 <= |n| < 1e21,
+    else `d.ddde±x` (no zero-padded exponent)."""
+    if n == 0:
+        return "0"
+    if float(n).is_integer() and abs(n) < 1e21:
+        return str(int(n))
+    r = repr(float(n))
+    if 1e-6 <= abs(n) < 1e21:
+        return format(Decimal(r), "f")
+    # Outside that range Python's repr is already in exponent form (`1e+21`, `1.5e-07`): drop exponent zero-padding.
+    return re.sub(r"e([+-])0*(\d)", r"e\1\2", r)
+
+
+def shop_menu_summary(global_settings: dict | None) -> dict:
+    """turnContext.shopMenuSummary."""
+    g = global_settings if isinstance(global_settings, dict) else {}
+    mx = _js_number(g.get("shopMenuMaxItems")) if "shopMenuMaxItems" in g else float("nan")
+    items = g.get("shopMenuItems") if isinstance(g.get("shopMenuItems"), list) else []
+    return {
+        "style": _s(g.get("shopMenuStyle")) or "classic",
+        "maxItems": _num_out(mx) if math.isfinite(mx) and mx > 0 else 0,
+        "hidden": sum(1 for it in items if isinstance(it, dict) and it.get("visible") is False),
+        "inStockOnly": g.get("shopMenuShowOnlyInStockCategories") is True,
+    }
+
+
+def plain_label(value: Any, max_len: int = LABEL_MAX) -> str:
+    """turnContext.plainLabel: non-whitespace control chars and lone surrogates removed first, then entities
+    decoded once (`&amp;` last), then comments, block tags (→ space) and
+    tag-like spans removed until stable (at most 5 passes), then any `<` still opening a tag (`<` + `/`, `!`
+    or a letter) deleted; whitespace collapsed, control chars / lone surrogates removed, clipped to `max_len`
+    code points with `…`. The result never carries markup; `a < b and c > d` survives."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        value = _js_num_str(float(value)) if isinstance(value, float) else str(value)
+    if not isinstance(value, str):
+        return ""
+    s = _EARLY_CTRL_RE.sub("", value)
+    for frm, to in _ENTITIES:
+        s = s.replace(frm, to)
+    for _ in range(_STRIP_PASSES):
+        nxt = _TAG_RE.sub("", _BLOCK_TAG_RE.sub(" ", _COMMENT_RE.sub("", s)))
+        if nxt == s:
+            break
+        s = nxt
+    s = _CTRL_RE.sub("", _WS_RE.sub(" ", _TAG_OPEN_RE.sub("", s))).strip(" ")
+    return s[: max_len - 1].rstrip(" ") + "…" if len(s) > max_len else s
+
+
+def json_size(v: Any) -> int:
+    """turnContext.jsonSize: code points of the compact JSON."""
+    return len(json.dumps(v, separators=(",", ":"), ensure_ascii=False))
+
+
+def _item_fields_of(spec: dict, doc: dict) -> dict:
+    out = dict(spec["item"]) if isinstance(spec.get("item"), dict) else {}
+    ref = re.sub(r"^details\.", "", spec["item_ref"]) if isinstance(spec.get("item_ref"), str) else ""
+    details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
+    panel = details.get(ref) if ref and isinstance(details.get(ref), dict) else None
+    if panel and isinstance(panel.get("fields"), dict):
+        out.update(panel["fields"])
     return out
 
 
-def context_of(state: dict, page: str = "home", extras: dict | None = None) -> dict:
+def _label_rule(fields: dict) -> tuple[str, str | None] | None:
+    for k in LABEL_KEYS:
+        if isinstance(fields.get(k), dict) and fields[k].get("type") in _LABEL_TEXT_TYPES:
+            return ("key", k)
+    if isinstance(fields.get("value"), dict) and fields["value"].get("type") in _VALUE_LABEL_TYPES:
+        return ("value", None)
+    return None
+
+
+def _segments_of(path: str, indexes: list[int], absolute: bool) -> list[str | int]:
+    idx = list(indexes)
+    out: list[str | int] = []
+    for n, part in enumerate(str(path).split(".")):
+        m = _LIST_SEG_RE.match(part)
+        name = m.group(1) if m else part
+        if name != "":
+            out.append(PATH_ROOT_TO_SLICE.get(name, name) if absolute and n == 0 else name)
+        for _ in range(len(m.group(2)) // 2 if m else 0):
+            out.append(idx.pop(0) if idx else 0)
+    return out
+
+
+def _read_at(root: Any, segs: list[str | int]) -> Any:
+    cur = root
+    for s in segs:
+        if isinstance(cur, dict):
+            cur = cur.get(s if isinstance(s, str) else str(s))
+        elif isinstance(cur, list) and isinstance(s, int):
+            cur = cur[s] if 0 <= s < len(cur) else None
+        else:
+            return None
+    return cur
+
+
+def _parent_tuples(root: Any, path: str, absolute: bool, flags: dict) -> list[list[int]]:
+    """Every parent index tuple of a nested list path, capped at ROWS_MAX per level (a cap that hid parents
+    sets `flags["capped"]`)."""
+    cut = path.split("[]")
+    tuples: list[list[int]] = [[]]
+    for level in range(len(cut) - 1):
+        parent_path = "[]".join(cut[: level + 1])
+        nxt = []
+        for t in tuples:
+            arr = _read_at(root, _segments_of(parent_path, t, absolute))
+            if isinstance(arr, list):
+                if len(arr) > ROWS_MAX:
+                    flags["capped"] = True
+                nxt.extend(t + [i] for i in range(min(len(arr), ROWS_MAX)))
+        tuples = nxt
+    return tuples
+
+
+def _list_entries(lists: Any, doc: dict, state: dict, section: dict | None, absolute_of, seen: set,
+                  flags: dict) -> list[dict]:
+    out = []
+    for key, spec in (lists.items() if isinstance(lists, dict) else []):
+        if not isinstance(spec, dict) or not isinstance(spec.get("path"), str) or not spec["path"]:
+            continue
+        absolute = absolute_of(spec["path"])
+        base = state if absolute else section
+        rule = _label_rule(_item_fields_of(spec, doc))
+        for at in _parent_tuples(base, spec["path"], absolute, flags):
+            sig = f"{spec['path']}@{','.join(str(i) for i in at)}" if absolute else None
+            if sig and sig in seen:
+                continue
+            arr = _read_at(base, _segments_of(spec["path"], at, absolute))
+            if not isinstance(arr, list) or not arr:
+                continue
+            if sig:
+                seen.add(sig)
+            labels = None
+            if rule:
+                labels = []
+                for i, row in enumerate(arr):
+                    v = (row.get(rule[1]) if isinstance(row, dict) else None) if rule[0] == "key" else row
+                    lab = plain_label(v)
+                    labels.append(f"[{i}] {lab}" if lab else f"[{i}]")
+            out.append({"key": key, "at": at, "count": len(arr), "labels": labels})
+    return out
+
+
+def _page_list_owner(state: dict, doc: dict, page: str, owner: dict, seen: set, flags: dict) -> dict:
+    pages = doc.get("pages") if isinstance(doc.get("pages"), dict) else {}
+    page_spec = pages.get(page) if isinstance(pages.get(page), dict) else None
+    lists = _list_entries(page_spec.get("lists"), doc, state, None, lambda p: True, seen, flags) if page_spec else []
+    return {"owner": owner, "lists": lists}
+
+
+def _section_owners(state: dict, doc: dict, sections: list, page: str, seen: set, flags: dict) -> list[dict]:
+    """Every section row with a style or non-empty lists; `page` set → entries carry it (another page's)."""
+    types = doc.get("sections") if isinstance(doc.get("sections"), dict) else {}
+    known = {k for k, v in types.items() if _truthy(v)}
+    out = []
+    for row in sections if isinstance(sections, list) else []:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        sid = _s(row["id"])
+        typ = lookup_section_type_id(sid, known)
+        settings = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+        style = plain_label(settings["style"]) if isinstance(settings.get("style"), str) else ""
+        lists = (_list_entries(types[typ].get("lists"), doc, state, row, lambda p: not p.startswith("settings."), seen, flags)
+                 if typ and isinstance(types.get(typ), dict) else [])
+        if not style and not lists:
+            continue
+        owner: dict = {"section": sid}
+        if page:
+            owner["page"] = page
+        if style:
+            owner["style"] = style
+        out.append({"owner": owner, "lists": lists})
+    return out
+
+
+def _outline_owners(state: dict, doc: dict, page: str, sections: list, focus_id: str, seen: set,
+                    flags: dict) -> list[dict]:
+    page_owner = _page_list_owner(state, doc, page, {"page": page}, seen, flags)
+    owners = [page_owner] if page_owner["lists"] else []
+    sec_owners = _section_owners(state, doc, sections, "", seen, flags)
+    fi = next((i for i, o in enumerate(sec_owners) if o["owner"]["section"] == focus_id), -1) if focus_id else -1
+    if fi >= 0:
+        return [sec_owners[fi], *owners, *(o for i, o in enumerate(sec_owners) if i != fi)]
+    return owners + sec_owners
+
+
+def _other_page_owners(state: dict, doc: dict, page: str, sections: list, seen: set, flags: dict) -> list[dict]:
+    """A named other page: header `{page, other:true, sections, lists?}` then `{section, page, style?, lists?}`."""
+    summaries = [{**row, "title": plain_label(row["title"])} for row in section_summaries(sections)]
+    header = _page_list_owner(state, doc, page, {"page": page, "other": True, "sections": summaries}, seen, flags)
+    return [header, *_section_owners(state, doc, sections, page, seen, flags)]
+
+
+def _render_owners(owners: list[dict], rows_max: int) -> list[dict]:
+    out = []
+    for o in owners:
+        d = dict(o["owner"])
+        if o["lists"]:
+            ls = []
+            for e in o["lists"]:
+                lst: dict = {"key": e["key"]}
+                if e["at"]:
+                    lst["at"] = e["at"]
+                lst["count"] = e["count"]
+                if e["labels"] is not None and rows_max > 0:
+                    rows = e["labels"][:rows_max]
+                    if len(e["labels"]) > rows_max:
+                        rows = rows + [f"+{len(e['labels']) - rows_max} more"]
+                    lst["rows"] = rows
+                ls.append(lst)
+            d["lists"] = ls
+        out.append(d)
+    return out
+
+
+def build_outline(state: dict, manifest: Any, page: str, sections: list, focus_id: str = "",
+                  max_size: int = OUTLINE_MAX, others: list[dict] | None = None) -> tuple[list[dict], bool]:
+    """turnContext.buildOutline → (outline, truncated); ([], False) without a manifest. `others` =
+    [{page, sections}] for the pages the request names, appended after the viewed page within the one
+    budget (the viewed page is never shrunk for them)."""
+    doc = manifest.doc if isinstance(manifest, Manifest) else manifest
+    if not isinstance(doc, dict):
+        return [], False
+    st = state if isinstance(state, dict) else {}
+    seen: set = set()
+    flags = {"capped": False}
+    owners = _outline_owners(st, doc, page, sections, focus_id, seen, flags)
+    truncated = False
+    outline = None
+    for n in LADDER:
+        r = _render_owners(owners, n)
+        if json_size(r) <= max_size:
+            outline = r
+            truncated = truncated or n < ROWS_MAX
+            break
+    if outline is None:
+        outline = _render_owners(owners, 0)
+        while outline and json_size(outline) > max_size:
+            outline = outline[:-1]
+        truncated = True
+    for other in others or []:
+        block = _other_page_owners(st, doc, _s(other.get("page")), other.get("sections"), seen, flags)
+        fit = None
+        for n in LADDER:
+            r = _render_owners(block, n)
+            if json_size(outline + r) <= max_size:
+                fit = r
+                truncated = truncated or n < ROWS_MAX
+                break
+        if fit is None:
+            truncated = True
+            r = _render_owners(block, 0)
+            while len(r) > 1 and json_size(outline + r) > max_size:
+                r = r[:-1]
+            if json_size(outline + r) > max_size:
+                continue
+            fit = r
+        outline = outline + fit
+    return outline, truncated or flags["capped"]
+
+
+# ── named pages (pageNames.js) ──────────────────────────────────────────────
+
+# pageNames.js BUILTIN_PAGE_NAMES: slug → names, the first is the display label (PreviewPage buildPageOptions).
+BUILTIN_PAGE_NAMES: dict[str, tuple[str, ...]] = {
+    "home": ("Home", "Home page", "Homepage"), "products": ("Products", "Shop"),
+    "product-details": ("Product Details", "Product page"), "cart": ("Cart",), "checkout": ("Checkout",),
+    "order-confirmation": ("Order Confirmation",), "locations": ("Locations",), "faq": ("FAQ", "FAQs"),
+    "about": ("About Us", "About page"), "blog": ("Blog",), "blog-detail": ("Blog Post",), "delivery": ("Delivery",),
+    "mail-order": ("Mail Order",), "contact": ("Contact Us", "Contact"), "careers": ("Careers",),
+    "loyalty": ("Loyalty Program", "Loyalty"), "privacy-policy": ("Privacy Policy",),
+    "terms-of-service": ("Terms of Service", "Terms"),
+    "return-refund": ("Refund & Return Policy", "Return Policy", "Refund Policy"), "login": ("Login",),
+    "account": ("Account",), "order-details": ("Track Order",), "location-selection": ("Location Selection",),
+    "age-gate": ("Age Gate",),
+}
+NAMED_PAGES_MAX = 3
+NAME_MIN = 3
+GENERIC_NAMES = (" about ",)
+_SKIPPED_SLUGS = ("location-details",)
+_NAME_FOLD_RE = re.compile(r"[\W_]+")
+_NAV_HREF_RE = re.compile(r"/([^/?#]+)")
+
+
+def norm_name(s: Any) -> str:
+    """pageNames.normName: `' ' + lowercase words joined by single spaces + ' '`."""
+    return " " + _NAME_FOLD_RE.sub(" ", _s(s).lower()).strip() + " "
+
+
+def _custom_title(p: dict) -> str:
+    return _s(p.get("title") if _truthy(p.get("title")) else p.get("name"))
+
+
+def page_label(slug: Any, custom_pages: list | None = None) -> str:
+    """pageNames.pageLabel: a custom page's title, else the built-in label, else the humanised slug."""
+    s = _s(slug)
+    for p in custom_pages if isinstance(custom_pages, list) else []:
+        if isinstance(p, dict) and _s(p.get("slug")) == s and _custom_title(p).strip():
+            return _custom_title(p).strip()
+    if s in BUILTIN_PAGE_NAMES:
+        return BUILTIN_PAGE_NAMES[s][0]
+    words = re.sub(r"[-_]+", " ", s).strip()
+    return words[:1].upper() + words[1:]
+
+
+def _name_candidates(custom_pages: list | None, nav: list | None) -> list[tuple[str, str]]:
+    out = []
+    for slug, names in BUILTIN_PAGE_NAMES.items():
+        out.extend((slug, n) for n in names)
+        out.append((slug, slug))
+    custom = [p for p in (custom_pages if isinstance(custom_pages, list) else []) if isinstance(p, dict) and _s(p.get("slug"))]
+    for p in custom:
+        out.append((_s(p.get("slug")), _custom_title(p)))
+        out.append((_s(p.get("slug")), _s(p.get("slug"))))
+    known = set(BUILTIN_PAGE_NAMES) | {_s(p.get("slug")) for p in custom}
+    for row in nav if isinstance(nav, list) else []:
+        if not isinstance(row, dict):
+            continue
+        m = _NAV_HREF_RE.fullmatch(_s(row.get("href")))
+        if m and m.group(1) in known:
+            out.append((m.group(1), _s(row.get("label"))))
+    return [(slug, name) for slug, name in out
+            if slug not in _SKIPPED_SLUGS and len(norm_name(name)) >= NAME_MIN + 2 and norm_name(name) not in GENERIC_NAMES]
+
+
+def named_pages(text: Any, custom_pages: list | None = None, nav: list | None = None, exclude: str = "") -> list[str]:
+    """pageNames.namedPages: slugs of the pages `text` names (built-in names and slugs, custom page titles and
+    slugs, header nav labels; whole words, case-insensitive), earliest mention first, `exclude` dropped, at
+    most NAMED_PAGES_MAX."""
+    if not isinstance(text, str) or not text:
+        return []
+    hay = norm_name(text)
+    best: dict[str, tuple[int, int]] = {}
+    for order, (slug, name) in enumerate(_name_candidates(custom_pages, nav)):
+        at = hay.find(norm_name(name))
+        if at < 0:
+            continue
+        if slug not in best or at < best[slug][0]:
+            best[slug] = (at, order)
+    ranked = sorted((v, slug) for slug, v in best.items() if slug != _s(exclude))
+    return [slug for _, slug in ranked[:NAMED_PAGES_MAX]]
+
+
+def _page_rows(state: dict, page: str) -> list:
+    rows = sections_of(state, page)
+    if page != "home" and not rows and page in PINNED_BY_PAGE:
+        rows = [{"id": PINNED_BY_PAGE[page]["id"], "enabled": True}]
+    return rows
+
+
+def context_of(state: dict, page: str = "home", extras: dict | None = None, manifest: Any = None,
+               view: dict | None = None, text: str | None = None) -> dict:
     """The `context` member of POST /v1/turns (README §1.2), as
     `turnContext.buildTurnContext` derives it from the EditorState. `extras`
-    supplies `categories` and `locations` (the fixture `context.json`)."""
+    supplies `categories` and `locations` (the fixture `context.json`);
+    `manifest` (a Manifest or its doc) feeds the list outline; `view` is the
+    host ctx focus (`tab`, `activeSectionId`, `globalSection`) — none = the
+    editor tab with nothing open; `text` (the merchant's request) adds the
+    pages it names to the outline (`named_pages`). The browser fills a
+    never-saved non-home page with its template defaults (JSX, out of the
+    lab's reach); the lab uses the pinned row — parity cases name saved
+    pages only."""
     ex = extras or {}
-    sections = sections_of(state, page)
-    if page != "home" and not sections and page in PINNED_BY_PAGE:
-        sections = [{"id": PINNED_BY_PAGE[page]["id"], "enabled": True}]
+    sections = _page_rows(state, page)
     layouts = state.get("layouts") if isinstance(state.get("layouts"), dict) else {}
-    return {
+    custom_pages = state.get("customPages") if isinstance(state.get("customPages"), list) else []
+    focus = focus_summary(view)
+    nav = nav_summaries(state.get("pageVisibility"), custom_pages)
+    doc = manifest.doc if isinstance(manifest, Manifest) else manifest
+    others = ([{"page": slug, "sections": _page_rows(state, slug)}
+               for slug in named_pages(text, custom_pages, nav, _s(page))]
+              if isinstance(doc, dict) and isinstance(text, str) and text else [])
+    outline, truncated = build_outline(state, manifest, _s(page), sections, focus["sectionId"], OUTLINE_MAX, others)
+    out = {
         "page": _s(page),
         "template": _s((state.get("template") or {}).get("id")),
         "layout": _s(layouts.get(page) or ""),
@@ -640,11 +1116,17 @@ def context_of(state: dict, page: str = "home", extras: dict | None = None) -> d
         "categories": [{"slug": _s(c.get("slug") or c.get("id")), "name": _s(c.get("name") or c.get("title") or c.get("label"))}
                        for c in ex.get("categories") or [] if isinstance(c, dict)],
         "customPages": [{"slug": _s(p.get("slug")), "title": _s(p.get("title") or p.get("name"))}
-                        for p in state.get("customPages") or [] if isinstance(p, dict)],
-        "nav": nav_summaries(state.get("pageVisibility")),
+                        for p in custom_pages if isinstance(p, dict)],
+        "nav": nav,
         "locations": [{"id": _s(l.get("id")), "name": _s(l.get("name") or l.get("title"))}
                       for l in ex.get("locations") or [] if isinstance(l, dict) and l.get("id") is not None],
+        "focus": focus,
+        "shopMenu": shop_menu_summary(state.get("globalSettings")),
+        "outline": outline,
     }
+    if truncated:
+        out["outlineTruncated"] = True
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

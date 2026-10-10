@@ -809,7 +809,7 @@ class Generator:
               ops: list[dict], holdout_key: str, meta: dict, **expected_extra: Any) -> Case:
         meta = {"generator": "souschef_lab.cases", "schema": SCHEMA_VERSION, "seed": self.seed, "holdout_key": holdout_key, **meta}
         return Case(
-            id=cid, kind=kind, target=target, fields=fields, site_state=state, context=context_of(state, page, self.ctxf),
+            id=cid, kind=kind, target=target, fields=fields, site_state=state, context=context_of(state, page, self.ctxf, self.m),
             request=request, expected={"ops": ops, "diff": [], **expected_extra}, holdout=is_holdout(holdout_key),
             manifest_hash=self.m.hash, template=self.template, meta=meta,
         )

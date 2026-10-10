@@ -22,8 +22,11 @@ What the service does (read-only references):
   text, followed by one newline.
 * `service/internal/loop/pending.go` browserResult — a browser op's
   tool_result is Go ``json.Marshal`` of ``map[string]any{"ok": true,
-  "written"?, "warnings"?, "sectionId"?}`` (map keys SORTED; empty lists
-  omitted); a failure is the ``api.ToolError`` struct ``{code, message,
+  "written"?, "warnings"?, "hidden"?, "sectionId"?}`` (map keys SORTED;
+  empty lists omitted; ``hidden`` = the browser's ``[{key, by, byValue}]``
+  next to ``W_HIDDEN:<key>`` — shared contract 4 — each entry a sorted map,
+  entries without a string key/by dropped, a missing byValue ``null``,
+  `loop/hidden.go` parseHidden); a failure is the ``api.ToolError`` struct ``{code, message,
   key?}`` with ``is_error``; a ``pick_asset`` answer is the ``api.Asset``
   struct ``{public_url, alt?, srcset?}`` (``srcset`` is a RawMessage,
   passed through compacted), or ``{"code":"E_ASSET",…}`` with ``is_error``
@@ -150,7 +153,7 @@ def turn_inputs(row: dict, case: dict | None = None) -> tuple[dict | None, str]:
 
 def tool_result_content(name: str, item: dict) -> tuple[str, bool]:
     """loop.browserResult for one posted tool-results item
-    (``{toolCallId, ok, error?, warnings?, written?, sectionId?, asset?}``):
+    (``{toolCallId, ok, error?, warnings?, written?, hidden?, sectionId?, asset?}``):
     the content string the model reads and whether it is an error."""
     if not item.get("ok"):
         err = item.get("error")
@@ -177,9 +180,32 @@ def tool_result_content(name: str, item: dict) -> tuple[str, bool]:
         out["written"] = [str(w) for w in item["written"]]
     if item.get("warnings"):
         out["warnings"] = [str(w) for w in item["warnings"]]
+    hidden = wire_hidden(item.get("hidden"))
+    if hidden:
+        out["hidden"] = hidden
     if item.get("sectionId"):
         out["sectionId"] = str(item["sectionId"])
     return go_marshal(out, sort_keys=True), False
+
+
+def wire_hidden(hidden: Any) -> list[dict]:
+    """The ``hidden`` member as the service reads it (loop/hidden.go
+    parseHidden) and forwards it to the model: a list of ``{key, by,
+    byValue}``; anything else is dropped, entry by entry (a string key and
+    by are required, a missing byValue is null). Also the shape the
+    browser posts (launcher client/turns.js wireHidden): the engine's own
+    ``rule``/``gate`` stay out."""
+    if not isinstance(hidden, list):
+        return []
+    out = []
+    for h in hidden:
+        if not isinstance(h, dict):
+            continue
+        key, by = h.get("key"), h.get("by")
+        if not isinstance(key, str) or not key or not isinstance(by, str) or not by:
+            continue
+        out.append({"key": key, "by": by, "byValue": h.get("byValue")})
+    return out
 
 
 def tool_result_block(name: str, item: dict) -> dict:

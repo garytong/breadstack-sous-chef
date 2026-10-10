@@ -26,6 +26,9 @@ type tok struct {
 	quoted bool
 	span   int  // which quoted run the word is in, from 1; 0 = not quoted
 	value  bool // the quoted run is introduced as the value being set
+	// alts are the readings the merchant vocabulary adds from this word on
+	// (vocab.go): "site name" also reads as "store name".
+	alts []alt
 }
 
 // endsWithMake: the quoted run closing at rs[close] ends the request, the
@@ -249,6 +252,13 @@ func textToks(text string) []tok {
 // (#c22976) and URLs, which are values. The second result is the text with
 // every value run blanked: what a target's id is looked up in.
 func scanText(text string) ([]tok, string) {
+	toks, named, _ := scanTextAll(text)
+	return toks, named
+}
+
+// scanTextAll is scanText, plus every word of the text with its stop words
+// (what vocabulary terms and stop-word titles are matched against).
+func scanTextAll(text string) ([]tok, string, []rawWord) {
 	rs := []rune(text)
 	quoted := make([]bool, len(rs))
 	spanOf := make([]int, len(rs))
@@ -256,6 +266,24 @@ func scanText(text string) ([]tok, string) {
 	spans := 0
 	drop := make([]bool, len(rs))
 	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+	// Identifiers (pageVisibility.our-story, contentBlock-2): words joined
+	// by '-', '_' or '.'. Their words name no title spelled with its stop
+	// words (spelledWithStops).
+	ident := make([]bool, len(rs))
+	for i := 0; i < len(rs); {
+		j, joined := i, false
+		for j < len(rs) && (isWord(rs[j]) || ((rs[j] == '-' || rs[j] == '_' || rs[j] == '.') && j > i && j+1 < len(rs) && isWord(rs[j+1]))) {
+			joined = joined || !isWord(rs[j])
+			j++
+		}
+		for k := i; k < j; k++ {
+			ident[k] = joined
+		}
+		if j == i {
+			j++
+		}
+		i = j
+	}
 	endsValue := func(r rune) bool { return unicode.IsSpace(r) || isOpenQuote(r) || r == '’' || r == '”' }
 	// Values that are not words: #c22976, /products, https://…
 	for i := 0; i < len(rs); i++ {
@@ -295,6 +323,7 @@ func scanText(text string) ([]tok, string) {
 		}
 	}
 	var out []tok
+	var all []rawWord // every word, stop words included: what vocabulary terms match
 	// Walk the runes once more, cutting words the way split does but keeping
 	// each word's quoted flag (that of its first rune).
 	i := 0
@@ -309,13 +338,19 @@ func scanText(text string) ([]tok, string) {
 		}
 		for _, w := range split(string(rs[i:j])) {
 			n := norm(w)
-			if n == "" || stop[n] {
+			if n == "" {
 				continue
 			}
+			if stop[n] {
+				all = append(all, rawWord{w: n, kept: -1, span: spanOf[i], value: isValue[i], ident: ident[i]})
+				continue
+			}
+			all = append(all, rawWord{w: n, kept: len(out), span: spanOf[i], value: isValue[i], ident: ident[i]})
 			out = append(out, tok{w: n, raw: strings.ToLower(w), quoted: quoted[i], span: spanOf[i], value: isValue[i]})
 		}
 		i = j
 	}
+	expand(all, out)
 	named := make([]rune, len(rs))
 	for i, r := range rs {
 		if isValue[i] {
@@ -323,7 +358,7 @@ func scanText(text string) ([]tok, string) {
 		}
 		named[i] = r
 	}
-	return out, string(named)
+	return out, string(named), all
 }
 
 // findName lists the occurrences of seq that can name a target: none inside

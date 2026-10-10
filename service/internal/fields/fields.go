@@ -40,6 +40,64 @@ type Context struct {
 	// when the text mentions one.
 	Categories []Named `json:"categories,omitempty"`
 	Locations  []Named `json:"locations,omitempty"`
+	// Focus is what the merchant has open in the editor: a section of the
+	// viewed page, or a Global Settings panel. The block ranks it first
+	// among the targets the text does not name (Candidates).
+	Focus Focus `json:"focus"`
+	// Outline lists, besides the viewed page's own lists, the other pages
+	// the merchant's message names: an entry {page, other: true, sections}
+	// whose sections are addressable as {kind:"section", page, sectionId}.
+	Outline []OutlineEntry `json:"outline,omitempty"`
+}
+
+// Focus is the context's `focus` member: area is the editor tab ("editor",
+// "global" for Global Settings, …), sectionId the section whose editor is
+// open, panel the open Global Settings panel (a manifest panel name).
+type Focus struct {
+	Area      string `json:"area,omitempty"`
+	SectionID string `json:"sectionId,omitempty"`
+	Panel     string `json:"panel,omitempty"`
+}
+
+// OutlineEntry is one entry of the context's `outline`; the retrieval
+// reads only the other-page entries ({page, other: true, sections}).
+type OutlineEntry struct {
+	Page     string    `json:"page,omitempty"`
+	Other    bool      `json:"other,omitempty"`
+	Sections []Section `json:"sections,omitempty"`
+}
+
+// focusSection is the id of the focused section, "" when the merchant is in
+// Global Settings or has no section open.
+func (c Context) focusSection() string {
+	if c.Focus.Area == "global" {
+		return ""
+	}
+	return c.Focus.SectionID
+}
+
+// focusPanel is the open Global Settings panel, "" outside Global Settings.
+func (c Context) focusPanel() string {
+	if c.Focus.Area != "global" {
+		return ""
+	}
+	return c.Focus.Panel
+}
+
+// otherPages are the pages the browser outlined because the message names
+// them (slug → their sections), the viewed page excluded.
+func (c Context) otherPages() map[string][]Section {
+	var out map[string][]Section
+	for _, e := range c.Outline {
+		if !e.Other || e.Page == "" || e.Page == c.Page {
+			continue
+		}
+		if out == nil {
+			out = map[string][]Section{}
+		}
+		out[e.Page] = append(out[e.Page], e.Sections...)
+	}
+	return out
 }
 
 // Named is a category (slug + name) or a location (id + name).
@@ -213,13 +271,41 @@ type group struct {
 	// keyedOnly marks the panel-less global target, which exists only to
 	// carry keyed fields (categories.<slug>.<field>).
 	keyedOnly bool
+	// Explicit on weak evidence, so that a target the text names outranks
+	// it (selectGroups): byView, the viewed page, explicit only because it
+	// has no sections of its own (the text does not say "page"); soft, a
+	// section whose title the text spells unquoted with its stop words
+	// ("in our story, …"), or the section list only such a title asks for.
+	byView, soft bool
+	// viaView: named because the merchant views a page the vocabulary ties
+	// it to (vocab.txt "page:<slug>").
+	viaView bool
+	// focused: the section or Global Settings panel the merchant has open
+	// (Context.Focus): unless the text names it, listed right after the
+	// targets the text names when any of its fields matches (selectGroups).
+	focused bool
+	// byTerm: a panel (or branding) named only through a vocabulary term's
+	// reading of text words (termWords: "font" reads as "typography").
+	// When those words are common field words of other targets too, the
+	// reading is a hint, not a name (selectGroups: hintOnly).
+	byTerm    bool
+	termWords []string
+	// byOutline: another page named because the browser outlined it for
+	// this message (Context.Outline, other: true).
+	byOutline bool
+	// listAt: the viewed page is explicit for a section-list edit only
+	// because the text names a section type here (no word "section").
+	listAt []span
 	// extra are synthesised fields and lists added before scoring.
 	extraFields []cand
 	extraLists  []extraList
 	cands       []cand
 	lists       []listInfo
 	top         float64
-	total       int
+	// ownTop is the best score of a field that a word of the text itself
+	// matches (not only a vocabulary reading of one).
+	ownTop float64
+	total  int
 	// chosen output
 	fields []int // indexes into cands, in output order
 }
@@ -234,13 +320,13 @@ type extraList struct {
 // renders the block. A nil manifest or an empty text gives the zero Result.
 func Candidates(m *manifest.Manifest, ctx Context, text string, opts Options) Result {
 	opts = opts.withDefaults()
-	toks, nameText := scanText(text)
+	toks, nameText, all := scanTextAll(text)
 	if m == nil || len(toks) == 0 {
 		return Result{}
 	}
 	// Targets are named by the text without the value being set
 	// (tokens.go): fields are still scored against all of it.
-	groups := buildGroups(m, ctx, nameText, toks)
+	groups := buildGroups(m, ctx, nameText, toks, all)
 	for i := range groups {
 		scoreGroup(m, &groups[i], text, toks)
 	}
@@ -274,57 +360,97 @@ func Candidates(m *manifest.Manifest, ctx Context, text string, opts Options) Re
 
 // ── candidate targets ───────────────────────────────────────────────────────
 
-// typeAliases are extra names merchants use for a section type or a global
-// panel, beside the words of its id.
-var typeAliases = map[string][]string{
-	"heroBanner":              {"hero", "hero slider", "slideshow"},
-	"hero":                    {"hero banner", "hero slider", "slideshow"},
-	"testimonials":            {"reviews", "customer reviews"},
-	"reviews":                 {"testimonials", "customer reviews"},
-	"productCarousel":         {"carousel", "product slider"},
-	"blogSection":             {"blog"},
-	"blog":                    {"blog section"},
-	"promotion":               {"promotion tiles", "promo", "deals"},
-	"sectionDivider":          {"divider"},
-	"loyaltyForm":             {"loyalty"},
-	"locations":               {"store locator"},
-	"newsletter":              {"newsletter signup", "subscribe"},
-	"TypographyColorsSection": {"typography", "fonts and colors", "site colors", "site fonts"},
-	"LayoutSection":           {"site layout"},
-	"NotificationSection":     {"notification bar", "announcement bar"},
-	"SocialMediaSection":      {"social links", "socials"},
-	"SidebarCartSection":      {"cart drawer", "mini cart", "side cart"},
-	"ShopMenuSection":         {"shop navigation", "category menu"},
-	"BrandingSection":         {"branding settings"},
-	"HeaderSection":           {"top bar", "navigation bar"},
-	"InsiderBannerSection":    {"insider"},
+// phrasesFor are the word sequences that name a section type (kind "s") or
+// a global panel ("g"): the words of its id, then its aliases in the
+// merchant vocabulary (vocab.txt).
+func phrasesFor(kind, id, trimSuffix string) [][]string {
+	return append([][]string{words(strings.TrimSuffix(id, trimSuffix))}, aliasesOf(kind+":"+id)...)
 }
 
-// phrasesFor are the word sequences that name a section type or a panel.
-func phrasesFor(id string, trimSuffix string) [][]string {
-	out := [][]string{words(strings.TrimSuffix(id, trimSuffix))}
-	for _, a := range typeAliases[id] {
-		out = append(out, words(a))
-	}
-	return out
-}
-
-// findAll lists every contiguous occurrence of seq in the text.
+// findAll lists every contiguous occurrence of seq in the text, word for
+// word or through the vocabulary's readings (vocab.go).
 func findAll(toks []tok, seq []string) []span {
 	var out []span
 	if len(seq) == 0 {
 		return nil
 	}
-outer:
-	for i := 0; i+len(seq) <= len(toks); i++ {
-		for j, w := range seq {
-			if toks[i+j].w != w {
-				continue outer
-			}
+	for i := range toks {
+		if e := matchFrom(toks, i, seq); e > i {
+			out = append(out, span{i, e})
 		}
-		out = append(out, span{i, i + len(seq)})
 	}
 	return out
+}
+
+// wordsAt are the text words at the spans.
+func wordsAt(toks []tok, at []span) []string {
+	var out []string
+	for _, a := range at {
+		for i := a.from; i < a.to; i++ {
+			out = append(out, toks[i].w)
+		}
+	}
+	return out
+}
+
+// hintOnly reports whether g, named only through a term's reading, is a
+// hint: every text word the reading starts from is a field word (label or
+// key) of at least two other targets — "font" is every panel's, so "the
+// font" hints at Typography while "the Button Font on the buttons" stays
+// the Buttons panel's; "facebook" is the social panel's own word, and
+// "our facebook page" names it.
+func hintOnly(g *group, groups []group) bool {
+	if !g.byTerm || g.viaView || len(g.termWords) == 0 {
+		return false
+	}
+	for _, w := range g.termWords {
+		n := 0
+		for i := range groups {
+			h := &groups[i]
+			if h.order == g.order {
+				continue
+			}
+			for _, c := range h.cands {
+				if containsString(c.label, w) || containsString(c.keyw, w) {
+					n++
+					break
+				}
+			}
+		}
+		if n < 2 {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
+
+// namedDirectly reports whether one of the phrases occurs in the text word
+// for word (as a name, findName), not only through a vocabulary reading.
+func namedDirectly(toks []tok, phrases [][]string) bool {
+	for _, p := range phrases {
+	occ:
+		for _, at := range findName(toks, p) {
+			if at.to-at.from != len(p) {
+				continue
+			}
+			for k, w := range p {
+				if toks[at.from+k].w != w {
+					continue occ
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // nameMatch is 1 with the places when one of the phrases occurs in the
@@ -341,6 +467,11 @@ func nameMatch(toks []tok, phrases [][]string) (float64, []span) {
 	for _, t := range toks {
 		if !t.value {
 			set[t.w] = true
+			for _, a := range t.alts {
+				for _, w := range a.w {
+					set[w] = true
+				}
+			}
 		}
 	}
 	best := 0.0
@@ -442,7 +573,41 @@ var (
 	restructuring = wordSet("add another insert remove delete rid drop move reorder rearrange duplicate copy clone hide show enable disable off turn")
 	positions     = wordSet("first last top bottom above below before after up down")
 	adding        = wordSet("add another insert duplicate copy clone")
+	// counting words followed by an amount set a count or a size.
+	counting = wordSet("show add display")
+	amounts  = wordSet("more less fewer some extra")
 )
+
+func isNumber(w string) bool {
+	_, err := strconv.Atoi(w)
+	return err == nil
+}
+
+// spelledWithStops reports whether a title of two or more words, stop
+// words included ("Our Story"), occurs in the text word for word: a title
+// whose other words are stop words is otherwise one word, which names a
+// section only when quoted. As with findName, never inside a value run,
+// and inside another quoted run only as the whole run.
+func spelledWithStops(all []rawWord, title string) bool {
+	tw := phraseWords(title)
+	if len(tw) < 2 {
+		return false
+	}
+outer:
+	for i := 0; i+len(tw) <= len(all); i++ {
+		id := all[i].span
+		for j, w := range tw {
+			if r := all[i+j]; r.w != w || r.value || r.ident || r.span != id {
+				continue outer
+			}
+		}
+		if id != 0 && ((i > 0 && all[i-1].span == id) || (i+len(tw) < len(all) && all[i+len(tw)].span == id)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
 
 func wordSet(s string) map[string]bool {
 	out := map[string]bool{}
@@ -539,7 +704,7 @@ func plainName(s string) string {
 	}, s))
 }
 
-func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []group {
+func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok, all []rawWord) []group {
 	var groups []group
 	add := func(g group) int {
 		g.order = len(groups)
@@ -547,122 +712,46 @@ func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []g
 		return g.order
 	}
 
-	// Sections of the viewed page. Pinned rows edit the page's own options
-	// and are covered by the page target below.
-	type sec struct {
-		s        Section
-		typeID   string
-		res      *manifest.Resolved
-		name     float64
-		at       []span
-		explicit bool
+	// A section type named only inside a longer name of a panel or of
+	// branding ("banner" in "the insider banner") is not named: neither as
+	// a target (shadowNames) nor as the subject of a section-list edit
+	// ("restore the Show banner of the insider banner" is no hero).
+	outer := panelNameSpans(m, toks)
+	typeNameOf := func(typeID string) (float64, []span) {
+		n, at := nameMatch(toks, phrasesFor("s", typeID, ""))
+		if n < 1 {
+			return n, at
+		}
+		at = unshadowed(at, outer)
+		if len(at) == 0 {
+			return 0, nil
+		}
+		return n, at
 	}
-	var secs []sec
-	byType := map[string][]int{}
-	regular := 0
-	for _, s := range ctx.Sections {
-		if s.ID == "" || manifest.IsPinnedSectionID(s.ID) {
-			continue
-		}
-		regular++
-		res, err := m.Resolve(manifest.Target{Kind: "section", Page: ctx.Page, SectionID: s.ID})
-		if err != nil {
-			continue
-		}
-		byType[res.TypeID] = append(byType[res.TypeID], len(secs))
-		secs = append(secs, sec{s: s, typeID: res.TypeID, res: res})
+
+	// Sections of the viewed page, then those of the other pages the
+	// message names (the browser outlines them) when the text names them.
+	ps := pageSections(m, ctx.Page, ctx.Sections, text, toks, all, typeNameOf, ctx.focusSection(), ctx.Locations, false)
+	for _, g := range ps.groups {
+		add(g)
 	}
-	typeIDs := make([]string, 0, len(byType))
-	for typeID := range byType {
-		typeIDs = append(typeIDs, typeID)
-	}
-	sort.Strings(typeIDs)
-	sectionNamed := false
-	for _, typeID := range typeIDs {
-		idx := byType[typeID]
-		phrases := phrasesFor(typeID, "")
-		typeName, typeAt := nameMatch(toks, phrases)
-		var ords []int
-		for _, p := range phrases {
-			ords = append(ords, ordinalBefore(toks, p)...)
+	sectionNamed, softNamed, typeSpans, regular := ps.named, ps.softNamed, ps.typeSpans, ps.regular
+	others := ctx.otherPages()
+	for _, page := range sortedStrings(others) {
+		for _, g := range pageSections(m, page, others[page], text, toks, all, typeNameOf, "", ctx.Locations, true).groups {
+			add(g)
 		}
-		anyExplicit := false
-		for n, i := range idx {
-			sc := &secs[i]
-			sc.name, sc.at = typeName, typeAt
-			if typeName >= 1 {
-				sc.name = 0.7
-			}
-			title := words(sc.s.Title)
-			byID := containsWord(text, sc.s.ID)
-			switch {
-			case byID && (len(idx) > 1 || sc.s.ID != typeID),
-				len(title) >= 2 && len(findName(toks, title)) > 0,
-				len(title) == 1 && quotedPhrase(toks, title):
-				sc.explicit = true
-			}
-			for _, o := range ords {
-				if len(idx) > 1 && (o == n+1 || (o == -1 && n == len(idx)-1)) {
-					sc.explicit = true
-				}
-			}
-			if byID {
-				sc.explicit = true // the id, spelled out
-			}
-			if sc.explicit {
-				sc.name = 1
-				anyExplicit = true
-			}
-			if sc.name >= 0.7 {
-				sectionNamed = true
-			}
-		}
-		if anyExplicit {
-			// The text picked instances of this type: the others are out.
-			for _, i := range idx {
-				if !secs[i].explicit {
-					secs[i].res = nil
-				}
-			}
-		}
-	}
-	// Same-type sections named alike share one list.
-	type gkey struct {
-		typeID   string
-		explicit bool
-	}
-	at := map[gkey]int{}
-	for _, sc := range secs {
-		if sc.res == nil {
-			continue
-		}
-		t := manifest.Target{Kind: "section", Page: ctx.Page, SectionID: sc.s.ID}
-		k := gkey{sc.typeID, sc.explicit}
-		if i, ok := at[k]; ok {
-			groups[i].targets = append(groups[i].targets, t)
-			continue
-		}
-		g := group{targets: []manifest.Target{t}, res: sc.res, name: sc.name, nameAt: sc.at, explicit: sc.explicit, prior: 1, words: words(sc.typeID)}
-		// Keyed per-location fields, when the type has them and the text
-		// mentions a location.
-		for _, prefix := range sortedStrings(manifest.KeyedPrefixes["section"]) {
-			has := false
-			for k := range sc.res.Fields {
-				has = has || strings.HasPrefix(k, prefix+".")
-			}
-			if has {
-				g.extraFields = append(g.extraFields, keyedCands(m, prefix, manifest.KeyedPrefixes["section"][prefix], ctx.Locations, "location", text, toks)...)
-			}
-		}
-		at[k] = add(g)
 	}
 
 	// Is the request about the page's section list (add / remove / move /
 	// show / hide a section)?
 	intent, positioned, addIntent, saysSection := false, false, false, false
-	for _, t := range toks {
+	for i, t := range toks {
 		if t.quoted {
 			continue
+		}
+		if counting[t.w] && i+1 < len(toks) && (amounts[toks[i+1].w] || isNumber(toks[i+1].w)) {
+			continue // "show 4 deals per row", "add more space": a count, not a section
 		}
 		intent = intent || restructuring[t.w]
 		positioned = positioned || positions[t.w]
@@ -673,13 +762,17 @@ func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []g
 	typeNamed := sectionNamed
 	if addIntent && !typeNamed { // a type the page does not have yet can only be added
 		for _, typeID := range sortedStrings(m.Sections) {
-			if n, _ := nameMatch(toks, phrasesFor(typeID, "")); n >= 1 {
+			if n, at := typeNameOf(typeID); n >= 1 {
 				typeNamed = true
+				typeSpans = append(typeSpans, at...)
 				break
 			}
 		}
 	}
-	sectionsList := intent && (saysSection || typeNamed)
+	sectionsList := intent && (saysSection || typeNamed || softNamed)
+	// … on the evidence of an unquoted title only ("show Our Story in the
+	// footer" may mean the footer link): a named target outranks it.
+	softList := sectionsList && !saysSection && !typeNamed
 
 	// The viewed page's own options, then any other page the text names,
 	// then the seo pseudo-page.
@@ -699,6 +792,13 @@ func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []g
 			phrases = append(phrases, []string{"meta"}, []string{"search", "engine"})
 		}
 		g := group{targets: []manifest.Target{{Kind: "page", Page: page}}, res: res, prior: 1}
+		// … or by an alias in the merchant vocabulary, word for word too
+		// ("products page" is not the "product page").
+		for _, a := range containerAliases["p:"+page] {
+			if !strings.HasPrefix(a, viewPrefix) {
+				phrases = append(phrases, rawWords(a))
+			}
+		}
 		for _, p := range phrases {
 			for _, at := range findRaw(toks, p) {
 				paged := at.to < len(toks) && toks[at.to].w == "page"
@@ -714,13 +814,26 @@ func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []g
 				}
 			}
 		}
+		if _, ok := others[page]; ok && !viewed && g.name < 0.7 {
+			// The browser outlined it: the message names it (by a title the
+			// slug does not spell, "the About Us page").
+			g.name, g.byOutline = 0.7, true
+		}
 		if viewed {
-			if g.name < 0.7 && (regular == 0 || len(findName(toks, []string{"page"})) > 0) {
-				g.name = 0.7
-				g.explicit = regular == 0 // a page with no sections of its own: its options are the subject
+			// A page with no sections of its own: its options are the
+			// subject, unless the text names it by a word (then its fields
+			// decide) without saying "page".
+			if saysPage := len(findName(toks, []string{"page"})) > 0; (g.name < 0.7 || saysPage) && (regular == 0 || saysPage) {
+				g.name = max(g.name, 0.7)
+				if regular == 0 {
+					g.explicit, g.byView = true, !saysPage
+				}
 			}
 			if sectionsList && page != manifest.SEOPage {
-				g.name, g.explicit = 1, true
+				g.name, g.explicit, g.soft = 1, true, softList
+				if !saysSection && !softList {
+					g.listAt = typeSpans
+				}
 				g.extraLists = append(g.extraLists, sectionsListOf(m, page, addIntent))
 			}
 		} else if g.name == 0 {
@@ -740,14 +853,28 @@ func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []g
 		pageGroup(manifest.SEOPage, false)
 	}
 
-	// Global panels, the keyed global fields, branding.
+	// Global panels, the keyed global fields, branding. A page's vocabulary
+	// target (vocab.txt "page:") stands in for the viewed page unless the
+	// text names that page as a page ("the 'age-gate' page").
+	viewPage := ctx.Page
+	for _, g := range groups {
+		if g.targets[0].Kind == "page" && g.targets[0].Page == ctx.Page && g.explicit && !g.byView {
+			viewPage = ""
+		}
+	}
 	for _, p := range sortedStrings(m.GlobalPanels) {
 		res, err := m.Resolve(manifest.Target{Kind: "global", Panel: p})
 		if err != nil {
 			continue
 		}
-		name, at := nameMatch(toks, phrasesFor(p, "Section"))
-		add(group{targets: []manifest.Target{{Kind: "global", Panel: p}}, res: res, name: name, nameAt: at, prior: 0.9, words: words(strings.TrimSuffix(p, "Section"))})
+		name, at := nameMatch(toks, phrasesFor("g", p, "Section"))
+		g := viewed(group{targets: []manifest.Target{{Kind: "global", Panel: p}}, res: res, name: name, nameAt: at, prior: 0.9, words: words(strings.TrimSuffix(p, "Section"))}, "g:"+p, viewPage)
+		g.byTerm = name >= 1 && !namedDirectly(toks, phrasesFor("g", p, "Section"))
+		if g.byTerm {
+			g.termWords = wordsAt(toks, at)
+		}
+		g.focused = p == ctx.focusPanel()
+		add(g)
 	}
 	var keyed []cand
 	for _, prefix := range sortedStrings(manifest.KeyedPrefixes["global"]) {
@@ -765,11 +892,261 @@ func buildGroups(m *manifest.Manifest, ctx Context, text string, toks []tok) []g
 		})
 	}
 	if res, err := m.Resolve(manifest.Target{Kind: "branding"}); err == nil {
-		name, at := nameMatch(toks, [][]string{{"branding"}, {"brand"}})
-		add(group{targets: []manifest.Target{{Kind: "branding"}}, res: res, name: name, nameAt: at, prior: 0.9, words: []string{"branding"}})
+		name, at := nameMatch(toks, brandingPhrases())
+		g := viewed(group{targets: []manifest.Target{{Kind: "branding"}}, res: res, name: name, nameAt: at, prior: brandingPrior, words: []string{"branding"}}, "b:branding", viewPage)
+		g.byTerm = name >= 1 && !namedDirectly(toks, brandingPhrases())
+		if g.byTerm {
+			g.termWords = wordsAt(toks, at)
+		}
+		add(g)
 	}
 	nameByWord(groups, toks)
+	shadowNames(groups)
 	return groups
+}
+
+// sectionSet is what pageSections found on one page.
+type sectionSet struct {
+	groups []group
+	// named: the text names a section of the page by type, title, id or
+	// ordinal; softNamed: only by a title spelled unquoted with its stop
+	// words. typeSpans are where it names a section type, regular the
+	// page's sections that are not pinned rows.
+	named, softNamed bool
+	typeSpans        []span
+	regular          int
+}
+
+// pageSections are the candidate section targets of one page: same-type
+// sections the text names alike share one list. focusID is the section the
+// merchant has open (named by the focus unless the text names another of
+// its type). With onlyNamed (a page other than the viewed one) only the
+// sections the text names are candidates.
+func pageSections(m *manifest.Manifest, page string, sections []Section, text string, toks []tok, all []rawWord,
+	typeNameOf func(string) (float64, []span), focusID string, locations []Named, onlyNamed bool) sectionSet {
+	var out sectionSet
+	// Pinned rows edit the page's own options and are covered by the page
+	// target.
+	type sec struct {
+		s        Section
+		typeID   string
+		res      *manifest.Resolved
+		name     float64
+		at       []span
+		explicit bool
+		soft     bool // explicit only by its title spelled unquoted with stop words
+		focused  bool
+	}
+	var secs []sec
+	byType := map[string][]int{}
+	for _, s := range sections {
+		if s.ID == "" || manifest.IsPinnedSectionID(s.ID) {
+			continue
+		}
+		out.regular++
+		res, err := m.Resolve(manifest.Target{Kind: "section", Page: page, SectionID: s.ID})
+		if err != nil {
+			continue
+		}
+		byType[res.TypeID] = append(byType[res.TypeID], len(secs))
+		secs = append(secs, sec{s: s, typeID: res.TypeID, res: res})
+	}
+	for _, typeID := range sortedStrings(byType) {
+		idx := byType[typeID]
+		phrases := phrasesFor("s", typeID, "")
+		typeName, typeAt := typeNameOf(typeID)
+		if typeName >= 1 {
+			out.typeSpans = append(out.typeSpans, typeAt...)
+		}
+		var ords []int
+		for _, p := range phrases {
+			ords = append(ords, ordinalBefore(toks, p)...)
+		}
+		anyExplicit := false
+		for n, i := range idx {
+			sc := &secs[i]
+			sc.name, sc.at = typeName, typeAt
+			if typeName >= 1 {
+				sc.name = 0.7
+			}
+			title := words(sc.s.Title)
+			byID := containsWord(text, sc.s.ID)
+			switch {
+			case byID && (len(idx) > 1 || sc.s.ID != typeID),
+				len(title) >= 2 && len(findName(toks, title)) > 0,
+				len(title) == 1 && quotedPhrase(toks, title):
+				sc.explicit = true
+			case len(title) == 1 && spelledWithStops(all, sc.s.Title):
+				sc.explicit, sc.soft = true, true
+			}
+			for _, o := range ords {
+				if len(idx) > 1 && (o == n+1 || (o == -1 && n == len(idx)-1)) {
+					sc.explicit = true
+				}
+			}
+			if byID {
+				sc.explicit, sc.soft = true, false // the id, spelled out
+			}
+			if sc.explicit {
+				sc.name = 1
+				anyExplicit = true
+			}
+			if sc.name >= 0.7 && !sc.soft {
+				out.named = true
+			}
+			out.softNamed = out.softNamed || sc.soft
+		}
+		if !anyExplicit && focusID != "" {
+			// The open section: the instance a type name means ("make the
+			// carousel show 5"), else a target of its own.
+			for _, i := range idx {
+				if secs[i].s.ID != focusID {
+					continue
+				}
+				sc := &secs[i]
+				sc.focused = true
+				if typeName >= 1 {
+					sc.explicit, sc.name, anyExplicit = true, 1, true
+				}
+			}
+		}
+		if anyExplicit {
+			// The text picked instances of this type: the others are out.
+			for _, i := range idx {
+				if !secs[i].explicit {
+					secs[i].res = nil
+				}
+			}
+		}
+	}
+	// Same-type sections named alike share one list.
+	type gkey struct {
+		typeID                  string
+		explicit, soft, focused bool
+	}
+	at := map[gkey]int{}
+	for _, sc := range secs {
+		if sc.res == nil || (onlyNamed && sc.name < 0.7) {
+			continue
+		}
+		t := manifest.Target{Kind: "section", Page: page, SectionID: sc.s.ID}
+		k := gkey{sc.typeID, sc.explicit, sc.soft, sc.focused}
+		if i, ok := at[k]; ok {
+			out.groups[i].targets = append(out.groups[i].targets, t)
+			continue
+		}
+		g := group{targets: []manifest.Target{t}, res: sc.res, name: sc.name, nameAt: sc.at, explicit: sc.explicit, soft: sc.soft, prior: 1, words: words(sc.typeID), focused: sc.focused}
+		if onlyNamed {
+			g.prior = otherPagePrior
+		}
+		// Keyed per-location fields, when the type has them and the text
+		// mentions a location.
+		for _, prefix := range sortedStrings(manifest.KeyedPrefixes["section"]) {
+			has := false
+			for k := range sc.res.Fields {
+				has = has || strings.HasPrefix(k, prefix+".")
+			}
+			if has {
+				g.extraFields = append(g.extraFields, keyedCands(m, prefix, manifest.KeyedPrefixes["section"][prefix], locations, "location", text, toks)...)
+			}
+		}
+		at[k] = len(out.groups)
+		out.groups = append(out.groups, g)
+	}
+	return out
+}
+
+// otherPagePrior: a section of another page the text names competes a
+// little below the viewed page's own.
+const otherPagePrior = 0.95
+
+// panelNameSpans are the places the text names a global panel or branding:
+// the longer names a section type's alias may lie inside.
+func panelNameSpans(m *manifest.Manifest, toks []tok) []span {
+	var out []span
+	for _, p := range sortedStrings(m.GlobalPanels) {
+		if n, at := nameMatch(toks, phrasesFor("g", p, "Section")); n >= 1 {
+			out = append(out, at...)
+		}
+	}
+	if n, at := nameMatch(toks, brandingPhrases()); n >= 1 {
+		out = append(out, at...)
+	}
+	return out
+}
+
+// brandingPhrases name the branding target (the age gate and the location
+// picker).
+func brandingPhrases() [][]string {
+	return append([][]string{{"branding"}, {"brand"}}, aliasesOf("b:branding")...)
+}
+
+// unshadowed drops the spans that lie inside a longer one of outer.
+func unshadowed(at, outer []span) []span {
+	var out []span
+	for _, a := range at {
+		inside := false
+		for _, o := range outer {
+			inside = inside || (a.within(o) && o.to-o.from > a.to-a.from)
+		}
+		if !inside {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// brandingPrior: the branding target holds the age gate's and the location
+// picker's options (and the certification badges), keyed ageGate* /
+// locationPicker* but often labelled without the qualifier ("Logo Size
+// (Mobile)"). Unless the text names it (an alias:
+// "age gate", "store picker" …, or the page being viewed), its fields
+// should not outrank the panel a site-wide word means: "make the logo
+// smaller on mobile" is the Branding panel's logo, not the age gate's.
+const brandingPrior = 0.6
+
+// viewed names g when the merchant views a page the vocabulary ties it to
+// (vocab.txt "page:<slug>"): on the age-gate page, branding holds the age
+// gate's options.
+func viewed(g group, key, page string) group {
+	if g.name < 0.7 && viewedOn(key, page) {
+		g.name, g.viaView = 0.7, true
+	}
+	return g
+}
+
+// shadowNames un-names a target whose every name lies inside a longer name
+// of another target: "the insider banner" names the Insider Banner panel,
+// not the hero (whose alias is "banner").
+func shadowNames(groups []group) {
+	shadowed := make([]bool, len(groups))
+	for i := range groups {
+		g := &groups[i]
+		if (g.explicit && !g.byView) || g.name < namedMin || len(g.nameAt) == 0 {
+			continue
+		}
+		shadowed[i] = true
+		for _, at := range g.nameAt {
+			inside := false
+			for j := range groups {
+				if j == i || groups[j].name < namedMin {
+					continue
+				}
+				for _, o := range groups[j].nameAt {
+					inside = inside || (at.within(o) && o.to-o.from > at.to-at.from)
+				}
+			}
+			shadowed[i] = shadowed[i] && inside
+		}
+	}
+	for i := range groups {
+		if shadowed[i] {
+			groups[i].nameAt = nil
+			if !groups[i].byView { // the viewed page stays its default subject
+				groups[i].name = 0
+			}
+		}
+	}
 }
 
 // nameByWord names a target by a single word of its id when no other
@@ -797,7 +1174,7 @@ func nameByWord(groups []group, toks []tok) {
 				continue
 			}
 			for j, t := range toks {
-				if t.w == w && !t.quoted {
+				if t.readsAs(w) && !t.quoted {
 					g.name = namedMin
 					g.nameAt = append(g.nameAt, span{j, j + 1})
 				}
@@ -926,6 +1303,11 @@ func scoreGroup(m *manifest.Manifest, g *group, text string, toks []tok) {
 	for _, t := range toks {
 		if !t.quoted {
 			textSet[t.w] = true
+			for _, a := range t.alts {
+				for _, w := range a.w {
+					textSet[w] = true
+				}
+			}
 		}
 	}
 	for _, lk := range sortedStrings(res.Lists) {
@@ -983,19 +1365,12 @@ func scoreGroup(m *manifest.Manifest, g *group, text string, toks []tok) {
 	n := float64(len(g.cands))
 	idf := func(w string) float64 { return math.Log(1 + n/float64(max(df[w], 1))) }
 
-	weight := map[string]float64{}
-	var order []string // the text's distinct words, in text order (float sums must not depend on map order)
+	// The text's distinct words and the vocabulary's readings of them, in
+	// text order.
+	weight, order := textWords(toks, quotedWeight)
+	written := map[string]bool{} // the text's own words
 	for _, t := range toks {
-		w := 1.0
-		if t.quoted {
-			w = quotedWeight
-		}
-		if old, ok := weight[t.w]; !ok {
-			order = append(order, t.w)
-			weight[t.w] = w
-		} else if w > old {
-			weight[t.w] = w
-		}
+		written[t.w] = true
 	}
 	for i := range g.cands {
 		c := &g.cands[i]
@@ -1007,7 +1382,7 @@ func scoreGroup(m *manifest.Manifest, g *group, text string, toks []tok) {
 		for _, w := range c.keyw {
 			inKey[w] = true
 		}
-		score := 0.0
+		score, own := 0.0, false
 		for _, w := range order {
 			switch {
 			case inLabel[w]:
@@ -1016,7 +1391,10 @@ func scoreGroup(m *manifest.Manifest, g *group, text string, toks []tok) {
 				score += 0.7 * weight[w] * idf(w)
 			case c.extra[w]:
 				score += 0.25 * weight[w] * idf(w)
+			default:
+				continue
 			}
+			own = own || written[w]
 		}
 		// How much of the label the text covers, and whether it spells
 		// the label out.
@@ -1049,6 +1427,9 @@ func scoreGroup(m *manifest.Manifest, g *group, text string, toks []tok) {
 		c.score = score
 		if score > g.top {
 			g.top = score
+		}
+		if own && score > g.ownTop {
+			g.ownTop = score
 		}
 	}
 }
@@ -1099,6 +1480,32 @@ func incidental(g *group, named []group) bool {
 	return true
 }
 
+// listIncidental reports whether the viewed page was made the subject of a
+// section-list edit only by section-type names that lie inside a field label
+// another named target spells out: "Restore the Show banner on checkout of
+// the insider banner" restructures no hero.
+func listIncidental(g *group, named []group) bool {
+	if len(g.listAt) == 0 {
+		return false
+	}
+	for _, at := range g.listAt {
+		covered := false
+		for i := range named {
+			h := &named[i]
+			if h.order == g.order {
+				continue
+			}
+			for _, l := range h.labelAt {
+				covered = covered || (at.within(l) && at != l)
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
 func byMatch(gs []group) func(i, j int) bool {
 	return func(i, j int) bool {
 		a, b := gs[i].top*gs[i].prior, gs[j].top*gs[j].prior
@@ -1111,9 +1518,25 @@ func byMatch(gs []group) func(i, j int) bool {
 
 // selectGroups keeps the targets worth listing, best first.
 func selectGroups(groups []group, opts Options) []group {
-	var named, rest []group
+	var named, rest, hinted, focused []group
 	bestNamed := 0.0
 	for _, g := range groups {
+		if g.name >= namedMin && hintOnly(&g, groups) {
+			// Named only through a term's reading: placed below, when one
+			// of its fields matches.
+			if g.top > 0 {
+				hinted = append(hinted, g)
+			}
+			continue
+		}
+		if g.focused && g.name < namedMin {
+			// The open section or panel the text does not name: placed
+			// below, when one of its fields matches.
+			if g.top > 0 {
+				focused = append(focused, g)
+			}
+			continue
+		}
 		if g.name >= namedMin {
 			named = append(named, g)
 			if g.top > bestNamed {
@@ -1130,10 +1553,24 @@ func selectGroups(groups []group, opts Options) []group {
 			g := named[i]
 			// A target named only in passing must match on fields about
 			// as well as the best named one to stay.
-			if incidental(&g, named) && (g.top <= 0 || g.top < 0.5*bestNamed) {
+			if (incidental(&g, named) || listIncidental(&g, named)) && (g.top <= 0 || g.top < 0.5*bestNamed) {
 				continue
 			}
 			out = append(out, g)
+		}
+		// The viewed page is the subject by default only: a target the text
+		// names (or the viewed page's own vocabulary target) comes first.
+		weak := func(g *group) bool { return g.soft || (g.byView && len(g.nameAt) == 0) }
+		textNamed := false
+		for i := range out {
+			g := &out[i]
+			// … by a name, or as a section instance (title, id, ordinal).
+			textNamed = textNamed || (!weak(g) && (len(g.nameAt) > 0 || g.viaView || g.byOutline || (g.explicit && g.targets[0].Kind == "section")))
+		}
+		for i := range out {
+			if (textNamed || len(focused) > 0) && weak(&out[i]) {
+				out[i].explicit = false
+			}
 		}
 		sort.SliceStable(out, func(i, j int) bool {
 			a, b := out[i], out[j]
@@ -1151,13 +1588,26 @@ func selectGroups(groups []group, opts Options) []group {
 		for _, g := range out {
 			spelled = spelled || len(g.labelAt) > 0
 		}
-		extra := 0
+		var extras []group
 		for _, g := range rest {
-			if !spelled && extra < 2 && len(g.labelAt) > 0 {
-				out = append(out, g)
-				extra++
+			if !spelled && len(extras) < 2 && len(g.labelAt) > 0 {
+				extras = append(extras, g)
 			}
 		}
+		// … and it outranks a target that is named only weakly (the viewed
+		// page by default, an unquoted title) and whose fields match only
+		// through the vocabulary's readings: "make the indica tag purple" on
+		// the products page spells the Product Card's "Indica", while the
+		// page has only colour fields that "purple" reads into.
+		var strong, weakOnes []group
+		for _, g := range out {
+			if len(extras) > 0 && weak(&g) && g.ownTop <= 0 {
+				weakOnes = append(weakOnes, g)
+			} else {
+				strong = append(strong, g)
+			}
+		}
+		out = append(append(strong, extras...), weakOnes...)
 	} else {
 		for _, g := range rest {
 			if g.top > 0 && g.top*g.prior >= 0.6*rest[0].top*rest[0].prior {
@@ -1165,10 +1615,62 @@ func selectGroups(groups []group, opts Options) []group {
 			}
 		}
 	}
+	// A hint whose every reading lies inside a field label a listed target
+	// spells is that label's word, not a hint ("the Marker Font of the
+	// content block" is no Typography request).
+	kept := hinted[:0]
+	for _, g := range hinted {
+		if !spelledElsewhere(&g, out) {
+			kept = append(kept, g)
+		}
+	}
+	hinted = kept
+	if boosted := append(hinted, focused...); len(boosted) > 0 {
+		// After the targets the text names (explicitly, or by a name it
+		// spells), before the rest.
+		at := 0
+		for at < len(out) && strongly(&out[at]) {
+			at++
+		}
+		out = append(out[:at:at], append(boosted, out[at:]...)...)
+	}
 	if len(out) > opts.MaxTargets {
 		out = out[:opts.MaxTargets]
 	}
 	return out
+}
+
+// spelledElsewhere reports whether every place the text names g lies
+// inside a longer field label one of the others spells out.
+func spelledElsewhere(g *group, others []group) bool {
+	if len(g.nameAt) == 0 {
+		return false
+	}
+	for _, at := range g.nameAt {
+		covered := false
+		for i := range others {
+			if others[i].order == g.order {
+				continue
+			}
+			for _, l := range others[i].labelAt {
+				covered = covered || (at.within(l) && l.to-l.from > at.to-at.from)
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+// strongly reports whether the text itself names g: an instance (id, title,
+// ordinal, a page it says), or a name it spells; not the viewed page by
+// default, an unquoted title, or a target named only by its fields.
+func strongly(g *group) bool {
+	if g.name < namedMin || g.soft || (g.byView && len(g.nameAt) == 0) {
+		return false
+	}
+	return g.explicit || len(g.nameAt) > 0 || g.viaView || g.byOutline
 }
 
 // chooseFields picks the fields to list under one target.

@@ -72,6 +72,33 @@ d:ReviewDetailsPanel f=4 | keys: date name rating text
 d:SeoPanel f=8 | keys: defaults*(3) pages*(3) customGoogleAnalyticId robotsTxt
 d:TextSectionDetailPanel f=2 | keys: content title
 
+## Also called (merchant words → container)
+b:branding: age gate, store picker, age check
+g:BrandingSection: site name, store name, shop name
+g:ButtonsSection: all buttons, input boxes, button style
+g:HeaderSection: announcement bar, top bar, navigation bar
+g:InsiderBannerSection: members banner, members promo
+g:LayoutSection: site width, space between sections, site layout
+g:NotificationSection: cart popup, toast, cart notification
+g:ShopMenuSection: shop navigation, category menu, category bar
+g:SidebarCartSection: cart drawer, mini cart, side cart
+g:SocialMediaSection: social links
+g:TypographyColorsSection: heading font, brand color, site background
+p:login: log in, sign in
+p:order-confirmation: thank you page
+p:product-details: product page, single product, add to cart button
+p:seo: meta description, search results, google search
+s:blogSection: latest posts
+s:featuredCategories: shop by category, category circles, category tiles
+s:gallery: photo gallery, instagram gallery, instagram feed
+s:heroBanner: slideshow, slider
+s:locations: store locator, find a store, store cards
+s:milestones: reward steps, points steps
+s:newsletter: newsletter signup, subscribe, signup form
+s:productCarousel: product slider
+s:promotion: promotion tiles, promo, deals
+s:sectionDivider: separator
+
 ## Pinned (built-in) sections: page → sectionId; * = reorderable row of the page's sections list, others are virtual
 account → __pinned_account
 age-gate → __pinned_age_gate

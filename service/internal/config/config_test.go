@@ -178,7 +178,8 @@ func TestFieldsContextOption(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	for name, want := range map[string]bool{
-		"default": false, "claude-on": true, "claude-off": false,
+		// Unset is on for every kind since 2026-10-10 (plan Q7); "off" opts out.
+		"default": true, "claude-on": true, "claude-off": false,
 		"student": true, "student-on": true, "student-off": false,
 	} {
 		if got := c.ModelRoutes[name].FieldsContextEnabled(); got != want {
@@ -208,7 +209,7 @@ func TestFallbackOption(t *testing.T) {
 	}
 	// /version's route_info: the effective fields_context and the fallback.
 	info, _ := json.Marshal(c.RouteInfo())
-	if string(info) != `{"claude":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null},"default":{"kind":"messages-compatible","fields_context":true,"fallback":"claude","report_as":null}}` {
+	if string(info) != `{"claude":{"kind":"anthropic","fields_context":true,"fallback":null,"report_as":null},"default":{"kind":"messages-compatible","fields_context":true,"fallback":"claude","report_as":null}}` {
 		t.Errorf("RouteInfo = %s", info)
 	}
 	c, err = load(`{"default":` + student(`,"fields_context":"off"`) + `,"claude":` + strings.TrimSuffix(claude, "}") + `,"fields_context":"on"}}`)
@@ -263,7 +264,7 @@ func TestReportAsOption(t *testing.T) {
 	}
 	info, _ := json.Marshal(c.RouteInfo())
 	if !strings.Contains(string(info), `"blueberry-muffin":{"kind":"messages-compatible","fields_context":true,"fallback":"default","report_as":"blueberry-muffin"}`) ||
-		!strings.Contains(string(info), `"default":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null}`) {
+		!strings.Contains(string(info), `"default":{"kind":"anthropic","fields_context":true,"fallback":null,"report_as":null}`) {
 		t.Errorf("RouteInfo = %s", info)
 	}
 	// A plain token only.

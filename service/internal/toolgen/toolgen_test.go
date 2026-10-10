@@ -174,7 +174,9 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 	// Regression pin: counted over the pre-fix strict set (everything but the
 	// two open-map tools), the counter must give the 29 the API reported.
 	// `keys` on reset / restore_default was optional then (one each) and is
-	// required now, so those two are added back before comparing.
+	// required now, so those two are added back before comparing; the
+	// optional `where` on report_unsupported (2026-10-10, shared contract 1)
+	// did not exist then, so it is taken out.
 	preFix := 0
 	for _, tl := range Tools(snapshot(t)) {
 		if tl.Name != SetFields && tl.Name != EditList {
@@ -182,11 +184,11 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 			preFix += opt
 		}
 	}
-	if preFix+2 != 29 {
+	if preFix+2-1 != 29 {
 		t.Fatalf("pre-fix strict set counts %d (+2 for the then-optional keys) optional parameters, the API reported 29 — counter drifted from the API's rule", preFix)
 	}
-	// The strict set today: 10 (two target embeddings = 8, set_page_layout's
-	// page, report_unsupported's manual_hint).
+	// The strict set today: 11 (two target embeddings = 8, set_page_layout's
+	// page, report_unsupported's manual_hint and where). 13 of headroom.
 	today := 0
 	for _, tl := range Tools(snapshot(t)) {
 		if tl.Strict {
@@ -194,8 +196,8 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 			today += opt
 		}
 	}
-	if today != 10 {
-		t.Fatalf("strict set counts %d optional parameters, want 10", today)
+	if today != 11 {
+		t.Fatalf("strict set counts %d optional parameters, want 11", today)
 	}
 	// The counter itself, on the shape the API rejected: a nested object's
 	// optionals count, required members do not, anyOf is one union.
@@ -551,6 +553,18 @@ func TestResetPinnedSectionEnums(t *testing.T) {
 	}
 }
 
+// {kind:"branding"} is the age gate, location picker and certifications;
+// the editor's Branding panel is global BrandingSection (real turn
+// 2026-10-06: "the name of my site is HashiTong" went to branding).
+func TestTargetKindSaysWhatBrandingIs(t *testing.T) {
+	kind := props(t, targetSchema(newSchemaContext(snapshot(t))))["kind"].(map[string]any)["description"].(string)
+	for _, want := range []string{"branding = ONLY age gate, location picker, certifications", "Branding panel BrandingSection: store name, logo, favicon"} {
+		if !strings.Contains(kind, want) {
+			t.Errorf("target.kind description lacks %q: %s", want, kind)
+		}
+	}
+}
+
 func TestPickAssetAndReportUnsupportedSchemas(t *testing.T) {
 	tools := Tools(snapshot(t))
 	pa := toolByName(t, tools, PickAsset)
@@ -570,6 +584,27 @@ func TestPickAssetAndReportUnsupportedSchemas(t *testing.T) {
 	}
 	if _, ok := props(t, ru.InputSchema)["manual_hint"]; !ok {
 		t.Fatal("manual_hint missing")
+	}
+	// Shared contract 1: an optional, closed `where` enum in the browser's
+	// order (deepLinks.js WHERE).
+	where, ok := props(t, ru.InputSchema)["where"].(map[string]any)
+	if !ok {
+		t.Fatal("where missing")
+	}
+	var got []string
+	for _, v := range where["enum"].([]any) {
+		got = append(got, v.(string))
+	}
+	if strings.Join(got, ",") != "domain,sites,pages,assets,seo,themes,products,categories,brands,support" || where["type"] != "string" {
+		t.Fatalf("where = %v", where)
+	}
+	for _, w := range UnsupportedWhere {
+		if wherePlace[w] == "" {
+			t.Errorf("where %q has no place name", w)
+		}
+	}
+	if len(wherePlace) != len(UnsupportedWhere) {
+		t.Errorf("wherePlace has %d entries for %d where values", len(wherePlace), len(UnsupportedWhere))
 	}
 	lf := toolByName(t, tools, LookupFields)
 	lp := props(t, lf.InputSchema)
@@ -650,6 +685,56 @@ func TestDispatchLookupFields(t *testing.T) {
 	}
 }
 
+// lookup_fields reads the query in the merchant's words too: the
+// vocabulary's readings ("site name" → "store name"); the model cannot set
+// them.
+func TestDispatchLookupFieldsReadsTheVocabulary(t *testing.T) {
+	m := snapshot(t)
+	res, handled := Dispatch(m, LookupFields, json.RawMessage(`{"container":"globalPanels","query":"site name","Readings":["favicon"]}`))
+	if !handled || res.IsError {
+		t.Fatalf("res = %+v handled=%v", res, handled)
+	}
+	var out manifest.LookupResult
+	if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range out.Fields {
+		found = found || (f.Key == "storeName" && f.Panel == "BrandingSection")
+		if f.Key == "favicon" {
+			t.Errorf("a reading the input carried was used: %s", f.Key)
+		}
+	}
+	if !found {
+		t.Fatalf("storeName not found: %s", res.Content)
+	}
+}
+
+// "rename category": the vocabulary reads "rename" as name / label (51
+// fields match through that reading alone); the keyed category name, whose
+// prefix the query names in its own words, comes first (verify pass,
+// 2026-10-10: it was not among the 40 returned).
+func TestDispatchLookupRenameCategoryFindsTheKeyedName(t *testing.T) {
+	m := snapshot(t)
+	for _, in := range []string{`{"target":{"kind":"global"},"query":"rename category"}`, `{"container":"globalPanels","query":"rename a category"}`} {
+		res, handled := Dispatch(m, LookupFields, json.RawMessage(in))
+		if !handled || res.IsError {
+			t.Fatalf("res = %+v handled=%v", res, handled)
+		}
+		var out manifest.LookupResult
+		if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Fields) == 0 || out.Fields[0].Key != "categories.<categorySlug>.name" {
+			first := ""
+			if len(out.Fields) > 0 {
+				first = out.Fields[0].Key
+			}
+			t.Errorf("%s: first field %q, want categories.<categorySlug>.name", in, first)
+		}
+	}
+}
+
 func TestDispatchErrorsAreSelfCorrecting(t *testing.T) {
 	m := snapshot(t)
 	res, handled := Dispatch(m, LookupFields, json.RawMessage(`{"target":{"kind":"section","page":"home","sectionId":"nope"}}`))
@@ -699,9 +784,34 @@ func TestDispatchReportUnsupported(t *testing.T) {
 	if !handled || res.IsError || !strings.Contains(res.Content, `"shown_to_merchant":true`) || !strings.Contains(res.Content, "Do not invent contact details") {
 		t.Fatalf("res = %+v", res)
 	}
+	if strings.Contains(res.Content, `"where"`) {
+		t.Fatalf("no where in, none out: %s", res.Content)
+	}
 	res, _ = Dispatch(m, ReportUnsupported, json.RawMessage(`{"reason":"  "}`))
 	if !res.IsError {
 		t.Fatal("empty reason must be an error")
+	}
+	// `where` comes back in the result with the place the reply names.
+	res, _ = Dispatch(m, ReportUnsupported, json.RawMessage(`{"reason":"Pages are added in the Pages tab.","where":"pages","manual_hint":"Pages › New page"}`))
+	var out struct {
+		OK    bool   `json:"ok"`
+		Where string `json:"where"`
+		Next  string `json:"next"`
+	}
+	if res.IsError || json.Unmarshal([]byte(res.Content), &out) != nil || !out.OK || out.Where != "pages" || !strings.Contains(out.Next, "the Pages tab") || !strings.Contains(out.Next, "one sentence") {
+		t.Fatalf("where=pages → %+v", res)
+	}
+	res, _ = Dispatch(m, ReportUnsupported, json.RawMessage(`{"reason":"x","where":" Domain "}`))
+	if !strings.Contains(res.Content, `"where":"domain"`) || !strings.Contains(res.Content, "Site Settings › Domain") {
+		t.Fatalf("where is normalised like the browser's: %s", res.Content)
+	}
+	// A value outside the enum (a non-strict route) is not an error: the
+	// browser shows no link for it, so the result names no place.
+	for _, bad := range []string{`"nowhere"`, `3`, `null`, `""`} {
+		res, _ = Dispatch(m, ReportUnsupported, json.RawMessage(`{"reason":"x","where":`+bad+`}`))
+		if res.IsError || strings.Contains(res.Content, `"where"`) || !strings.Contains(res.Content, "contact Breadstack support") {
+			t.Fatalf("where=%s → %+v", bad, res)
+		}
 	}
 }
 

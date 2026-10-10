@@ -92,7 +92,7 @@ func anyOf(desc string, options ...map[string]any) map[string]any {
 func targetSchema(ctx schemaContext) map[string]any {
 	return obj("What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
 		map[string]any{
-			"kind":      enumStr("section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.", manifest.TargetKinds),
+			"kind":      enumStr("section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.", manifest.TargetKinds),
 			"page":      str("Page slug for kind section|page. Omit to act on the page the merchant is currently viewing (the host fills it in); pass one only when the merchant names a different page. Manifest pages: " + strings.Join(ctx.pages, ", ") + "; custom pages use their slug from the context."),
 			"sectionId": str("kind section: the section's id exactly as listed in the turn context sections (e.g. heroBanner, productCarousel-2, contentBlock-3), or the page's built-in __pinned_* id to edit a built-in block's options."),
 			"storeId":   str("kind section on the location-details page only: the location id whose per-store section list is edited. Omit everywhere else."),
@@ -220,7 +220,7 @@ var opSpecs = map[string]opSpec{
 		// input and answers E_OP/E_TARGET/E_LIST so the model self-corrects.
 		runs: RunsServer, strict: false,
 		desc: func(ctx schemaContext) string {
-			return "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, and the list it belongs to; plus the container's lists. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate."
+			return "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, the list it belongs to and its panel; plus the container's lists. A field's panel is a global panel name you may pass as target.panel, EXCEPT a details panel (…DetailsPanel, …DetailPanel): that is where the editor shows a list row or keyed key, never a target panel — write it with edit_list update on its list, or set_fields with the dotted key on its own target. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate."
 		},
 		schema: func(ctx schemaContext) map[string]any {
 			return obj("", map[string]any{
@@ -248,15 +248,21 @@ var opSpecs = map[string]opSpec{
 			})
 		},
 	},
+	// report_unsupported's `where` is shared contract 1 with the launcher
+	// (nav/deepLinks.js WHERE): the browser maps it to a fixed label and
+	// link, so the enum is closed and model text never becomes a URL. It
+	// is optional and costs one of the strict budget's 24 optionals
+	// (TestStrictOptionalParameterBudget: 11 with it).
 	ReportUnsupported: {
 		runs: RunsServer, strict: true,
 		desc: func(ctx schemaContext) string {
-			return "Tell the merchant a request cannot be done by editing this site's configuration (no matching field or list after looking it up, or something outside the editor). Use it instead of guessing a key. The UI shows the reason; then say in one or two sentences that they can make the change in the editor or contact Breadstack support. Never fabricate an email address or claim to have sent anything."
+			return "Tell the merchant a request cannot be done by editing this site's configuration (no matching field or list after looking it up, or something outside the editor). Use it instead of guessing a key, never together with an edit. Set `where` to the place the change is made; the UI shows the reason with a link there. Then say in one sentence where they can do it. Never fabricate an email address or claim to have sent anything."
 		},
 		schema: func(ctx schemaContext) map[string]any {
 			return obj("", map[string]any{
 				"reason":      str("Plain-language reason, one or two sentences, merchant-facing."),
 				"manual_hint": str("Optional: where in the editor the merchant could do it themselves, if you know."),
+				"where":       enumStr(whereDesc, UnsupportedWhere),
 			}, "reason")
 		},
 	},

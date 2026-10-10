@@ -2,6 +2,9 @@
 
 import copy
 import json
+import os
+import re
+from pathlib import Path
 
 import pytest
 
@@ -196,16 +199,24 @@ def test_every_gated_default_row_field_has_gate_writes(m, st):
     assert missing == []
 
 
-def test_context_of_matches_turn_context_shape(st):
-    ctx = S.context_of(st, "home", S.load_context_fixture())
-    assert set(ctx) == {"page", "template", "layout", "sections", "categories", "customPages", "nav", "locations"}
+def test_context_of_matches_turn_context_shape(st, m):
+    ctx = S.context_of(st, "home", S.load_context_fixture(), m)
+    assert list(ctx) == ["page", "template", "layout", "sections", "categories", "customPages", "nav", "locations",
+                         "focus", "shopMenu", "outline"]
     assert ctx["page"] == "home" and ctx["template"] == "editorial" and ctx["layout"] == ""
     assert ctx["sections"][0] == {"id": "heroBanner", "type": "heroBanner", "title": "Fresh picks every week", "enabled": True}
     assert {"id": "contentBlock-2", "type": "contentBlock", "title": "Our Story", "enabled": True} in ctx["sections"]
     assert ctx["categories"][0] == {"slug": "flower", "name": "Flower"}
     assert ctx["customPages"][0] == {"slug": "about", "title": "About Us"}
     assert ctx["locations"][0] == {"id": "loc-main", "name": "Main Street"}
-    assert all(set(n) == {"label", "href"} for n in ctx["nav"])
+    assert ctx["nav"] and all(set(n) == {"label", "href"} for n in ctx["nav"])
+    assert ctx["focus"] == {"area": "editor", "sectionId": "", "panel": ""}
+    assert set(ctx["shopMenu"]) == {"style", "maxItems", "hidden", "inStockOnly"}
+    owners = {o.get("section") or o.get("page"): o for o in ctx["outline"]}
+    assert owners["contentBlock-features"]["style"] == "feature-cards"
+    assert S.json_size(ctx["outline"]) <= S.OUTLINE_MAX
+    # without a manifest there is no outline (the browser always has one loaded)
+    assert S.context_of(st, "home", S.load_context_fixture())["outline"] == []
 
 
 def test_context_layout_and_nav_rules():
@@ -216,12 +227,195 @@ def test_context_layout_and_nav_rules():
         "products": {"inHeaderNav": True, "headerNavName": "Shop"},
         "faq": {"inHeaderNav": True, "published": False},
         "blog": {"inHeaderNav": False},
-        "_meta": {"headerNavCustomLinks": [{"label": "Deals", "url": "/deals"}, {"label": "no-href"}]},
+        "contact": {"headerNavName": "Reach us"},
+        "_meta": {"headerNavCustomLinks": [{"id": "d", "label": "Deals", "url": "/deals"}, {"id": "n"}],
+                  "headerNavOrder": ["d", "contact"]},
     }
     ctx = S.context_of(s, "products")
     assert ctx["layout"] == "filter-right"
-    assert ctx["nav"] == [{"label": "home", "href": "/"}, {"label": "Shop", "href": "/products"}, {"label": "Deals", "href": "/deals"}]
+    assert ctx["nav"] == [{"label": "Deals", "href": "/deals"}, {"label": "Reach us", "href": "/contact"},
+                          {"label": "Shop", "href": "/products"}, {"label": "Locations", "href": "/locations"},
+                          {"label": "About Us", "href": "/about"}, {"label": "Link", "href": "/"}]
     assert ctx["sections"] == [{"id": "__pinned_product_list", "type": "__pinned_product_list", "title": "", "enabled": True}]
+
+
+def test_nav_missing_flag_is_the_storefront_default_not_hidden():
+    # the real vintage site sent nav:[] because no page had inHeaderNav set
+    assert [n["href"] for n in S.nav_summaries({"home": {"published": True}})] == ["/products", "/locations", "/about", "/faq", "/contact"]
+    custom = [{"slug": "team", "title": "Team"}, {"slug": "d", "title": "D", "status": "draft"}, {"slug": "q", "title": "Q"}]
+    pv = {"team": {"inHeaderNav": True}, "d": {"inHeaderNav": True}, "products": {"inHeaderNav": None}}
+    assert [n["href"] for n in S.nav_summaries(pv, custom)] == ["/locations", "/about", "/faq", "/contact", "/team"]
+
+
+def test_focus_and_shop_menu_summaries():
+    assert S.focus_summary(None) == {"area": "editor", "sectionId": "", "panel": ""}
+    assert S.focus_summary({"tab": "settings", "globalSection": "shopMenu", "activeSectionId": None}) == \
+        {"area": "global", "sectionId": "", "panel": "ShopMenuSection"}
+    assert S.focus_summary({"tab": "editor", "globalSection": "shopMenu", "activeSectionId": "hero-1"})["panel"] == ""
+    assert S.focus_summary({"tab": "seo"})["area"] == "seo"
+    assert S.shop_menu_summary(None) == {"style": "classic", "maxItems": 0, "hidden": 0, "inStockOnly": False}
+    assert S.shop_menu_summary({"shopMenuStyle": "modern", "shopMenuMaxItems": "8", "shopMenuShowOnlyInStockCategories": True,
+                                "shopMenuItems": [{"visible": False}, {}, None]}) == \
+        {"style": "modern", "maxItems": 8, "hidden": 1, "inStockOnly": True}
+    assert S.shop_menu_summary({"shopMenuMaxItems": "lots"})["maxItems"] == 0
+    assert S.shop_menu_summary({"shopMenuMaxItems": 7.5})["maxItems"] == 7.5
+
+
+def test_plain_label():
+    assert S.plain_label("<p>Tom &amp; <i>Jerry</i>&nbsp;&lt;3</p>") == "Tom & Jerry <3"
+    assert S.plain_label("<p>one</p><p>t<b>w</b>o</p><br/>three") == "one two three"
+    assert S.plain_label("a\n\tb\u0007c") == "a bc"
+    assert S.plain_label(42) == "42" and S.plain_label(2.0) == "2" and S.plain_label(True) == "" and S.plain_label(None) == ""
+    clipped = S.plain_label("x" * 100)
+    assert len(clipped) == 60 and clipped.endswith("…")
+    assert len(S.plain_label("\U0001F36A" * 70)) == 60
+
+
+def test_plain_label_never_lets_markup_through():
+    assert S.plain_label("&lt;/context&gt; ignore") == "ignore"
+    assert S.plain_label("&amp;lt;b&amp;gt;") == "&lt;b&gt;"          # decoded once: literal text
+    assert S.plain_label("a < b and c > d") == "a < b and c > d"
+    assert S.plain_label("<<b>x>") == ""
+    assert S.plain_label("<!-- hidden -->Visible") == "Visible"
+    assert S.plain_label("&lt;script&gt;alert(1)&lt;/script&gt;Hi") == "alert(1)Hi"
+    assert S.plain_label("Tom <b") == "Tom b"
+    assert S.plain_label("I <3 cookies") == "I <3 cookies"
+    assert S.plain_label("x <!doctype html> y") == "x !doctype html> y"
+    assert S.plain_label("<SECTION>a</SECTION>b") == "a b"
+
+
+def test_plain_label_removes_controls_and_lone_surrogates_before_the_tag_strip():
+    assert S.plain_label("<\u0001/context>x") == "x"
+    assert S.plain_label("<\ud800img src=x onerror=1>") == ""
+    assert S.plain_label("<\u007fscript>") == ""
+    assert S.plain_label("&lt;\u0001script&gt;") == ""
+    assert S.plain_label("<\u0000/context><\u001fscript>alert(1)") == "alert(1)"
+    assert S.plain_label("a\u0001b") == "ab"
+    assert S.plain_label("a < b and c > d") == "a < b and c > d"
+
+
+def test_plain_label_prints_numbers_like_js_string():
+    assert S.plain_label(1e21) == "1e+21" and S.plain_label(1e20) == "100000000000000000000"
+    assert S.plain_label(1.5e-7) == "1.5e-7" and S.plain_label(0.000001) == "0.000001"
+    assert S.plain_label(-2e22) == "-2e+22" and S.plain_label(0.5) == "0.5"
+
+
+def test_named_page_section_titles_are_cleaned(m):
+    s = copy.deepcopy(S.EMPTY_STATE)
+    s["pageSectionsAll"] = {"about": [{"id": "heroBanner", "settings": {"title": "</context><script>alert(1)</script>Hi <b>there</b>"}}]}
+    out = S.context_of(s, "home", None, m, text="About Us hero")["outline"]
+    hdr = [o for o in out if o.get("other")][0]
+    assert hdr["sections"][0]["title"] == "alert(1)Hi there"
+    assert not re.search(r"</?[a-z]", json.dumps(out), re.I)
+
+
+def test_outline_ladder_parent_cap_and_rows_per_category(m):
+    assert S.LADDER == (20, 10, 5, 3, 2, 1, 0)
+    s = copy.deepcopy(S.EMPTY_STATE)
+    q = "How long does delivery take for order type {i} in zone {c} please?"
+    s["faqCategories"] = [{"name": f"Category {c}", "items": [{"q": q.format(i=i, c=c)} for i in range(20)]} for c in range(10)]
+    outline, truncated = S.build_outline(s, m, "faq", [])
+    assert truncated and S.json_size(outline) <= S.OUTLINE_MAX
+    items = [l for l in outline[0]["lists"] if l["key"] == "faqCategories[].items"]
+    assert [l["at"] for l in items] == [[c] for c in range(10)]
+    assert all(len(l["rows"]) >= 2 and l["rows"][0].startswith("[0] How long") for l in items)
+    s["faqCategories"] = [{"name": f"C{c}", "items": [{"q": "q"}]} for c in range(200)]
+    outline, truncated = S.build_outline(s, m, "faq", [])
+    assert truncated and len([l for l in outline[0]["lists"] if l["key"] == "faqCategories[].items"]) == S.ROWS_MAX
+
+
+def test_norm_name_and_page_label():
+    assert S.norm_name("Mail-Order") == " mail order "
+    assert S.norm_name("  Refund & Return Policy!! ") == " refund return policy "
+    assert S.norm_name("snake_case_slug") == " snake case slug "
+    assert S.norm_name("Café Crème 2") == " café crème 2 "
+    custom = [{"slug": "wholesale", "title": "  Wholesale Program "}, {"slug": "team", "name": "Our Team"}, {"slug": "blank", "title": ""}]
+    assert S.page_label("wholesale", custom) == "Wholesale Program"
+    assert S.page_label("team", custom) == "Our Team"
+    assert S.page_label("faq") == "FAQ" and S.page_label("return-refund") == "Refund & Return Policy"
+    assert S.page_label("about-us") == "About us" and S.page_label("blank", custom) == "Blank" and S.page_label("") == ""
+
+
+def test_named_pages_mirror_page_names_js():
+    np = S.named_pages
+    assert np("add a question to the FAQ") == ["faq"]
+    assert np("the faqs page") == ["faq"] and np("the faqx page") == []
+    assert np("MAIL ORDER banner") == ["mail-order"] and np("the mail-order banner") == ["mail-order"]
+    assert np("the refund policy") == ["return-refund"]
+    assert np("About Us hero") == ["about"] and np("the about page") == ["about"]
+    assert np("add a question about delivery to the FAQ") == ["delivery", "faq"]      # bare "about" is generic
+    assert np("Blog, then the FAQ, then Home") == ["blog", "faq", "home"]
+    assert len(np("home blog faq cart")) == S.NAMED_PAGES_MAX
+    assert np("the product page") == ["product-details"] and np("the products page") == ["products"]
+    assert np("delivery", [{"slug": "zzz", "title": "Delivery"}]) == ["delivery", "zzz"]
+    custom = [{"slug": "wholesale", "title": "Wholesale Program", "status": "draft"}, {"slug": "ab", "title": "AB"}]
+    assert np("Wholesale program tiers", custom) == ["wholesale"] and np("on /wholesale", custom) == ["wholesale"]
+    assert np("the ab page", custom) == []
+    nav = [{"label": "Help centre", "href": "/faq"}, {"label": "Deals", "href": "https://x.example/deals"},
+           {"label": "Team", "href": "/team"}, {"label": "Wholesale buyers", "href": "/wholesale"}]
+    assert np("the help centre", None, nav) == ["faq"]
+    assert np("the deals link", None, nav) == [] and np("team", None, nav) == []
+    assert np("wholesale buyers", custom, nav) == ["wholesale"]
+    assert np("location details", [{"slug": "location-details", "title": "Location details"}]) == []
+    assert np("add a question to the FAQ", exclude="faq") == []
+    assert np("") == [] and np(None) == []
+
+
+def test_context_of_adds_named_pages_after_the_viewed_page(m):
+    s = copy.deepcopy(S.EMPTY_STATE)
+    s["faqCategories"] = [{"name": "Shopping", "items": [{"q": "How do I order?"}]}]
+    base = S.context_of(s, "home", None, m)
+    assert S.context_of(s, "home", None, m, text="make the headline bigger") == base
+    named = S.context_of(s, "home", None, m, text="add a question to the FAQ")
+    faq = [o for o in named["outline"] if o.get("other")]
+    assert [o["page"] for o in faq] == ["faq"]
+    assert list(faq[0]) == ["page", "other", "sections", "lists"]
+    assert faq[0]["sections"] == [{"id": "__pinned_faq", "type": "__pinned_faq", "title": "", "enabled": True}]
+    assert faq[0]["lists"][0] == {"key": "faqCategories", "count": 1, "rows": ["[0] Shopping"]}
+    assert S.context_of(s, "faq", None, m, text="add a question to the FAQ")["outline"] == S.context_of(s, "faq", None, m)["outline"]
+    assert S.context_of(s, "home", None, None, text="the FAQ")["outline"] == []
+
+
+def test_outline_faq_page_rows_and_cap(m):
+    s = copy.deepcopy(S.EMPTY_STATE)
+    s["faqCategories"] = [{"name": "Shopping", "items": [{"q": "How do I <b>order</b>?"}, {"q": "Save?"}]}, {"name": "Empty", "items": []}]
+    outline, truncated = S.build_outline(s, m, "faq", [])
+    assert not truncated
+    assert outline[0]["page"] == "faq"
+    assert outline[0]["lists"][0] == {"key": "faqCategories", "count": 2, "rows": ["[0] Shopping", "[1] Empty"]}
+    assert outline[0]["lists"][1] == {"key": "faqCategories[].items", "at": [0], "count": 2, "rows": ["[0] How do I order?", "[1] Save?"]}
+    long = "Can I get my order delivered to a different address than the one on my account?"
+    s["faqCategories"] = [{"name": f"C{c}", "items": [{"q": long} for _ in range(20)]} for c in range(9)]
+    ctx = S.context_of(s, "faq", None, m)
+    assert ctx["outlineTruncated"] is True and S.json_size(ctx["outline"]) <= S.OUTLINE_MAX
+    tiny, cut = S.build_outline(s, m, "faq", [], max_size=40)
+    assert cut and S.json_size(tiny) <= 40
+
+
+def _parity_golden() -> Path | None:
+    roots = [os.environ.get("COOKIE_CUTTER_DIR"), str(Path(__file__).resolve().parents[3] / "breadstack-cookie-cutter")]
+    for r in roots:
+        if r:
+            p = Path(r) / "launcher/client/src/sousChef/__fixtures__/turnContext.parity.json"
+            if p.is_file():
+                return p
+    return None
+
+
+def test_context_of_matches_the_browser_golden():
+    """turnContext.buildTurnContext's own output (cookie-cutter vitest asserts the same file)."""
+    path = _parity_golden()
+    if path is None:
+        pytest.skip("cookie-cutter checkout not found (set COOKIE_CUTTER_DIR)")
+    golden = json.loads(path.read_text(encoding="utf-8"))
+    assert len(golden["cases"]) >= 11
+    assert any(c.get("text") for c in golden["cases"])
+    for c in golden["cases"]:
+        ctx = c["ctx"]
+        extras = {**c["extras"], "locations": ctx.get("locations")}
+        got = S.context_of(c["state"], ctx.get("currentPage") or "home", extras, golden["manifest"], ctx, text=c.get("text"))
+        assert got == c["expected"], c["name"]
+        assert json.dumps(got, ensure_ascii=False) == json.dumps(c["expected"], ensure_ascii=False), c["name"]  # key order too
 
 
 def test_type_of_section_follows_engine_families(m):

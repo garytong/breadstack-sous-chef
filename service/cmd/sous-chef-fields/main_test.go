@@ -93,6 +93,51 @@ func TestCLIMatchesPackage(t *testing.T) {
 	}
 }
 
+// A row's history (and -prev-user / -prev-assistant) gives the block a turn
+// after it gets: a follow-up is read with the turn before it.
+func TestCLIHistory(t *testing.T) {
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := fields.ParseContext([]byte(ctxJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := fields.Previous{User: "there are too many categories in the header", Assistant: "How many should it show?"}
+	want := fields.CandidatesAfter(m, ctx, "4, you pick", prev, fields.Options{})
+	if want.Block == fields.Candidates(m, ctx, "4, you pick", fields.Options{}).Block {
+		t.Fatal("the fixture follow-up does not change the block")
+	}
+	var out bytes.Buffer
+	in := `{"id":"f","context":` + ctxJSON + `,"text":"4, you pick","history":[{"user":"hi","assistant":"Hello!"},{"user":` +
+		jsonString(prev.User) + `,"assistant":` + jsonString(prev.Assistant) + `}]}` + "\n"
+	if err := run([]string{"-manifest", manifestPath, "-jsonl"}, strings.NewReader(in), &out); err != nil {
+		t.Fatal(err)
+	}
+	var row struct {
+		Block string `json:"block"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &row); err != nil {
+		t.Fatal(err)
+	}
+	if row.Block != want.Block {
+		t.Fatalf("-jsonl with history differs:\n%s", row.Block)
+	}
+	out.Reset()
+	if err := run([]string{"-manifest", manifestPath, "-context", "-", "-text", "4, you pick", "-prev-user", prev.User, "-prev-assistant", prev.Assistant},
+		strings.NewReader(ctxJSON), &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSuffix(out.String(), "\n") != want.Block {
+		t.Fatalf("-prev-user differs:\n%s", out.String())
+	}
+}
+
 func TestCLIErrors(t *testing.T) {
 	var out bytes.Buffer
 	if err := run([]string{"-text", "x"}, strings.NewReader(""), &out); err == nil {

@@ -62,15 +62,18 @@ type Route struct {
 	// FieldsContext ("on"|"off") puts the turn's candidate-fields block
 	// (internal/fields: the targets the merchant's text names and the field
 	// keys its words match) into the user message, between the <context>
-	// block and the text. Unset = on for messages-compatible routes (the
-	// in-house student cannot map a label to a key from the index alone),
-	// off for anthropic routes, whose requests stay as they were. An
-	// anthropic route may turn it on.
+	// block and the text. Unset = on, for every route kind: the in-house
+	// student cannot map a label to a key from the index alone, and Claude
+	// matched the right key in only 47% of the real turns without it (its
+	// index has no labels; plan Q7). A route that must not carry it (a model
+	// trained without the block, an A/B arm) sets "off".
 	FieldsContext string `json:"fields_context,omitempty"`
 	// Fallback names the route a turn on this route escalates to, at most
 	// once per turn, when this route's model fails it: an op it wrote is
 	// refused, it reports the request unsupported, its call errors or times
-	// out, or it stops at max_tokens (README §4 "Hybrid"). The next model
+	// out, it stops at max_tokens, or an op it wrote set a field the
+	// merchant will not see (W_HIDDEN with the gate closed) (README §4
+	// "Hybrid"). The next model
 	// call of the same turn goes to the fallback with the history as is, and
 	// the turn stays there. It must name another route of the table that has
 	// no fallback of its own; it need not be allowlisted (the service picks
@@ -159,16 +162,10 @@ const (
 )
 
 // FieldsContextEnabled reports whether this route's user turns carry the
-// candidate-fields block: what the route says, else on for
-// messages-compatible and off for anthropic.
+// candidate-fields block: on unless the route says "off" (any kind; until
+// 2026-10-10 an unset anthropic route was off).
 func (r Route) FieldsContextEnabled() bool {
-	switch r.FieldsContext {
-	case FieldsContextOn:
-		return true
-	case FieldsContextOff:
-		return false
-	}
-	return r.Kind == RouteMessagesCompatible
+	return r.FieldsContext != FieldsContextOff
 }
 
 // Thinking values a route may name.
@@ -317,7 +314,7 @@ func (c *Config) RouteNames() []string {
 
 // RouteInfo is one route's entry of /version `route_info`: its wire kind,
 // whether its user turns carry the candidate-fields block (the EFFECTIVE
-// value — the route's `fields_context`, else the kind's default), and the
+// value — the route's `fields_context`, else on), and the
 // route its turns escalate to (null for none). The lab reads it so the rows
 // it renders follow the service instead of a setting of its own; a turn's
 // own turn.done `route` states the same for that turn. ReportAs is the

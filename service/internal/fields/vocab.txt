@@ -1,0 +1,313 @@
+# Sous Chef merchant vocabulary: what merchants call things that the
+# editor's labels and keys call something else.
+#
+# Read at query time by internal/fields (the candidate-fields block) and by
+# internal/prompt (the "Also called" lines of the system[1] index).
+# docs/VOCABULARY.md says when to add a line. One entry per line; '#'
+# starts a comment: say WHY the line exists (the request that needed it).
+#
+#   merchant words = editor words[, editor words …]
+#     A TERM. Wherever the merchant's text says the left side, the retrieval
+#     also reads each right side, at 0.8 of a written word's weight; the
+#     written words stay. Write editor words that occur in field LABELS or
+#     KEYS: "rounder = radius" finds every *Radius field, including the ones
+#     added after this line. Words compare lower-cased and singular, after
+#     the spelling folds of tokens.go (colour→color, bg→background,
+#     btn→button, pic/photo/picture→image). A stop word on the left (to, on,
+#     the, my …) must be in the text as written ("turn on"). Any other stop
+#     word in the text is skipped, so "rename site" matches "rename my site".
+#
+#   @<kind>:<id> = phrase, phrase …
+#     A CONTAINER ALIAS: phrases that NAME a section type (s:<type>), a
+#     global panel (g:<Panel>), branding (b:branding) or a page (p:<page>),
+#     besides the words of its id. A named target goes to the top of the
+#     block, so keep these few and unambiguous: never a word or label that
+#     another container also has. The prompt index prints the first three
+#     (in this order) that its id does not already say. "page:<slug>" means
+#     the container counts as named while the merchant views that page.
+
+# ── container aliases ───────────────────────────────────────────────────────
+
+# Merchants call the hero "the banner" / "the slider". "banner" inside a
+# longer name ("insider banner") is shadowed by that name (fields.go).
+@s:heroBanner = hero, hero slider, slideshow, banner, top banner, main banner, big banner, hero image, slider
+@s:hero = hero banner, hero slider, slideshow, banner, top banner, main banner, big banner, hero image, slider
+@s:testimonials = reviews, customer reviews, review cards
+@s:reviews = testimonials, customer reviews, review cards
+@s:productCarousel = carousel, product slider
+@s:blogSection = blog, blog posts, latest posts
+@s:blog = blog section, blog posts, latest posts
+# "deals" / "offers": the promotion tiles.
+@s:promotion = promotion tiles, promo, deals, offers, specials
+@s:sectionDivider = divider, separator
+@s:loyaltyForm = loyalty, loyalty signup
+@s:locations = store locator, find a store, store cards, store list
+@s:newsletter = newsletter signup, subscribe, signup form, email signup, sign up form, mailing list
+# The featured-categories strip ("shop by category", round category tiles).
+@s:featuredCategories = shop by category, category circles, category tiles
+@s:milestones = reward steps, rewards steps, points steps
+# "instagram gallery" must name the gallery, not the social panel (the
+# longer name shadows the social reading of "instagram"); so must the feed,
+# grid and section the gallery shows ("change the instagram section heading",
+# "add a picture to the instagram grid" went to the social panel).
+@s:gallery = photo gallery, image gallery, instagram gallery, instagram feed, instagram grid, instagram section, instagram photos
+
+# "Store Name" lives here: "change the site name to HashiTong" (int,
+# 2026-10-05) listed no storeName at all.
+@g:BrandingSection = site name, store name, shop name, business name, company name, favicon, branding settings
+# The announcement bar's fields are header fields (announcementBar.*), and
+# merchants call the header "the menu" / "the navigation".
+@g:HeaderSection = announcement bar, top bar, navigation bar, promo bar, nav bar, menu bar, navigation, main menu, header menu
+# Only the add-to-cart popup's two colours: NOT the announcement bar.
+@g:NotificationSection = cart popup, toast, cart notification, notification bar
+# "heading font" is headingFont, labelled "Section Headings"; "Brand Color"
+# and "Site Background" are labels no other container has; then the
+# site-wide phrases. Not "body font" / "link color": other containers have
+# those labels, and a name would pull this panel above them ("Change the
+# Link Color on the shop menu").
+@g:TypographyColorsSection = heading font, brand color, site background, site colors, site fonts, typography, fonts and colors, all headings, site wide, sitewide, everywhere, across the site, whole site, entire site
+# "make the whole site wider", "more space between all the sections".
+@g:LayoutSection = site width, space between sections, site layout, page width, content width, space between all sections, site wide, sitewide, everywhere, across the site, whole site, entire site
+# "rounder input boxes across the site". The three site-wide panels share
+# the "everywhere" phrases: their fields decide among them.
+@g:ButtonsSection = all buttons, input boxes, button style, input fields, site wide, sitewide, everywhere, across the site, whole site, entire site
+@g:SocialMediaSection = social links, socials, social media, social icons
+@g:SidebarCartSection = cart drawer, mini cart, side cart, cart sidebar, slide out cart
+# The category strip under the header.
+@g:ShopMenuSection = shop navigation, category menu, category bar, category links, shop menu
+# The members' banner shown at checkout.
+@g:InsiderBannerSection = insider, members banner, member banner, members promo
+
+# The age gate and the location picker are branding fields; their pages
+# (age-gate, location-selection) hold only "published", so viewing them
+# names branding too. "cert logo" / "certification badge": the badges list
+# (tune r209 "change the cert logo image" fell to last under the 0.6
+# prior). Not a bare "certification": hero slides label certImage
+# "Certification Image" too.
+@b:branding = age gate, store picker, age check, location picker, age popup, age verification, store selector, location selector, page:age-gate, page:location-selection, cert logo, certification logo, certification badge, cert badge
+
+# Pages. Matched word for word, as written ("products page" is not the
+# "product page").
+# Never the bare word "google": other labels have it ("Google Play badge",
+# "Google Business URL"), and "add our google business link" must reach
+# them. Only phrases that mean the search listing ("title on google").
+@p:seo = meta description, search results, google search, google results, google listing, google shows, shows on google, show on google, shows up on google, title on google, description on google, found on google, analytics, seo, search engine, robots, share image, link preview, people share, shared on
+@p:login = log in, sign in
+# "the add to cart button" is a product-details option, not the cart page.
+@p:product-details = product page, single product, add to cart button
+@p:order-confirmation = thank you page
+
+# ── terms ───────────────────────────────────────────────────────────────────
+
+# The site's name is BrandingSection "Store Name".
+site name = store name
+shop name = store name
+business name = store name
+company name = store name
+name of site = store name        # "the name of the site"
+name of shop = store name
+name of business = store name
+name of store = store name       # "the name of my store should be Green Leaf"
+title of site = store name       # "rename the title of my site to HashiTong" (real, 10-06)
+title of shop = store name
+title of store = store name
+rename site = store name         # "rename my site to Green Leaf Co"
+rename shop = store name
+rename business = store name
+# The favicon: "the little icon in the browser tab".
+browser tab = favicon
+tab icon = favicon
+site icon = favicon
+# Age gate and location picker fields are keyed ageGate* / locationPicker*.
+age check = age gate
+age popup = age gate
+age verification = age gate
+age screen = age gate
+store picker = location picker, location selector
+store selector = location picker, location selector
+location selector = location picker
+# Header announcementBar.*: "the little bar above the menu".
+announcement = announcement bar
+promo bar = announcement bar
+bar above menu = announcement bar
+bar above header = announcement bar
+# NotificationSection: "the little popup when you add something to the cart".
+toast = notification
+popup when you add = notification
+cart popup = notification
+# ShopMenuSection: "the category links bar".
+category bar = shop menu
+category links bar = shop menu
+menu under header = shop menu
+# "too many categories in the header" / "the header categories": the
+# category strip is the Shop Menu (shopMenuMaxItems), not a header field.
+category in header = shop menu
+category in menu = shop menu
+header category = shop menu
+menu category = shop menu
+# "the font" with no other place named is the site font (Typography:
+# bodyFont "Body Text", headingFont "Section Headings" — no "font" in
+# either label).
+font = typography
+# A field label spelled the other way round.
+logo footer = footer logo        # "use a different logo in the footer"
+
+# Social networks: the panel's fields are "<Network> URL"; "social" names
+# the panel by a word of its id.
+instagram = social
+facebook = social
+tiktok = social
+twitter = social
+youtube = social
+linkedin = social
+weedmaps = social
+leafly = social
+
+# Visibility. The editor labels toggles both ways ("Show Cart Icon", "Hide
+# THC pill"): either word finds either toggle, the value carries the
+# polarity. Not "enable = show": "Enable the Answer Text Style" pulled
+# "Show top border" into the faq block.
+hide = show, visible, hidden     # "hidden": an enum option (shopMenuStyle)
+show = hide, visible
+turn off = show, hide, enable
+turn on = show, enable
+switch off = show, hide, enable
+switch on = show, enable
+disable = enable, show
+display = show
+visible = show
+invisible = show, hide
+get rid = hide, show
+# "add a search box" = "Show search box", "add a second button" = "Show
+# … button", "add a promo bar" = "Show announcement bar". Only these
+# phrases: a bare "add = show" read every show* toggle into "add our
+# pinterest pinterest.com/…" and they outscored the rare word a label
+# spells ("Pinterest URL"); "add a = show" still pulled the show* toggles
+# over "add a paper texture behind everything" (holdout h010, found at
+# HEAD, lost with "add a").
+add a second = show
+add a search = show
+add a promo = show
+
+# Size and shape: comparatives name the property.
+bigger = size
+larger = size
+smaller = size
+large = size
+tiny = size
+huge = size
+too big = size
+too small = size
+shrink = size
+enlarge = size
+wider = width
+narrower = width
+wide = width
+narrow = width
+taller = height
+shorter = height
+tall = height
+rounder = radius
+rounded = radius
+round = radius
+curved = radius
+corner = radius
+pill shaped = radius
+per row = column, per row        # "show 4 products per row" = "Columns"
+# Counts are labelled "Max …" ("Max Items to Show"): "too many categories in
+# the header", "how many should it show".
+too many = max
+how many = max
+fewer = max
+limit = max
+
+# Spacing: "breathing room", "less space above and below".
+space = padding, spacing, gap
+spacing = padding, gap
+breathing room = padding, spacing
+room = padding
+gap = spacing, padding
+cramped = padding, spacing
+tighter = padding, spacing
+above and below = vertical
+top and bottom = vertical
+left and right = horizontal
+
+# Type.
+caps = uppercase
+all caps = uppercase
+capital = uppercase
+capitals = uppercase
+upper case = uppercase
+bold = weight
+bolder = weight
+thicker = weight
+typeface = font
+paragraph = body, text
+body copy = body text
+copy = text
+wording = text
+words = text
+say = text                       # "make the no button say 'Not yet'"
+says = text
+rename = name, label             # "rename 'Shop' in the footer links"
+# The small line above a headline is the "Tagline".
+small text = tagline
+small label = tagline
+little text = tagline
+eyebrow = tagline
+kicker = tagline
+subheading = subtitle, tagline
+sub heading = subtitle, tagline
+subhead = subtitle
+# Section titles are labelled "Headline", "Heading" or "Title".
+heading = headline, title
+headline = title, heading
+title = headline                 # not "heading": "Title Font" would read as the alias "heading font"
+header text = headline, title
+small print = note, footnote, disclaimer
+fine print = note, footnote, disclaimer
+
+# Colour words: "make it green" means a colour field.
+red = color
+green = color
+blue = color
+black = color
+white = color
+gray = color
+teal = color
+orange = color
+yellow = color
+purple = color
+pink = color
+brown = color
+navy = color
+gold = color
+beige = color
+darker = color
+lighter = color
+dark = color
+light = color
+tint = overlay                   # "a dark tint over the banner image"
+shade = overlay, color
+see through = overlay, transparent  # headerStyle: solid|overlay
+transparent = overlay
+outline = border
+stroke = border
+
+# Links and buttons.
+call to action = cta
+button = cta                     # labels say "CTA" (ctaText, ctaLink …)
+go to = link, url                # "the shop now button should go to /products"
+goes to = link, url
+point to = link, url
+points to = link, url
+link to = link, url
+links to = link, url
+web address = url
+
+# Images and layouts.
+picture behind = background image
+background picture = background image
+banner image = background image, image
+view = layout, style             # "switch the store locations to a map view"

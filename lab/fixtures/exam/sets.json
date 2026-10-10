@@ -1,0 +1,131 @@
+{
+ "generator": "exam-1",
+ "built_at": "2026-10-10T08:53:57Z",
+ "about": "real-phrasing exam (docs/LAB.md §6b); rows written by the 2026-10-10 paraphrase study + the user's real turns",
+ "manifest": {
+  "file": "manifest-real.json",
+  "manifest_hash": "bf78870182302f821856057d0091d62b09403c5180716c4f37a4830761e18a12",
+  "file_sha256": "70b768442f5d5ec721b36fe6e93150903b9bec77b76ee7949b6d554e4161ef01",
+  "generated_from": {
+   "at": "2026-10-06T02:44:04.664Z",
+   "sha": "9cc1cd1",
+   "probe": "ran",
+   "branch": null,
+   "build_id": "9cc1cd1"
+  }
+ },
+ "contexts": {
+  "file": "contexts.json",
+  "pages": {
+   "account": {
+    "ref": "vintage-account-approx",
+    "source": "approximated"
+   },
+   "blog": {
+    "ref": "vintage-blog-approx",
+    "source": "approximated"
+   },
+   "cart": {
+    "ref": "vintage-cart-approx",
+    "source": "approximated"
+   },
+   "checkout": {
+    "ref": "vintage-checkout-approx",
+    "source": "approximated"
+   },
+   "faq": {
+    "ref": "vintage-faq",
+    "source": "recorded"
+   },
+   "home": {
+    "ref": "vintage-home",
+    "source": "recorded"
+   },
+   "login": {
+    "ref": "vintage-login-approx",
+    "source": "approximated"
+   },
+   "order-confirmation": {
+    "ref": "vintage-order-confirmation-approx",
+    "source": "approximated"
+   },
+   "privacy-policy": {
+    "ref": "vintage-privacy-policy-approx",
+    "source": "approximated"
+   },
+   "product-details": {
+    "ref": "vintage-product-details",
+    "source": "recorded"
+   },
+   "products": {
+    "ref": "vintage-products",
+    "source": "recorded"
+   }
+  }
+ },
+ "sources": {
+  "paraphrase-cases.jsonl": "b8b0f75aafe150a95ccdb8ceb78dde64d6dd302f551c593d4978551b4a5cb2ec",
+  "paraphrase-holdout.jsonl": "dad26f43d0bd29143ec81e5a71dd530efdf0e546681b844d70f94cedf3aaee7d",
+  "real-cases.jsonl": "3c9446264928d4aab67c6bc06d189ca2cd2c9818f05fe97df12ecf2b7bc3c9f3",
+  "ctx-vintage-home.json": "e6a0d1d49ffab909e6adeca6af843c763e56a1ee7493647ab3367569fc8e5bdd"
+ },
+ "sets": {
+  "paraphrase": {
+   "file": "paraphrase.jsonl",
+   "rows": 147,
+   "with_history": 12,
+   "by_class": {
+    "compound": 10,
+    "followup": 12,
+    "relative": 14,
+    "selected": 8,
+    "synonym": 74,
+    "unnamed": 29
+   }
+  },
+  "holdout": {
+   "file": "holdout.jsonl",
+   "rows": 62,
+   "with_history": 4,
+   "by_class": {
+    "followup": 4,
+    "relative": 10,
+    "selected": 2,
+    "synonym": 40,
+    "unnamed": 6
+   }
+  },
+  "real": {
+   "file": "real.jsonl",
+   "rows": 14,
+   "with_history": 12,
+   "by_class": {
+    "real": 14
+   }
+  },
+  "out_of_scope": {
+   "file": "out_of_scope.jsonl",
+   "rows": 13,
+   "with_history": 0,
+   "by_class": {
+    "oos": 13
+   }
+  },
+  "out_of_scope_holdout": {
+   "file": "out_of_scope_holdout.jsonl",
+   "rows": 4,
+   "with_history": 0,
+   "by_class": {
+    "oos": 4
+   }
+  },
+  "followup": {
+   "file": "followup.jsonl",
+   "rows": 12,
+   "with_history": 12,
+   "by_class": {
+    "followup": 12
+   }
+  }
+ }
+}

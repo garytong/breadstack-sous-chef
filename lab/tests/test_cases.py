@@ -348,10 +348,14 @@ def test_unsupported_cases(by_kind):
     assert all(c.browser_ops == [] for c in by_kind["unsupported"])
 
 
-def test_context_matches_site_state(cases):
+def test_context_matches_site_state(cases, m):
     for c in cases[::50]:
         page = c.context["page"]
-        assert c.context == S.context_of(c.site_state, page, S.load_context_fixture())
+        # cases.py may pass the request (its named pages join the outline, as in the browser) or not
+        assert c.context in (S.context_of(c.site_state, page, S.load_context_fixture(), m),
+                             S.context_of(c.site_state, page, S.load_context_fixture(), m, text=c.request))
+    # the browser always has the manifest loaded before a turn posts, so every case carries the outline
+    assert all("outline" in c.context and "focus" in c.context and "shopMenu" in c.context for c in cases)
 
 
 def test_generate_limit_and_kinds(m):
@@ -770,3 +774,23 @@ def test_d3_no_residue_or_leaf_echo_in_any_request(cases):
         low = c.request.lower()
         assert "(optional)" not in low and "or pick from locations" not in low and "probe text" not in low, (c.id, c.request)
         assert not re.search(r"\b(font|color|style) toggle\b", low), (c.id, c.request)  # the old type-word qualifier
+
+
+def test_context_of_a_faq_naming_request_carries_the_faq_page(cases, m):
+    """Contract 2: a request naming another page brings that page's sections and lists into the outline;
+    without `text` the context is unchanged."""
+    c = next(c for c in cases if c.context["page"] == "home")
+    st = copy.deepcopy(c.site_state)
+    st["faqCategories"] = [{"name": "Shopping", "items": [{"q": "How do I order?"}]}]
+    plain = S.context_of(st, "home", S.load_context_fixture(), m)
+    assert not any(o.get("other") for o in plain["outline"])
+    named = S.context_of(st, "home", S.load_context_fixture(), m, text="Add a question to the FAQ about pickup")
+    others = [o for o in named["outline"] if o.get("other")]
+    assert [o["page"] for o in others] == ["faq"]
+    assert {"key": "faqCategories", "count": 1, "rows": ["[0] Shopping"]} in others[0]["lists"]
+    n = len(plain["outline"])
+    assert named["outline"][:n] == plain["outline"]                      # the viewed page is never shrunk
+    assert named["outline"][n]["page"] == "faq" and named["outline"][n]["other"] is True
+    assert S.json_size(named["outline"]) <= S.OUTLINE_MAX
+    assert {k: v for k, v in named.items() if k not in ("outline", "outlineTruncated")} == \
+        {k: v for k, v in plain.items() if k not in ("outline", "outlineTruncated")}

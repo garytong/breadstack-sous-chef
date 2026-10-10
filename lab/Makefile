@@ -85,6 +85,7 @@ MODEL_IMAGE   = $(MODEL_REPO)/model:$(MODEL_TAG)
 
 export COOKIE_CUTTER_DIR ENGINE SOUS_CHEF_ENGINE=$(ENGINE)
 
+.PHONY: exam-sets exam-build exam-retrieval exam-run exam-dry exam-replay
 .PHONY: help venv test test-engine cases cases-dry cases-remeasure engine-fingerprint collect dataset fields-rerender pairs eval passk retrain-check parity parity-write train-env train-dry train-gpu-check train dpo export model-stage model-build model-push train-vm-init train-vm-plan train-vm-apply train-vm-up train-vm-ssh train-vm-down train-vm-status train-remote-push train-remote-pull fake-service fake-model clean
 
 help: ## list targets
@@ -126,6 +127,31 @@ pairs: ## DPO pairs from the collected logs (LOGS=…)
 	$(LABPY) -m souschef_lab.pairs $(foreach f,$(LOGS),--log $(f)) --cases $(DATA)/cases.jsonl --out $(DATA)/pairs
 eval: ## held-out exam on ROUTE → runs/eval-$(LABEL)-<UTC>.json
 	$(LABPY) -m souschef_lab.eval --route $(ROUTE) --label $(LABEL) --cases $(DATA)/cases.jsonl --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --manifest $(MANIFEST) --fields-context $(ROUTE_FIELDS_CONTEXT)
+# ── the real-phrasing exam (docs/LAB.md §6b): fixtures/exam/<set>.jsonl on the real vintage manifest ──
+# SET = paraphrase | holdout | real | out_of_scope | out_of_scope_holdout | followup | all (retrieval) | a .jsonl path
+# (replay rows). exam-retrieval asks no model; exam-run spends model calls on whatever SOUS_CHEF_URL names;
+# exam-dry runs the same path against the lab's fake service in process (ORACLE=1: every row answered with its
+# expected writes, through the real engine — proves the wiring and that the engine accepts every expected key).
+exam-sets: ## list the real-phrasing exam sets and their sizes
+	$(LABPY) -m souschef_lab.exam sets
+exam-build: ## rebuild fixtures/exam from the paraphrase study's folder (WHY=dir: paraphrase-cases.jsonl, paraphrase-holdout.jsonl, real-cases.jsonl, ctx-vintage-home.json, manifest-real.json, conv-*.json)
+	@test -n "$(WHY)" || { echo "exam-build: pass WHY=<the study folder>"; exit 2; }
+	$(LABPY) -m souschef_lab.exam build --why $(WHY)
+exam-retrieval: ## offline recall@block of the candidate-fields block on SET (default all) — no model; needs go (the service's own fields CLI); WITH_HISTORY=1 / WITH_SELECTED=1 = what-ifs; FOLLOWUPS=1 = rows' history through the service's follow-up rule → runs/exam-retrieval-<set>-<UTC>.json
+	$(LABPY) -m souschef_lab.exam retrieval --set $(or $(SET),all) $(if $(WITH_HISTORY),--with-history,) $(if $(WITH_SELECTED),--with-selected,) $(if $(FOLLOWUPS),--follow-ups,)
+# Row ranges + separate conversations (both exam-run and exam-dry): OFFSET=n LIMIT=n run rows n.. of the set (the file
+# name gains -r<from>-<to>, so parallel chunks never collide); SITE_PREFIX=lab-cand- keeps a second revision's turns out
+# of the first's conversations (siteId = <prefix><row id>; must start with lab-).
+EXAM_RANGE_ARGS = $(if $(OFFSET),--offset $(OFFSET),) $(if $(LIMIT),--limit $(LIMIT),) $(if $(SITE_PREFIX),--site-prefix $(SITE_PREFIX),) $(if $(ONLY),--only $(ONLY),)
+exam-run: ## end-to-end on SET through SOUS_CHEF_URL / ROUTE (SPENDS model calls on a real service); HISTORY=live|last|none, N samples, OFFSET/LIMIT rows, SITE_PREFIX → runs/exam-<set>-<label>[-r<from>-<to>]-<UTC>.json
+	@test -n "$(SET)" || { echo "exam-run: pass SET=<one set or a .jsonl>"; exit 2; }
+	$(LABPY) -m souschef_lab.exam run --set $(SET) --route $(ROUTE) --label $(LABEL) --samples $(N) --history $(or $(HISTORY),live) --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --fields-context $(ROUTE_FIELDS_CONTEXT) $(EXAM_RANGE_ARGS)
+exam-dry: ## exam-run against the in-process fake service (no model, no network): SET=…, ORACLE=1 scripts every row with its expected writes (out-of-scope rows: report_unsupported `where`; ORACLE=legacy: in words, no `where`); ROUTE=fake (fields off) or fake-fields (fields on, needs go)
+	@test -n "$(SET)" || { echo "exam-dry: pass SET=<one set or a .jsonl>"; exit 2; }
+	$(LABPY) -m souschef_lab.exam run --set $(SET) --fake $(if $(ORACLE),--oracle $(if $(filter legacy,$(ORACLE)),--oracle-mode legacy,),) --route $(or $(filter fake fake-fields default,$(ROUTE)),fake) --label dry-$(LABEL) --history $(or $(HISTORY),live) --engine $(ENGINE) $(EXAM_RANGE_ARGS)
+exam-replay: ## CONV=<GET /v1/conversations/{siteId} body> → $(DATA)/replay-<conversation>.jsonl, one exam row per turn with its history (LABELS="real paraphrase" attach expected keys; CHECK=1 recomputes the served candidate-fields blocks, needs go)
+	@test -n "$(CONV)" || { echo "exam-replay: pass CONV=<conversation.json>"; exit 2; }
+	$(LABPY) -m souschef_lab.exam replay --conversation $(CONV) $(foreach l,$(or $(LABELS),real paraphrase holdout),--labels $(l)) $(if $(CHECK),--check-blocks,) $(if $(OUT),--out $(OUT),)
 passk: ## pass@k over several eval runs (RUNS=space-separated runs/eval-*.json)
 	$(LABPY) -m souschef_lab.passk $(RUNS)
 retrain-check: ## manifest drift / real-kept pass / age triggers (exit 0/1/2)

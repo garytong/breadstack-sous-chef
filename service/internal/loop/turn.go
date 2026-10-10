@@ -52,6 +52,12 @@ const (
 	EscalateModelError = "model_error"
 	// EscalateMaxTokens: the reply stopped at max_tokens.
 	EscalateMaxTokens = "max_tokens"
+	// EscalateHiddenWrite: an op the model wrote was applied, but a field it
+	// set comes back `W_HIDDEN:<key>` with its gate closed — the merchant
+	// will not see the change (plan Q9: the student's silent wrong change
+	// `columnsPerRow`). The write stays; the fallback reads the result and
+	// its `hidden` member and decides what to tell the merchant or change.
+	EscalateHiddenWrite = "hidden_write"
 )
 
 // reasonRecheck answers a report_unsupported that escalated the turn: the
@@ -111,9 +117,25 @@ type turn struct {
 }
 
 // sendable is the request the next model call sends: t.next, without the
-// thinking blocks an anthropic fallback did not write (foreignBefore).
+// thinking blocks an anthropic fallback did not write (foreignBefore), and —
+// on a messages-compatible route — with the history stabilised
+// (prompt.StableHistory): earlier turns' user messages lose their <context>
+// and <candidate_fields> blocks, only the turn being answered keeps its own.
+// The student's prompt then grows by the merchant's words per turn instead
+// of a page context (5–7k tokens each on a real site), and its KV prefix is
+// the same from one turn to the next up to the previous turn's user text.
+//
+// An anthropic route is sent the history as stored (README §3 "History"):
+// rewriting an earlier user message is a history edit, which Claude Sonnet
+// 5.5 / Opus 5.5 check against every replayed thinking block's signature
+// (preserved thinking — a 400 on accounts created on or after 2026-08-31),
+// and it would also move the automatic cache breakpoint's prefix every
+// turn, turning the history's cache reads (0.1× input) into fresh writes.
 func (t *turn) sendable() model.Request {
 	req := t.next
+	if t.backend.Kind() == config.RouteMessagesCompatible {
+		req.Messages = prompt.StableHistory(req.Messages)
+	}
 	if t.foreignBefore > 0 {
 		req.Messages = model.WithoutThinkingBefore(req.Messages, t.foreignBefore)
 	}
@@ -637,6 +659,10 @@ func (t *turn) resume(ctx context.Context, body api.ToolResultsRequest) error {
 	// failed asset pick, and a result the browser never sent, are not the
 	// model's doing and do not count.
 	refused := false
+	// hidden: an applied op set a field the merchant will not see
+	// (hiddenWrites) — the other trigger judged here; a refusal wins when
+	// both happen in one batch.
+	var hidden []string
 	for _, c := range t.pending.Calls {
 		if c.Server {
 			sr, ok := t.pending.serverResult(c.ID)
@@ -660,15 +686,33 @@ func (t *turn) resume(ctx context.Context, body api.ToolResultsRequest) error {
 		if !res.OK && isOp(c.Name) {
 			refused = true
 		}
+		if res.OK && t.canEscalate() {
+			hidden = append(hidden, hiddenWrites(t.compiled.Manifest, t.viewedPage(), c.Name, c.Input, res)...)
+		}
 	}
 	if err := t.appendResults(ctx, results); err != nil {
 		return err // t.pending kept: failResume answers the batch from it
 	}
 	t.pending = nil
-	if refused && t.canEscalate() {
+	switch {
+	case !t.canEscalate():
+	case refused:
 		t.wantEscalate = EscalateToolError
+	case len(hidden) > 0:
+		t.r.d.Logf("loop: turn %s: hidden write(s) %v on route %s", t.id, hidden, t.backend.Name())
+		t.wantEscalate = EscalateHiddenWrite
 	}
 	return nil
+}
+
+// viewedPage is the page of the turn's context ("" when the turn was rebuilt
+// from storage, which keeps no context, or the context names none).
+func (t *turn) viewedPage() string {
+	tc, err := prompt.ParseContext(t.req.Context)
+	if err != nil {
+		return ""
+	}
+	return tc.Page
 }
 
 // traceToolResult records one browser result in the trace as a tool.result

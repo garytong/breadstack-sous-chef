@@ -38,8 +38,8 @@ Row (a superset of the thermometer log row, so dataset.to_hf copies over):
 candidate_fields) rebuilds it exactly (dataset.to_hf reads only the rebuild).
 
 Candidate fields (`--fields-context auto|on|off`, LAB.md §5): a route with
-`fields_context` on (the default for the student's `messages-compatible`
-kind, README §5) gets a `<candidate_fields>` block in the user turn. The
+`fields_context` on (the default for every route kind since 2026-10-10,
+README §5) gets a `<candidate_fields>` block in the user turn. The
 collector cannot see the prompt, so the SERVICE says: `GET /version` states
 each route's `{kind, fields_context, fallback}` (`route_info`, by name, and
 `default_route`) and `turn.done` carries the turn's (`route.fields_context`). `auto` (the default) follows /version; `on` /
@@ -537,6 +537,12 @@ def tool_results_for(calls: list[dict], engine_result: dict) -> list[dict]:
             item["warnings"] = [str(w) if isinstance(w, str) else str(w.get("code") or w) for w in r["warnings"]]
         if r.get("written"):
             item["written"] = list(r["written"])
+        if item["ok"]:
+            # The browser's `hidden: [{key, by, byValue}]` (shared contract 4;
+            # launcher client/turns.js wireHidden), only when non-empty.
+            hidden = render.wire_hidden(r.get("hidden"))
+            if hidden:
+                item["hidden"] = hidden
         section_id = r.get("sectionId") or (claims.get(str(call.get("id"))) if isinstance(claims, dict) else None)
         if section_id:
             item["sectionId"] = str(section_id)
@@ -648,7 +654,8 @@ class TurnRecorder:
 def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = None, sample: int = 1,
              assets: Iterable[dict] = (), verifier: Callable[[dict, dict], Any] | None = None,
              max_batches: int = MAX_BATCHES, build_id: str | None = None, tools: list | None = None,
-             store_id: str = "lab", fresh_conversation: bool = True, fields: Any | None = None) -> dict:
+             store_id: str = "lab", fresh_conversation: bool = True, fields: Any | None = None,
+             site_prefix: str = "lab-") -> dict:
     """Ask the service one case once, emulating the browser, and return the
     log row. Never raises for a service answer: errors are rows with
     status "error" (resumable).
@@ -668,11 +675,17 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
     read. None = the route sends none (an Anthropic route). The service has
     the last word: a `turn.done` whose `fields_context` says the opposite
     raises FieldsContextMismatch (the one exception this function raises for
-    a service answer — such a row would log a prompt the model never read)."""
+    a service answer — such a row would log a prompt the model never read).
+
+    `site_prefix` (default `lab-`; it must start with `lab-`, the lab's own
+    site ids) lets two runs of the same rows — a baseline and a candidate
+    revision sharing one database — keep separate conversations."""
+    if not site_prefix.startswith("lab-"):
+        raise ValueError(f"site_prefix {site_prefix!r}: the lab only uses its own site ids (lab-…)")
     case_id = str(case.get("id"))
     context = render.turn_context(case)  # the object sent, logged (row.context) and rendered — one and the same
     text = str(case.get("request") or "")
-    site_id = f"lab-{case_id}"
+    site_id = f"{site_prefix}{case_id}"
     build_id = build_id or client.build_id
     body = {"siteId": site_id, "storeId": store_id, "manifestHash": case.get("manifest_hash"), "buildId": build_id,
             "context": context, "text": text}

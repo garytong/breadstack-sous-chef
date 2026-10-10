@@ -164,7 +164,7 @@ func TestReportAs_AnthropicRoute(t *testing.T) {
 	if got := usageModels(hy.st.usageRows()); got != "house-claude,claude-sonnet-5-5" {
 		t.Errorf("usage row models = %s", got)
 	}
-	if got := doneJSON(t, last(evs), "route"); got != `{"fallback":null,"fields_context":false,"model":"house-claude","name":"named"}` {
+	if got := doneJSON(t, last(evs), "route"); got != `{"fallback":null,"fields_context":true,"model":"house-claude","name":"named"}` {
 		t.Errorf("route = %s", got)
 	}
 	reqs := hy.claude.Requests()

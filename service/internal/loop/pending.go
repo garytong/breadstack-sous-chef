@@ -139,7 +139,8 @@ func (p *pendingDoc) suspendedEvent() map[string]any {
 // browserResult turns one browser-reported outcome into the tool_result the
 // model reads: the engine's {code,message,key} with is_error on failure; for
 // pick_asset the chosen asset {public_url, alt, srcset}; otherwise
-// {ok, written, warnings, sectionId}.
+// {ok, written, warnings, hidden, sectionId} (keys sorted; `hidden` =
+// [{by, byValue, key}], contract 4, only when the browser sent entries).
 func browserResult(name string, res api.ToolResult) model.ToolResult {
 	if !res.OK {
 		e := res.Error
@@ -162,6 +163,9 @@ func browserResult(name string, res api.ToolResult) model.ToolResult {
 	}
 	if len(res.Warnings) > 0 {
 		out["warnings"] = res.Warnings
+	}
+	if gates := parseHidden(res.Hidden); len(gates) > 0 {
+		out["hidden"] = hiddenDoc(gates)
 	}
 	if res.SectionID != "" {
 		out["sectionId"] = res.SectionID

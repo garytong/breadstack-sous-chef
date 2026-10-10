@@ -3,7 +3,7 @@
 One directory per captured turn, each the REAL `sous-chef` binary (built from `service/cmd/sous-chef`, `BUILD_ID lab-e2e`)
 talking to `tests/fake_model.py` over a `messages-compatible` route (`auth: none`, `stream: false`), with the lab's own
 collector (`souschef_lab.collect.run_case`) as the browser and the real engine (`headless.mjs`) applying the ops.
-No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_real.py`.
+No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_real.py`. Re-captured 2026-10-10 (`--from fixtures/prompt/real`) after the wave-2 service changes: new system[0]/system[1]/tools, the fields-context block re-ranked; everything else byte-identical (docs/LAB.md §10 "Deferred", prompt-parity note). Re-captured once more the same day after the verify pass's rule/tool wording and the gallery alias: only `system` and `tools` moved.
 
 ```
 <capture>/

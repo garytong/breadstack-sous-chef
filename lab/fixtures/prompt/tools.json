@@ -12,7 +12,7 @@
      "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
      "properties": {
       "kind": {
-       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
        "enum": [
         "section",
         "global",
@@ -123,7 +123,7 @@
      "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
      "properties": {
       "kind": {
-       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
        "enum": [
         "section",
         "global",
@@ -183,7 +183,7 @@
      "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
      "properties": {
       "kind": {
-       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
        "enum": [
         "section",
         "global",
@@ -243,7 +243,7 @@
      "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
      "properties": {
       "kind": {
-       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
        "enum": [
         "section",
         "global",
@@ -492,7 +492,7 @@
      "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
      "properties": {
       "kind": {
-       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
        "enum": [
         "section",
         "global",
@@ -528,7 +528,7 @@
    "type": "object"
   },
   "name": "lookup_fields",
-  "description": "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, and the list it belongs to; plus the container's lists. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate."
+  "description": "Look up the editable fields of a target (or a manifest container) before writing: returns each matching field's key, type, label, enum (+labels), min/max/step, default, unset_value, gates (if/hide), ro (derived, read-only), ref, keyed_by, companions, the list it belongs to and its panel; plus the container's lists. A field's panel is a global panel name you may pass as target.panel, EXCEPT a details panel (…DetailsPanel, …DetailPanel): that is where the editor shows a list row or keyed key, never a target panel — write it with edit_list update on its list, or set_fields with the dotted key on its own target. Narrow with query (key prefix, camelCase word, label substring or list key), keys (exact keys, aliases and dotted keyed keys included) or list (that list's row fields). Compact and capped — refine rather than paginate."
  },
  {
   "input_schema": {
@@ -606,7 +606,7 @@
      "description": "What is edited: a section on a page, the merged global settings, the branding slice, or a page's own options.",
      "properties": {
       "kind": {
-       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography…); branding = identity, age gate, location picker; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
+       "description": "section = one section row on a page; global = site-wide settings (header, footer, product cards, typography, Branding panel BrandingSection: store name, logo, favicon…); branding = ONLY age gate, location picker, certifications; page = a page's own options (plus \"published\"). Page \"seo\" is the SEO panel.",
        "enum": [
         "section",
         "global",
@@ -655,6 +655,22 @@
     "reason": {
      "description": "Plain-language reason, one or two sentences, merchant-facing.",
      "type": "string"
+    },
+    "where": {
+     "description": "Optional: where the merchant makes this change — the place system rules name for each value (\"What Sous Chef cannot change\"). The browser shows a link there. Use \"support\" when no other value fits.",
+     "enum": [
+      "domain",
+      "sites",
+      "pages",
+      "assets",
+      "seo",
+      "themes",
+      "products",
+      "categories",
+      "brands",
+      "support"
+     ],
+     "type": "string"
     }
    },
    "required": [
@@ -663,7 +679,7 @@
    "type": "object"
   },
   "name": "report_unsupported",
-  "description": "Tell the merchant a request cannot be done by editing this site's configuration (no matching field or list after looking it up, or something outside the editor). Use it instead of guessing a key. The UI shows the reason; then say in one or two sentences that they can make the change in the editor or contact Breadstack support. Never fabricate an email address or claim to have sent anything.",
+  "description": "Tell the merchant a request cannot be done by editing this site's configuration (no matching field or list after looking it up, or something outside the editor). Use it instead of guessing a key, never together with an edit. Set `where` to the place the change is made; the UI shows the reason with a link there. Then say in one sentence where they can do it. Never fabricate an email address or claim to have sent anything.",
   "strict": true
  }
 ]

@@ -1,0 +1,4326 @@
+{
+ "vintage-account-approx": {
+  "page": "account",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-blog-approx": {
+  "page": "blog",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-cart-approx": {
+  "page": "cart",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-checkout-approx": {
+  "page": "checkout",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-faq": {
+  "page": "faq",
+  "template": "vintage",
+  "layout": "accordion",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-home": {
+  "page": "home",
+  "template": "vintage",
+  "layout": "hero-featured",
+  "sections": [
+   {
+    "id": "heroBanner",
+    "type": "heroBanner",
+    "title": "",
+    "enabled": true
+   },
+   {
+    "id": "featuredCategories",
+    "type": "featuredCategories",
+    "title": "FEATURED CATEGORIES",
+    "enabled": true
+   },
+   {
+    "id": "productCarousel-1",
+    "type": "productCarousel",
+    "title": "ITEMS ON SALE",
+    "enabled": true
+   },
+   {
+    "id": "contentBlock-1",
+    "type": "contentBlock",
+    "title": "FASTEST SAME DAY WEED DELIVERY",
+    "enabled": true
+   },
+   {
+    "id": "productCarousel-2",
+    "type": "productCarousel",
+    "title": "NEW ARRIVALS",
+    "enabled": true
+   },
+   {
+    "id": "testimonials",
+    "type": "testimonials",
+    "title": "HEAR IT FROM OUR HAPPY CUSTOMERS",
+    "enabled": true
+   },
+   {
+    "id": "gallery",
+    "type": "gallery",
+    "title": "FOLLOW US ON INSTAGRAM",
+    "enabled": true
+   },
+   {
+    "id": "blogSection",
+    "type": "blogSection",
+    "title": "OUR BLOG",
+    "enabled": true
+   }
+  ],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-login-approx": {
+  "page": "login",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-order-confirmation-approx": {
+  "page": "order-confirmation",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-privacy-policy-approx": {
+  "page": "privacy-policy",
+  "template": "vintage",
+  "layout": "default",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-product-details": {
+  "page": "product-details",
+  "template": "vintage",
+  "layout": "tab",
+  "sections": [
+   {
+    "id": "productCarousel-1",
+    "type": "productCarousel",
+    "title": "Related Products",
+    "enabled": true
+   }
+  ],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ },
+ "vintage-products": {
+  "page": "products",
+  "template": "vintage",
+  "layout": "filter-left",
+  "sections": [],
+  "categories": [
+   {
+    "slug": "new-flowers",
+    "name": "New Flowers"
+   },
+   {
+    "slug": "pre-rolls",
+    "name": "Pre-Rolls"
+   },
+   {
+    "slug": "vaporizers",
+    "name": "Vaporizers"
+   },
+   {
+    "slug": "edibles",
+    "name": "Edibles"
+   },
+   {
+    "slug": "concentrates",
+    "name": "Concentrates"
+   },
+   {
+    "slug": "thc",
+    "name": "THC"
+   },
+   {
+    "slug": "beverages",
+    "name": "Beverages"
+   },
+   {
+    "slug": "capsules",
+    "name": "Capsules"
+   },
+   {
+    "slug": "topicals",
+    "name": "Topicals"
+   },
+   {
+    "slug": "seeds",
+    "name": "Seeds"
+   },
+   {
+    "slug": "accessories",
+    "name": "Accessories"
+   },
+   {
+    "slug": "batteries-1",
+    "name": "Batteries"
+   },
+   {
+    "slug": "papers-rolling-supplies",
+    "name": "Papers / Rolling Supplies"
+   },
+   {
+    "slug": "devices",
+    "name": "Devices"
+   },
+   {
+    "slug": "socks",
+    "name": "Socks"
+   },
+   {
+    "slug": "shoes",
+    "name": "Shoes"
+   },
+   {
+    "slug": "t-shirt",
+    "name": "t Shirt"
+   },
+   {
+    "slug": "rolling-accessories",
+    "name": "Rolling Accessories"
+   },
+   {
+    "slug": "rolling-papers",
+    "name": "Rolling Papers"
+   },
+   {
+    "slug": "apparel",
+    "name": "Apparel"
+   },
+   {
+    "slug": "suckers",
+    "name": "Suckers"
+   },
+   {
+    "slug": "blunts",
+    "name": "Blunts"
+   },
+   {
+    "slug": "milled-flower",
+    "name": "Milled Flower"
+   },
+   {
+    "slug": "storage-containers",
+    "name": "Storage / Containers"
+   },
+   {
+    "slug": "cleaning-solutions",
+    "name": "Cleaning Solutions"
+   },
+   {
+    "slug": "dab-tools",
+    "name": "Dab tools"
+   },
+   {
+    "slug": "trays",
+    "name": "Trays"
+   },
+   {
+    "slug": "grinders",
+    "name": "Grinders"
+   },
+   {
+    "slug": "gift-cards",
+    "name": "Gift Cards"
+   },
+   {
+    "slug": "lighters",
+    "name": "Lighters"
+   },
+   {
+    "slug": "batteries",
+    "name": "Batteries"
+   },
+   {
+    "slug": "clones",
+    "name": "Clones"
+   },
+   {
+    "slug": "cbd",
+    "name": "CBD"
+   },
+   {
+    "slug": "sprays",
+    "name": "Sprays"
+   },
+   {
+    "slug": "pet-tinctures",
+    "name": "Pet Tinctures"
+   },
+   {
+    "slug": "herbal-tinctures",
+    "name": "Herbal Tinctures"
+   },
+   {
+    "slug": "flavoured-tinctures",
+    "name": "Flavoured Tinctures"
+   },
+   {
+    "slug": "unflavoured-tinctures",
+    "name": "Unflavoured Tinctures"
+   },
+   {
+    "slug": "tinctures",
+    "name": "Tinctures"
+   },
+   {
+    "slug": "suppositories",
+    "name": "Suppositories"
+   },
+   {
+    "slug": "lubricants",
+    "name": "Lubricants"
+   },
+   {
+    "slug": "soaps",
+    "name": "Soaps"
+   },
+   {
+    "slug": "lip-balms",
+    "name": "Lip Balms"
+   },
+   {
+    "slug": "bath-products",
+    "name": "Bath Products"
+   },
+   {
+    "slug": "transdermals",
+    "name": "Transdermals"
+   },
+   {
+    "slug": "sticks-roll-ons",
+    "name": "Sticks / Roll-ons"
+   },
+   {
+    "slug": "lotions",
+    "name": "Lotions"
+   },
+   {
+    "slug": "topical-oils",
+    "name": "Topical Oils"
+   },
+   {
+    "slug": "balms",
+    "name": "Balms"
+   },
+   {
+    "slug": "lozenges",
+    "name": "Lozenges"
+   },
+   {
+    "slug": "dissolvable",
+    "name": "Dissolvable"
+   },
+   {
+    "slug": "cooking-baking",
+    "name": "Cooking / Baking"
+   },
+   {
+    "slug": "savoury-snacks",
+    "name": "Savoury Snacks"
+   },
+   {
+    "slug": "frozen-treats",
+    "name": "Frozen Treats"
+   },
+   {
+    "slug": "sublingual-products",
+    "name": "Sublingual Products"
+   },
+   {
+    "slug": "hard-candy",
+    "name": "Hard Candy"
+   },
+   {
+    "slug": "chews",
+    "name": "Chews"
+   },
+   {
+    "slug": "capsules-tablets",
+    "name": "Capsules / Tablets"
+   },
+   {
+    "slug": "drinks",
+    "name": "Drinks"
+   },
+   {
+    "slug": "baked-goods",
+    "name": "Baked Goods"
+   },
+   {
+    "slug": "gummies",
+    "name": "Gummies"
+   },
+   {
+    "slug": "chocolates",
+    "name": "Chocolates"
+   },
+   {
+    "slug": "oil",
+    "name": "Oil"
+   },
+   {
+    "slug": "badder",
+    "name": "Badder"
+   },
+   {
+    "slug": "hash",
+    "name": "Hash"
+   },
+   {
+    "slug": "infused-flower",
+    "name": "Infused Flower"
+   },
+   {
+    "slug": "isolate",
+    "name": "Isolate"
+   },
+   {
+    "slug": "diamonds",
+    "name": "Diamonds"
+   },
+   {
+    "slug": "sauce",
+    "name": "Sauce"
+   },
+   {
+    "slug": "sugar",
+    "name": "Sugar"
+   },
+   {
+    "slug": "applicators",
+    "name": "Applicators"
+   },
+   {
+    "slug": "rso",
+    "name": "RSO"
+   },
+   {
+    "slug": "crumble",
+    "name": "Crumble"
+   },
+   {
+    "slug": "budder",
+    "name": "Budder"
+   },
+   {
+    "slug": "kief",
+    "name": "Kief"
+   },
+   {
+    "slug": "rosin",
+    "name": "Rosin"
+   },
+   {
+    "slug": "wax",
+    "name": "Wax"
+   },
+   {
+    "slug": "live-resin-concentrates",
+    "name": "Live Resin Concentrates"
+   },
+   {
+    "slug": "shatter",
+    "name": "Shatter"
+   },
+   {
+    "slug": "bundles",
+    "name": "Bundles"
+   },
+   {
+    "slug": "live-resin",
+    "name": "Live Resin"
+   },
+   {
+    "slug": "disposables",
+    "name": "Disposables"
+   },
+   {
+    "slug": "pods",
+    "name": "Pods"
+   },
+   {
+    "slug": "cartridges",
+    "name": "Cartridges"
+   },
+   {
+    "slug": "infused-pre-rolls",
+    "name": "Infused Pre-Rolls"
+   },
+   {
+    "slug": "pre-roll-packs",
+    "name": "Pre-Roll Packs"
+   },
+   {
+    "slug": "singles",
+    "name": "Singles"
+   },
+   {
+    "slug": "infused-bud",
+    "name": "Infused Bud"
+   },
+   {
+    "slug": "small-buds",
+    "name": "Small Buds"
+   },
+   {
+    "slug": "pre-ground",
+    "name": "Pre-Ground"
+   },
+   {
+    "slug": "shake-trim",
+    "name": "Shake / Trim"
+   },
+   {
+    "slug": "flower",
+    "name": "Flower"
+   }
+  ],
+  "customPages": [],
+  "nav": [],
+  "locations": [
+   {
+    "id": "69cc4e1e2376fba41898c9ed",
+    "name": "4601 Canada Way"
+   },
+   {
+    "id": "69cc4e7a5255f0ff5f3cb36a",
+    "name": "588 East Kent Avenue South"
+   }
+  ]
+ }
+}

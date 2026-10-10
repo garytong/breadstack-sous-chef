@@ -123,14 +123,20 @@ type TurnRequest struct {
 
 // ToolResult is one entry of POST /v1/turns/{turnId}/tool-results.
 type ToolResult struct {
-	ToolCallID string          `json:"toolCallId"`
-	OK         bool            `json:"ok"`
-	Error      *ToolError      `json:"error,omitempty"`
-	Warnings   []string        `json:"warnings,omitempty"`
-	Written    []string        `json:"written,omitempty"`
-	SectionID  string          `json:"sectionId,omitempty"`
-	Asset      *Asset          `json:"asset,omitempty"`
-	Raw        json.RawMessage `json:"-"`
+	ToolCallID string     `json:"toolCallId"`
+	OK         bool       `json:"ok"`
+	Error      *ToolError `json:"error,omitempty"`
+	Warnings   []string   `json:"warnings,omitempty"`
+	Written    []string   `json:"written,omitempty"`
+	SectionID  string     `json:"sectionId,omitempty"`
+	Asset      *Asset     `json:"asset,omitempty"`
+	// Hidden is the launcher's `hidden: [{key, by, byValue}]` next to the
+	// unchanged `W_HIDDEN:<key>` warnings (shared contract 4): which setting
+	// gates a written field and that setting's post-op value. Kept raw — a
+	// malformed member never refuses the body; the loop reads it leniently,
+	// forwards it to the model and judges hidden writes from it.
+	Hidden json.RawMessage `json:"hidden,omitempty"`
+	Raw    json.RawMessage `json:"-"`
 }
 
 // ToolError is the ops engine's `{code, message, key}` failure shape.

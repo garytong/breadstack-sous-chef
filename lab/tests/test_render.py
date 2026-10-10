@@ -72,6 +72,32 @@ def test_browser_result_ok_shape():
         ('{"ok":true,"warnings":["W_HIDDEN:k"],"written":["p"]}', False)
 
 
+def test_browser_result_hidden_shape():
+    """loop/hidden_test.go TestBrowserResultForwardsHidden: the same bytes."""
+    item = {"toolCallId": "t1", "ok": True, "written": ["maxWidth"], "warnings": ["W_HIDDEN:maxWidth"],
+            "hidden": [{"key": "maxWidth", "by": "slides[0].layout", "byValue": "split"}, {"by": "x"}]}
+    assert R.tool_result_content("set_fields", item) == (
+        '{"hidden":[{"by":"slides[0].layout","byValue":"split","key":"maxWidth"}],"ok":true,'
+        '"warnings":["W_HIDDEN:maxWidth"],"written":["maxWidth"]}', False)
+    assert R.tool_result_content("set_fields", {"toolCallId": "t1", "ok": True, "hidden": "nope"}) == ('{"ok":true}', False)
+    assert R.tool_result_content("set_fields", {"toolCallId": "t1", "ok": True, "hidden": [{"key": "k", "by": "b"}]}) == \
+        ('{"hidden":[{"by":"b","byValue":null,"key":"k"}],"ok":true}', False)
+
+
+def test_collector_posts_the_browser_hidden_member():
+    """client/turns.js wireHidden: {key, by, byValue} only, only when non-empty, only on ok."""
+    calls = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
+    engine = {"results": [
+        {"ok": True, "warnings": ["W_HIDDEN:maxWidth"], "written": ["p"],
+         "hidden": [{"key": "maxWidth", "by": "slides[0].layout", "byValue": "split", "rule": "conditional_on", "gate": {}}]},
+        {"ok": True, "hidden": []},
+        {"ok": False, "error": {"code": "E_FIELD", "message": "m"}, "hidden": [{"key": "k", "by": "b", "byValue": 1}]},
+    ]}
+    items = C.tool_results_for(calls, engine)
+    assert items[0]["hidden"] == [{"key": "maxWidth", "by": "slides[0].layout", "byValue": "split"}]
+    assert "hidden" not in items[1] and "hidden" not in items[2]
+
+
 def test_browser_result_error_shape():
     assert R.tool_result_content("set_fields", {"toolCallId": "t", "ok": False,
                                                 "error": {"code": "E_FIELD", "message": "no such field <x>", "key": "x"}}) == \

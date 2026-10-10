@@ -40,23 +40,61 @@ func fieldsRequest(h *harness, route, text string) api.TurnRequest {
 	return req
 }
 
-// anthropicBodySHA is the SHA-256 of the request an anthropic route sent for
-// the fixture turn at 3b15f6b, the commit before the candidate-fields
-// context existed (computed by running this test in a worktree of it). The
-// option must not move a byte of it: tools, system[0], system[1], the user
-// turn and the request fields are all inside.
-const anthropicBodySHA = "1e9379703358fa202cbd3972f004e64a26b8446f0a222a79e7d928045cb1a49e"
+// anthropicBodySHA is the SHA-256 of the request an anthropic route sends
+// for the fixture turn: tools, system[0], system[1], the user turn and the
+// request fields are all inside. History: first computed at 3b15f6b, the
+// commit before the candidate-fields context existed (1e937970…); moved on
+// purpose when system[1] gained the "Also called" lines
+// (prompt.writeAlsoCalled) — the body with the previous index still hashes
+// to 1e937970…, so nothing else moved; moved again when the seo page's
+// aliases lost the bare "google" (its "Also called" line now reads "meta
+// description, search results, google search") — with the previous
+// vocab.txt the body still hashes to 6d2dee6f…. Editing a container alias in
+// internal/fields/vocab.txt moves system[1] and so this hash
+// (docs/VOCABULARY.md); a term does not. Moved again on purpose 2026-10-10
+// by system[0] (prompt.Rules: context, the cannot-change list with `where`,
+// where things live, FAQ, W_HIDDEN) and the tool list (report_unsupported's
+// optional `where` enum and new text, the target.kind description of
+// branding): with the previous rules.go, opspec.go and toolgen.go the body
+// still hashes to c1c6fe00…; the new rules alone give b9cb1d7b…, the new
+// tools alone 1548c986…; system[1] and the user turn did not move. Moved
+// once more on purpose 2026-10-10 (plan Q7) because fields_context is now on
+// by default for anthropic routes: the user turn gains the candidate-fields
+// block (the golden hero-body-text block, the same bytes the student gets);
+// tools, system and every request field are unchanged — the same route
+// with fields_context "off" still hashes to anthropicBodySHANoBlock.
+// Moved again on purpose 2026-10-10 (the verify pass): system[0] names the
+// SEO keys, the undo / list-update / FAQ / W_HIDDEN wording; the tools'
+// lookup_fields panel note and report_unsupported's "use support"; system[1]'s
+// "Also called" gallery line gains "instagram feed" (vocab.txt). With the
+// previous rules.go, opspec.go, toolgen.go and vocab.txt the bodies still hash
+// to 068c1bdf… / 2a501c2a…; the new vocab.txt alone gives 224101af… /
+// 9395c03b…; the user turn's block did not move.
+const (
+	anthropicBodySHA        = "32b026b756c8be963fb87fbb3f220b8fb7a6895ff4ebec80589547b78d70c4c2"
+	anthropicBodySHANoBlock = "480416c41637df970920fce0ece8e59dfffe3a1572204b65f232dec0c4da0ab9"
+)
 
 func TestFieldsContext_AnthropicRequestIsByteIdentical(t *testing.T) {
-	h := newHarness(t, nil, modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("ok")}}))
-	h.start(fieldsRequest(h, "", fieldsHeroText))
-	reqs := h.fake.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("%d requests", len(reqs))
-	}
-	sum := sha256.Sum256(reqs[0].Raw)
-	if got := hex.EncodeToString(sum[:]); got != anthropicBodySHA {
-		t.Fatalf("anthropic request body changed: sha256 %s, want %s (%d bytes)", got, anthropicBodySHA, len(reqs[0].Raw))
+	for _, tc := range []struct {
+		name   string
+		routes map[string]config.Route
+		want   string
+	}{
+		{"default (fields_context unset = on)", nil, anthropicBodySHA},
+		{"fields_context off", map[string]config.Route{"default": {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-sonnet-5-5",
+			MaxTokens: 1024, Effort: "medium", FieldsContext: config.FieldsContextOff}}, anthropicBodySHANoBlock},
+	} {
+		h := newHarnessRoutes(t, tc.routes, nil, modeltest.Reply(modeltest.Message{Content: []modeltest.Block{modeltest.Text("ok")}}))
+		h.start(fieldsRequest(h, "", fieldsHeroText))
+		reqs := h.fake.Requests()
+		if len(reqs) != 1 {
+			t.Fatalf("%s: %d requests", tc.name, len(reqs))
+		}
+		sum := sha256.Sum256(reqs[0].Raw)
+		if got := hex.EncodeToString(sum[:]); got != tc.want {
+			t.Errorf("%s: anthropic request body changed: sha256 %s, want %s (%d bytes)", tc.name, got, tc.want, len(reqs[0].Raw))
+		}
 	}
 }
 
@@ -167,11 +205,13 @@ func TestFieldsContext_CompatRouteCarriesTheBlock(t *testing.T) {
 	}
 }
 
-func TestFieldsContext_AnthropicUserTurnHasNoBlock(t *testing.T) {
+// Since 2026-10-10 (plan Q7) an anthropic route that does not say
+// otherwise carries the block too: the same bytes the student gets.
+func TestFieldsContext_AnthropicUserTurnCarriesTheBlockByDefault(t *testing.T) {
 	h := newHarnessRoutes(t, studentRoute, nil, okReplies(1)...)
 	h.start(fieldsRequest(h, "default", fieldsHeroText))
 	got := userTexts(t, h.fake.Requests()[0])
-	if len(got) != 1 || got[0] != plainUserTurn(t, fieldsHeroText) {
+	if len(got) != 1 || got[0] != heroUserTurn(t) {
 		t.Fatalf("user turn = %q", got)
 	}
 }
@@ -183,7 +223,7 @@ func TestFieldsContext_Options(t *testing.T) {
 		"claude-on":   {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-sonnet-5-5", MaxTokens: 1024, FieldsContext: config.FieldsContextOn},
 		"claude-off":  {Kind: config.RouteAnthropic, Auth: config.AuthAPIKey, Model: "claude-sonnet-5-5", MaxTokens: 1024, FieldsContext: config.FieldsContextOff},
 	}
-	for route, on := range map[string]bool{"student-off": false, "student-on": true, "claude-on": true, "claude-off": false, "opus": false} {
+	for route, on := range map[string]bool{"student-off": false, "student-on": true, "claude-on": true, "claude-off": false, "opus": true} {
 		h := newHarnessRoutes(t, routes, nil, okReplies(1)...)
 		h.start(fieldsRequest(h, route, fieldsHeroText))
 		want := plainUserTurn(t, fieldsHeroText)
@@ -196,8 +236,12 @@ func TestFieldsContext_Options(t *testing.T) {
 	}
 }
 
-// Every new user text gets its own block; the turns already stored are
-// replayed as they were sent, whichever route the later turn runs on.
+// Every new user text gets its own block. Storage keeps each user message
+// as it was built (context + block + text); what a later turn REPLAYS depends
+// on its route: a messages-compatible route sends the earlier turns' request
+// text only (prompt.StableHistory), an anthropic route the stored history
+// byte for byte (a history edit would break Claude's preserved thinking and
+// its cache prefix — turn.sendable).
 func TestFieldsContext_ConversationContinuation(t *testing.T) {
 	h := newHarnessRoutes(t, studentRoute, nil, okReplies(3)...)
 	const second = "Please hide Shop from the header nav (the header)."
@@ -216,20 +260,23 @@ func TestFieldsContext_ConversationContinuation(t *testing.T) {
 	}
 	wantSecond := "<context>\n" + compactJSON(t, fieldsHomeContext) + "\n</context>\n" + string(golden) + second
 
+	// Second turn on the student: the first turn replays as its text alone.
 	two := userTexts(t, reqs[1])
-	if len(two) != 2 || two[0] != first || two[1] != wantSecond {
+	if len(two) != 2 || two[0] != fieldsHeroText || two[1] != wantSecond {
 		t.Fatalf("second turn's user texts = %q", two)
 	}
 	if strings.Contains(two[1], "bodyColor") || strings.Count(two[1], "<candidate_fields>") != 1 {
 		t.Error("second turn's block is not its own")
 	}
 	// Third turn on an anthropic route: history verbatim (blocks included),
-	// the new text without one.
+	// and — fields_context on by default — the new text with its own block.
 	three := userTexts(t, reqs[2])
-	if len(three) != 3 || three[0] != first || three[1] != wantSecond || three[2] != plainUserTurn(t, third) {
+	wantThird := "<context>\n" + compactJSON(t, fieldsHomeContext) + "\n</context>\n<candidate_fields>\n"
+	if len(three) != 3 || three[0] != first || three[1] != wantSecond || !strings.HasPrefix(three[2], wantThird) ||
+		!strings.HasSuffix(three[2], "\n</candidate_fields>\n"+third) {
 		t.Fatalf("third turn's user texts = %q", three)
 	}
-	// Storage holds exactly what was sent, in order.
+	// Storage holds every user message as it was built, in order.
 	conv := h.st.turn(turn3.ID()).ConversationID
 	msgs, _ := h.st.ListMessages(context.Background(), conv, 0, 0)
 	if len(msgs) != 6 {

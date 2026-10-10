@@ -195,6 +195,52 @@ def test_rerender_gives_a_block_less_row_the_wire_s_user_turn(tmp_path):
     assert train.main(["--data", str(back), "--name", "t", "--output", str(tmp_path / "o"), "--fields-context", "off", "--dry-run"]) == 0
 
 
+def test_the_prefix_cli_is_the_captured_prefix():
+    """service/cmd/sous-chef-prefix prints system[0], system[1] and the tools
+    every captured model call carried (fixtures/prompt/, re-captured
+    2026-10-10) — so `rerender --system` writes the served bytes."""
+    need_go()
+    p = F.Prefix(MANIFEST)
+    fx = LAB / "fixtures" / "prompt"
+    assert p.rules == (fx / "system0.rules.txt").read_text(encoding="utf-8")
+    assert p.index == (fx / "system1.index.txt").read_text(encoding="utf-8")
+    assert p.tools == json.loads((fx / "tools.json").read_text(encoding="utf-8"))
+    assert p.manifest_hash == F.manifest_file_hash(MANIFEST) and p.index.startswith(F.INDEX_HEAD)
+    _, _, reqs = capture(WITHOUT)
+    assert all([b["text"] for b in r["system"]] == [p.rules, p.index] and r["tools"] == p.tools for r in reqs)
+
+
+def test_rerender_system_replaces_the_index_or_the_whole_prefix(tmp_path, capsys):
+    """`fields rerender --system index` swaps system[1] only (the rules the
+    row was collected under stay); `--system prefix` swaps system[0],
+    system[1] and the tools. The user turn, the answer and the rest of meta
+    are untouched either way, and the dataset manifest records the prefix."""
+    need_go()
+    case, plain_row, _ = capture(WITHOUT)
+    hf = D.to_hf(plain_row, case, system=("OLD RULES\n", F.INDEX_HEAD + "old index\n"), tools=[])
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "train.jsonl").write_text(json.dumps(hf, ensure_ascii=False) + "\n", encoding="utf-8")
+    p = F.Prefix(MANIFEST)
+    for mode, rules in (("index", "OLD RULES\n"), ("prefix", p.rules)):
+        out = tmp_path / mode
+        assert F.main(["rerender", "--data", str(data), "--manifest", str(MANIFEST), "--out", str(out),
+                       "--fields-context", "off", "--system", mode]) == 0
+        new = jsonl(out / "train.jsonl")[0]
+        assert new["messages"][0]["content"] == rules + p.index
+        assert new["messages"][1:] == hf["messages"][1:]
+        assert new["tools"] == (D.hf_tools(p.tools) if mode == "prefix" else hf["tools"])
+        assert new["meta"]["system_rerendered"] == mode
+        man = json.loads((out / "dataset-manifest.json").read_text())["system_prompt"]
+        assert man["rerendered"] == mode and man["system1_sha256"] == p.identity()["system1_sha256"]
+        assert man["rows_changed"] == {"rules": int(mode == "prefix"), "index": 1, "tools": int(mode == "prefix"), "any": 1}
+        assert f"system {mode} · rows changed" in capsys.readouterr().out
+    with pytest.raises(ValueError):
+        F.split_system("no index here")
+    with pytest.raises(SystemExit):  # --system needs the manifest
+        F.main(["rerender", "--data", str(data), "--out", str(tmp_path / "x"), "--fields-context", "off", "--system", "index"])
+
+
 def test_the_dataset_cli_renders_every_row_with_the_block_by_default(tmp_path, capsys):
     need_go()
     fx = V.load_fixture(TRACES / "set_field.contentBlock-1.title.json")

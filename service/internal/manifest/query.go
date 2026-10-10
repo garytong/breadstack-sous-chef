@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -29,9 +30,15 @@ const (
 type LookupRequest struct {
 	Target    *Target       `json:"target,omitempty"`
 	Container ContainerPath `json:"container,omitempty"`
-	// Query matches a key prefix, a camelCase word of the key, a list key, or
-	// a label substring (all case-insensitive).
+	// Query matches a key prefix, a camelCase word of the key, a list key, a
+	// label or help substring, or — word by word — the words of a key, label
+	// or help text (all case-insensitive).
 	Query string `json:"query,omitempty"`
+	// Readings are what the merchant vocabulary reads the query as ("site
+	// name" → "store name", "rounder" → "radius"): matched word by word
+	// after everything the query itself matches. Set by the server tool
+	// (toolgen, from internal/fields), never by the model.
+	Readings []string `json:"-"`
 	// Keys are exact field keys (mirror / alias / keyed / seo keys included).
 	Keys []string `json:"keys,omitempty"`
 	// List restricts the search to one list's item fields.
@@ -65,6 +72,10 @@ type FieldOut struct {
 	Suggested  []float64         `json:"suggested,omitempty"`
 	Help       string            `json:"help,omitempty"`
 	Via        string            `json:"via,omitempty"`
+	// Panel is where the field lives when the target does not say: the
+	// global panel of a field found on the merged global settings, or the
+	// details panel of a keyed field (categories.<slug>.<field>).
+	Panel string `json:"panel,omitempty"`
 }
 
 // ListOut is the compact per-list shape.
@@ -130,14 +141,14 @@ func (m *Manifest) LookupFields(req LookupRequest) (*LookupResult, error) {
 		items, panel := m.ItemFields(l)
 		res.Lists = []ListOut{listOut(m, req.List, l)}
 		for _, k := range SortedFieldKeys(items) {
-			if s, ok := scoreField(k, items[k], req.Query); ok {
-				matches = append(matches, scored{ref: FieldRef{Key: k, Spec: items[k], List: req.List, Via: "item", Panel: panel}, score: s})
+			if s, ok := scoreFieldReq(k, items[k], req); ok {
+				matches = append(matches, scored{ref: FieldRef{Key: k, Spec: items[k], List: req.List, Via: "item", Panel: m.itemPanel(l, k, panel)}, score: s})
 			}
 		}
 	default:
 		for _, k := range SortedFieldKeys(r.Fields) {
-			if s, ok := scoreField(k, r.Fields[k], req.Query); ok {
-				matches = append(matches, scored{ref: FieldRef{Key: k, Spec: r.Fields[k], Via: "field"}, score: s})
+			if s, ok := scoreFieldReq(k, r.Fields[k], req); ok {
+				matches = append(matches, scored{ref: FieldRef{Key: k, Spec: r.Fields[k], Via: "field", Panel: m.ownerPanel(r, k, "")}, score: s})
 			}
 		}
 		if req.Query != "" {
@@ -150,15 +161,19 @@ func (m *Manifest) LookupFields(req LookupRequest) (*LookupResult, error) {
 					res.Lists = append(res.Lists, listOut(m, lk, l))
 				}
 				for _, k := range SortedFieldKeys(items) {
-					s, ok := scoreField(k, items[k], req.Query)
+					s, ok := scoreFieldReq(k, items[k], req)
 					if !ok && listHit {
 						s, ok = 5, true
 					}
 					if ok {
-						matches = append(matches, scored{ref: FieldRef{Key: k, Spec: items[k], List: lk, Via: "item", Panel: panel}, score: s + 1})
+						matches = append(matches, scored{ref: FieldRef{Key: k, Spec: items[k], List: lk, Via: "item", Panel: firstNonEmpty(m.itemPanel(l, k, panel), m.ownerPanel(r, "", lk))}, score: s + 1})
 					}
 				}
 			}
+			// … and the keyed fields (categories.<slug>.<field>,
+			// locationOverrides.<locationId>.<field>): their keys are
+			// written with a context id, so they are listed as templates.
+			matches = append(matches, m.keyedMatches(r, req)...)
 		}
 	}
 
@@ -237,7 +252,7 @@ func (m *Manifest) lookupKeys(r *Resolved, keys []string, list string) []scored 
 			if l, ok := r.Lists[list]; ok {
 				items, panel := m.ItemFields(l)
 				if f, ok := items[k]; ok {
-					out = append(out, scored{ref: FieldRef{Key: k, Spec: f, List: list, Via: "item", Panel: panel}})
+					out = append(out, scored{ref: FieldRef{Key: k, Spec: f, List: list, Via: "item", Panel: m.itemPanel(l, k, panel)}})
 					continue
 				}
 			}
@@ -250,12 +265,202 @@ func (m *Manifest) lookupKeys(r *Resolved, keys []string, list string) []scored 
 		for _, lk := range sortedKeys(r.Lists) {
 			items, panel := m.ItemFields(r.Lists[lk])
 			if f, ok := items[k]; ok {
-				out = append(out, scored{ref: FieldRef{Key: k, Spec: f, List: lk, Via: "item", Panel: panel}, score: 1})
+				out = append(out, scored{ref: FieldRef{Key: k, Spec: f, List: lk, Via: "item", Panel: m.itemPanel(r.Lists[lk], k, panel)}, score: 1})
 				break
 			}
 		}
 	}
 	return out
+}
+
+// scoreFieldReq is scoreField for a lookup request: the query, then its
+// word-by-word match, then the vocabulary's readings of it.
+func scoreFieldReq(key string, f *Field, req LookupRequest) (int, bool) {
+	if s, ok := scoreField(key, f, req.Query); ok {
+		return s, true
+	}
+	if f != nil && containsFold(f.Help, strings.TrimSpace(req.Query)) {
+		return 5, true
+	}
+	doc := fieldWords(key, f)
+	if wordsIn(queryWords(req.Query), doc) {
+		return 5, true
+	}
+	for _, r := range req.Readings {
+		if wordsIn(queryWords(r), doc) {
+			return 6, true
+		}
+	}
+	return 0, false
+}
+
+// queryWords are the lower-cased words of a query or reading, a plural
+// stripped ("buttons" → button).
+func queryWords(q string) []string {
+	var out []string
+	for _, w := range strings.FieldsFunc(q, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		for _, c := range camelWords(w) {
+			out = append(out, singular(strings.ToLower(c)))
+		}
+	}
+	return out
+}
+
+func singular(w string) string {
+	switch {
+	case len(w) > 4 && strings.HasSuffix(w, "ies"):
+		return w[:len(w)-3] + "y"
+	case len(w) > 3 && strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss"):
+		return w[:len(w)-1]
+	}
+	return w
+}
+
+// fieldWords are the words of a field's key, label and help.
+func fieldWords(key string, f *Field) map[string]bool {
+	out := map[string]bool{}
+	add := func(s string) {
+		for _, w := range queryWords(s) {
+			out[w] = true
+		}
+	}
+	add(key)
+	if f != nil {
+		add(f.Label)
+		add(f.Help)
+	}
+	return out
+}
+
+// wordsIn reports whether every word of q (at least one) is in doc.
+func wordsIn(q []string, doc map[string]bool) bool {
+	if len(q) == 0 {
+		return false
+	}
+	for _, w := range q {
+		if !doc[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// itemPanel is the details panel that edits a list row's key: "" for a key
+// the list's own item has and the panel does not (`enabled` on promotion
+// items is the owning list's toggle).
+func (m *Manifest) itemPanel(l *List, key, panel string) string {
+	if panel == "" || l == nil {
+		return panel
+	}
+	if d, ok := m.Detail(l.ItemRef); ok {
+		if _, in := d.Fields[key]; in {
+			return panel
+		}
+	}
+	if _, own := l.Item[key]; own {
+		return ""
+	}
+	return panel
+}
+
+// ownerPanel is the global panel a key (or, with list, a list) of a merged
+// global target comes from — the first in merge order, as resolveGlobal
+// keeps it; "" for any other target.
+func (m *Manifest) ownerPanel(r *Resolved, key, list string) string {
+	if r.Kind != "global" || len(r.Panels) < 2 {
+		return ""
+	}
+	for _, n := range r.Panels {
+		p := m.GlobalPanels[n]
+		if p == nil {
+			continue
+		}
+		if key != "" {
+			if _, ok := p.Fields[key]; ok {
+				return n
+			}
+		} else if _, ok := p.Lists[list]; ok {
+			return n
+		}
+	}
+	return ""
+}
+
+// keyedPlaceholder is the id segment a keyed field's template key shows.
+var keyedPlaceholder = map[string]string{
+	"CategoryDetailsPanel": "<categorySlug>",
+	"LocationDetailsPanel": "<locationId>",
+}
+
+// keyedMatches are the keyed fields of the target's kind that match the
+// query, as template keys ("categories.<categorySlug>.name"): the query
+// matches the field, or the prefix itself ("categor" → every category
+// field).
+func (m *Manifest) keyedMatches(r *Resolved, req LookupRequest) []scored {
+	table, ok := KeyedPrefixes[r.Kind]
+	if !ok || strings.TrimSpace(req.Query) == "" {
+		return nil
+	}
+	var out []scored
+	for _, prefix := range sortedKeys(table) {
+		panelName := table[prefix]
+		panel, ok := m.Detail(panelName)
+		if !ok || (r.Kind == "section" && !hasPrefixKey(r.Fields, prefix+".")) {
+			continue // a section type without per-location overrides
+		}
+		q := strings.ToLower(strings.TrimSpace(req.Query))
+		prefixWords := fieldWords(prefix, nil)
+		prefixHit := strings.HasPrefix(strings.ToLower(prefix), q) || wordsIn(queryWords(req.Query), prefixWords)
+		// The query names the prefix in its own words ("rename category"):
+		// a field it then matches — even through a vocabulary reading
+		// ("rename" → name) — ranks with the own-word matches (5), ahead
+		// of fields matched through a reading alone (6).
+		namesPrefix := false
+		for _, w := range queryWords(req.Query) {
+			namesPrefix = namesPrefix || prefixWords[w]
+		}
+		for _, fk := range SortedFieldKeys(panel.Fields) {
+			f := panel.Fields[fk]
+			if f.ReadOnly() {
+				continue
+			}
+			s, ok := scoreFieldReq(fk, f, req)
+			if !ok && prefixHit {
+				s, ok = 5, true
+			}
+			if !ok {
+				// "category name": the prefix's words and the field's
+				// together.
+				doc := fieldWords(prefix+" "+fk, f)
+				ok = wordsIn(queryWords(req.Query), doc)
+				s = 5
+			}
+			if ok && namesPrefix && s > 4 {
+				s = 4
+			}
+			if ok {
+				key := prefix + "." + keyedPlaceholder[panelName] + "." + fk
+				out = append(out, scored{ref: FieldRef{Key: key, Spec: f, Via: "keyed", Panel: panelName}, score: s + 1})
+			}
+		}
+	}
+	return out
+}
+
+func hasPrefixKey(fields map[string]*Field, prefix string) bool {
+	for k := range fields {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // scoreField ranks a field against a query: 0 exact key, 1 key prefix,
@@ -351,12 +556,22 @@ func fieldOut(ref FieldRef, help bool) FieldOut {
 	if ref.Via != "field" && ref.Via != "item" {
 		out.Via = ref.Via
 	}
+	out.Panel = ref.Panel
 	return out
 }
 
+// listOut is a list's compact shape. `update` is implicit on every list
+// whose rows have fields (the engine always takes it; the manifest's ops
+// list only the structural buttons), so it is advertised: a list showing
+// `ops: []` reads as read-only to the model.
 func listOut(m *Manifest, key string, l *List) ListOut {
 	items, _ := m.ItemFields(l)
-	return ListOut{Key: key, Ops: l.Ops, Orders: l.Orders, ItemRef: l.ItemRef, Depth: ListDepth(key), ItemKeys: SortedFieldKeys(items)}
+	keys := SortedFieldKeys(items)
+	ops := append([]string{}, l.Ops...)
+	if len(keys) > 0 && !slices.Contains(ops, "update") {
+		ops = append(ops, "update")
+	}
+	return ListOut{Key: key, Ops: ops, Orders: l.Orders, ItemRef: l.ItemRef, Depth: ListDepth(key), ItemKeys: keys}
 }
 
 // DescribeResult is describe_target's output: the container's lists, key

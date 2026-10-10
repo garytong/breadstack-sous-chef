@@ -21,9 +21,9 @@
 // int 2026-10-04 at 29/24). `lookup_fields` and `describe_target`, whose
 // members are all optional, are therefore `strict: false` too (Dispatch
 // validates them and answers self-correcting errors); the six remaining
-// tools are `strict: true` and spend 10 of the 24
+// tools are `strict: true` and spend 11 of the 24
 // (TestStrictOptionalParameterBudget; 12 before `keys` became required on
-// reset / restore_default). `tool_choice` is always `auto` (forced tool use
+// reset / restore_default, 10 until report_unsupported gained `where`). `tool_choice` is always `auto` (forced tool use
 // 400s on Claude Sonnet 5.5 / Opus 5.5), which the loop sets — not this
 // package.
 //
@@ -40,6 +40,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/breadstack/sous-chef/internal/fields"
 	"github.com/breadstack/sous-chef/internal/manifest"
 )
 
@@ -105,6 +106,46 @@ func RunsWhere(name string) (Runs, bool) {
 	return r, ok
 }
 
+// UnsupportedWhere is report_unsupported's `where` enum, shared contract 1
+// with the launcher (cookie-cutter launcher/client/src/sousChef/nav/
+// deepLinks.js WHERE, same order): the browser maps a value to a fixed
+// label and link. Which requests take which value is taught in system[0]
+// (prompt.Rules, "What Sous Chef cannot change").
+var UnsupportedWhere = []string{"domain", "sites", "pages", "assets", "seo", "themes", "products", "categories", "brands", "support"}
+
+// wherePlace names each `where` the way the launcher labels it (deepLinks.js
+// TAB_LINKS / deepLinkFor), for the reply the model writes after the call.
+var wherePlace = map[string]string{
+	"domain":     "Site Settings › Domain",
+	"sites":      "the Sites tab",
+	"pages":      "the Pages tab",
+	"assets":     "the Asset Library tab",
+	"seo":        "the SEO tab",
+	"themes":     "the Themes tab",
+	"products":   "the Products tab",
+	"categories": "the Categories tab",
+	"brands":     "the Brands tab",
+	"support":    "Breadstack support",
+}
+
+// whereDesc is the `where` member's description. The meaning of each value
+// is taught once, in system[0] (prompt.Rules), not repeated here.
+const whereDesc = "Optional: where the merchant makes this change — the place system rules name for each value (\"What Sous Chef cannot change\"). The browser shows a link there. Use \"support\" when no other value fits."
+
+// NormalizeWhere returns v as a member of UnsupportedWhere (trimmed, lower
+// case, like the browser's normalizeWhere); ok is false for anything else.
+func NormalizeWhere(v any) (string, bool) {
+	s, isStr := v.(string)
+	if !isStr {
+		return "", false
+	}
+	s = strings.ToLower(strings.TrimSpace(s))
+	if _, ok := wherePlace[s]; !ok {
+		return "", false
+	}
+	return s, true
+}
+
 // EchoedToBrowser reports whether a server tool's call is also emitted as a
 // tool.call event (report_unsupported only).
 func EchoedToBrowser(name string) bool { return name == ReportUnsupported }
@@ -162,6 +203,9 @@ func Dispatch(m *manifest.Manifest, name string, input json.RawMessage) (res Res
 		if err := unmarshalInput(input, &req); err != nil {
 			return errResult("E_OP", err.Error()), true
 		}
+		// The merchant vocabulary's readings of the query ("site name" →
+		// "store name"), matched after the query itself.
+		req.Readings = fields.QueryReadings(req.Query)
 		out, err := m.LookupFields(req)
 		if err != nil {
 			return queryErr(err), true
@@ -184,6 +228,7 @@ func Dispatch(m *manifest.Manifest, name string, input json.RawMessage) (res Res
 		var req struct {
 			Reason     string `json:"reason"`
 			ManualHint string `json:"manual_hint"`
+			Where      any    `json:"where"`
 		}
 		if err := unmarshalInput(input, &req); err != nil {
 			return errResult("E_OP", err.Error()), true
@@ -191,11 +236,17 @@ func Dispatch(m *manifest.Manifest, name string, input json.RawMessage) (res Res
 		if strings.TrimSpace(req.Reason) == "" {
 			return errResult("E_OP", "report_unsupported needs a reason"), true
 		}
-		return jsonResult(map[string]any{
-			"ok":                true,
-			"shown_to_merchant": true,
-			"next":              "Tell the merchant in one or two sentences that this cannot be changed here and that they can make the change in the editor or contact Breadstack support. Do not invent contact details.",
-		}), true
+		out := map[string]any{"ok": true, "shown_to_merchant": true}
+		if where, ok := NormalizeWhere(req.Where); ok {
+			out["where"] = where
+			out["next"] = "Tell the merchant in one sentence that Sous Chef cannot change this here and that it is done in " + wherePlace[where] + " (the link is shown with your reply). Do not invent contact details."
+		} else {
+			// No `where`, or one outside the enum (a non-strict route): the
+			// browser shows the reason without a link (deepLinks.js
+			// normalizeWhere → null), so the reply names no place.
+			out["next"] = "Tell the merchant in one or two sentences that this cannot be changed here and that they can make the change in the editor or contact Breadstack support. Do not invent contact details."
+		}
+		return jsonResult(out), true
 	}
 	return Result{}, false
 }

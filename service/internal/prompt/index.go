@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/breadstack/sous-chef/internal/fields"
 )
 
 // Index is system[1]: a map of one manifest the model can navigate with
@@ -177,6 +179,8 @@ func RenderIndex(raw []byte) (Index, error) {
 	for _, id := range sortedKeys(m.Details) {
 		writeContainer(&sb, "d", id, stripItemPrefix(m.Details[id]), false)
 	}
+
+	writeAlsoCalled(&sb, &m, canon)
 
 	sb.WriteString("\n## Pinned (built-in) sections: page → sectionId; * = reorderable row of the page's sections list, others are virtual\n")
 	pages := make([]string, 0, len(Pinned))
@@ -371,3 +375,53 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 func keysOf[V any](m map[string]V) []string { return sortedKeys(m) }
+
+// alsoCalledMax caps the aliases printed per container (vocab.txt order is
+// the priority): the section costs ≈ +315 tokens (Qwen3.5 tokenizer) on
+// the snapshot, 1,274 bytes.
+const alsoCalledMax = 3
+
+// writeAlsoCalled prints the merchant vocabulary's container aliases
+// (internal/fields vocab.txt) for the containers this manifest has: the
+// words merchants use for a panel or section that its id does not say
+// ("site name" → g:BrandingSection). The candidate-fields retrieval reads
+// the same table, so the index and the block agree. Section aliases print
+// under the canonical type only; fields.AlsoCalled picks which (page-view
+// entries, phrases the id already says and longer variants stay
+// retrieval-only).
+func writeAlsoCalled(sb *strings.Builder, m *manifest, canon map[string]string) {
+	aliases := fields.ContainerAliases()
+	var lines []string
+	for _, key := range sortedKeys(aliases) {
+		kind, id, _ := strings.Cut(key, ":")
+		var ok bool
+		switch kind {
+		case "s":
+			_, ok = m.Sections[id]
+			ok = ok && canon[id] == id
+		case "g":
+			_, ok = m.GlobalPanels[id]
+		case "b":
+			ok = m.Branding != nil
+		case "p":
+			_, ok = m.Pages[id]
+			if id == "seo" {
+				_, ok = m.Details["SeoPanel"]
+			}
+		}
+		if !ok {
+			continue
+		}
+		names := fields.AlsoCalled(key, alsoCalledMax)
+		if len(names) > 0 {
+			lines = append(lines, key+": "+strings.Join(names, ", "))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	sb.WriteString("\n## Also called (merchant words → container)\n")
+	for _, l := range lines {
+		sb.WriteString(l + "\n")
+	}
+}

@@ -360,16 +360,31 @@ func mirrorListKey(mirror *Mirror) string {
 	return from
 }
 
-// ItemFields returns the per-row fields of a list: the referenced details
-// panel's fields when ItemRef is set (their paths keep the `item.` prefix;
-// keys are already bare), else the list's own `item` map.
+// ItemFields returns the per-row fields of a list: its own `item` map, plus
+// the referenced details panel's fields when ItemRef is set (their paths
+// keep the `item.` prefix; keys are already bare), and that panel's name.
 func (m *Manifest) ItemFields(l *List) (map[string]*Field, string) {
 	if l == nil {
 		return nil, ""
 	}
 	if l.ItemRef != "" {
 		if d, ok := m.Detail(l.ItemRef); ok {
-			return d.Fields, strings.TrimPrefix(l.ItemRef, "details.")
+			panel := strings.TrimPrefix(l.ItemRef, "details.")
+			if len(l.Item) == 0 {
+				return d.Fields, panel
+			}
+			// The row keys the owning panel writes itself (`enabled` on
+			// promotion items and certifications) merged with the details
+			// panel's; the panel wins when both spell a key — the engine's
+			// own merge (cookie-cutter ops/targets.js resolveList).
+			merged := make(map[string]*Field, len(l.Item)+len(d.Fields))
+			for k, f := range l.Item {
+				merged[k] = f
+			}
+			for k, f := range d.Fields {
+				merged[k] = f
+			}
+			return merged, panel
 		}
 	}
 	return l.Item, ""

@@ -106,7 +106,119 @@ func UserText(raw json.RawMessage, text, candidates string) (string, error) {
 	if err := json.Compact(&compact, raw); err != nil {
 		return "", fmt.Errorf("context: %w", err)
 	}
-	return "<context>\n" + compact.String() + "\n</context>\n" + candidates + text, nil
+	return contextOpen + compact.String() + contextClose + candidates + text, nil
+}
+
+// Turn-block markers UserText writes (and StripTurnBlocks removes).
+const (
+	contextOpen     = "<context>\n"
+	contextClose    = "\n</context>\n"
+	candidatesOpen  = "<candidate_fields>\n"
+	candidatesClose = "\n</candidate_fields>\n"
+)
+
+// StripTurnBlocks is the merchant's request text of a stored user turn:
+// UserText's output without its leading `<context>` block and
+// `<candidate_fields>` block. Text that does not start with those blocks is
+// returned as is. The context line is recognised only as UserText writes it
+// — one line of compacted JSON object (json.Compact leaves no raw newline in
+// it) — and the candidates block only right after it (or opening the text
+// when there was no context), so a merchant who types the tags further on
+// keeps every byte.
+func StripTurnBlocks(text string) string {
+	rest := text
+	if strings.HasPrefix(rest, contextOpen) {
+		body := rest[len(contextOpen):]
+		end := strings.Index(body, contextClose)
+		if end < 0 {
+			return text
+		}
+		line := body[:end]
+		if strings.ContainsRune(line, '\n') || !strings.HasPrefix(line, "{") || !json.Valid([]byte(line)) {
+			return text
+		}
+		rest = body[end+len(contextClose):]
+	}
+	if strings.HasPrefix(rest, candidatesOpen) {
+		end := strings.Index(rest, candidatesClose)
+		if end < 0 {
+			return text
+		}
+		rest = rest[end+len(candidatesClose):]
+	}
+	if rest == "" {
+		return text
+	}
+	return rest
+}
+
+// StableHistory is msgs with the `<context>` and `<candidate_fields>`
+// blocks taken out of every user text turn except the conversation's LAST
+// one (the turn being answered, whose blocks describe the page as it is
+// now): earlier turns keep the merchant's request text only (README §3
+// "History"). The current turn's blocks stay in place on every call of the
+// turn, so the prompt prefix is identical from one call to the next, and
+// from one turn to the next up to the previous turn's user message — the
+// replayed history no longer grows by a page context per turn.
+//
+// Only user text blocks change: assistant content (thinking blocks and their
+// signatures, text, tool_use) and tool_result blocks are passed through
+// untouched. Storage is not rewritten; the caller's slices are not touched
+// (messages and blocks are copied only where a block changes).
+func StableHistory(msgs []anthropic.BetaMessageParam) []anthropic.BetaMessageParam {
+	last := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == anthropic.BetaMessageParamRoleUser && hasText(msgs[i].Content) {
+			last = i
+			break
+		}
+	}
+	var out []anthropic.BetaMessageParam
+	for i := 0; i < last; i++ {
+		m := msgs[i]
+		if m.Role != anthropic.BetaMessageParamRoleUser {
+			continue
+		}
+		var content []anthropic.BetaContentBlockParamUnion
+		for j, c := range m.Content {
+			if c.OfText == nil {
+				continue
+			}
+			stripped := StripTurnBlocks(c.OfText.Text)
+			if stripped == c.OfText.Text {
+				continue
+			}
+			if content == nil {
+				content = make([]anthropic.BetaContentBlockParamUnion, len(m.Content))
+				copy(content, m.Content)
+			}
+			tb := *c.OfText
+			tb.Text = stripped
+			content[j] = anthropic.BetaContentBlockParamUnion{OfText: &tb}
+		}
+		if content == nil {
+			continue
+		}
+		if out == nil {
+			out = make([]anthropic.BetaMessageParam, len(msgs))
+			copy(out, msgs)
+		}
+		m.Content = content
+		out[i] = m
+	}
+	if out == nil {
+		return msgs
+	}
+	return out
+}
+
+func hasText(blocks []anthropic.BetaContentBlockParamUnion) bool {
+	for _, c := range blocks {
+		if c.OfText != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // UserTurn is the user message that starts a turn; candidates is the
@@ -161,7 +273,9 @@ func Build(p Prefix, history []anthropic.BetaMessageParam, contextRaw json.RawMe
 
 // BuildWithFields is Build with the turn's candidate-fields block in the
 // new user turn (UserText). Only the NEW turn gets one: the history is
-// replayed as stored, with whatever block each earlier turn was sent.
+// built as stored, with whatever block each earlier turn was sent; a
+// messages-compatible route sends it through StableHistory (the loop's
+// turn.sendable), which leaves the earlier turns' blocks out.
 func BuildWithFields(p Prefix, history []anthropic.BetaMessageParam, contextRaw json.RawMessage, text, candidates string) (model.Request, error) {
 	if strings.TrimSpace(p.Rules) == "" || strings.TrimSpace(p.Index) == "" {
 		return model.Request{}, errors.New("prompt: rules and index are required")

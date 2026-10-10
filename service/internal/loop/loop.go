@@ -268,7 +268,6 @@ func (r *Runner) begin(ctx context.Context, req api.TurnRequest, compiled *regis
 	// conversation is the tail repaired below, with the stashed server
 	// results it holds.
 	superseded := r.superseded(ctx, req.SiteID, conv.ID, row, st.Superseded)
-	candidates := r.candidateFields(req, compiled, backend)
 	for attempt := 1; ; attempt++ {
 		history, tailSeq, err := r.history(ctx, conv.ID)
 		if err != nil {
@@ -278,6 +277,9 @@ func (r *Runner) begin(ctx context.Context, req api.TurnRequest, compiled *regis
 		// the history (a rebuild, by contrast, is about to answer its tail
 		// itself).
 		history, repair := r.repairHistory(ctx, conv.ID, row.ID, history, superseded)
+		// The block is read against the history this turn will build on: a
+		// follow-up ("yes please") is read with the turn before it.
+		candidates := r.candidateFields(req, compiled, backend, history)
 		next, err := prompt.BuildWithFields(compiled.Prefix, history, req.Context, req.Text, candidates)
 		if err != nil {
 			return nil, api.ErrBadRequest(err.Error())
@@ -360,13 +362,16 @@ func (r *Runner) begin(ctx context.Context, req api.TurnRequest, compiled *regis
 }
 
 // candidateFields is the candidate-fields block of this turn's user message
-// (README §3), "" when the route does not carry one (fields_context off —
-// every anthropic route unless it says otherwise) or nothing in the manifest
-// matches the text. It is computed from the turn's own context and text
-// only, once per turn, and becomes part of the stored user message: later
-// turns replay it as it was sent and get a block of their own. A context
-// the retrieval cannot read costs the block, never the turn.
-func (r *Runner) candidateFields(req api.TurnRequest, compiled *registry.Compiled, backend *model.Backend) string {
+// (README §3), "" when the route does not carry one (fields_context "off")
+// or nothing in the manifest matches the text. It is computed from the
+// turn's own context and text — and, for a follow-up, the conversation's
+// previous exchange (fields.CandidatesAfter: the merchant's previous text
+// and the assistant's last reply to it, read from history) — once per turn,
+// and becomes part of the stored user message: later turns replay the
+// stored message (a messages-compatible route without its blocks, see
+// turn.sendable) and get a block of their own. A context the retrieval
+// cannot read costs the block, never the turn.
+func (r *Runner) candidateFields(req api.TurnRequest, compiled *registry.Compiled, backend *model.Backend, history []anthropic.BetaMessageParam) string {
 	if !backend.FieldsContext() || compiled.Manifest == nil {
 		return ""
 	}
@@ -375,7 +380,57 @@ func (r *Runner) candidateFields(req api.TurnRequest, compiled *registry.Compile
 		r.d.Logf("loop: candidate fields skipped for site %s: %v", req.SiteID, err)
 		return ""
 	}
-	return fields.Candidates(compiled.Manifest, fc, strings.TrimSpace(req.Text), fields.Options{}).Block
+	return fields.CandidatesAfter(compiled.Manifest, fc, strings.TrimSpace(req.Text), previousExchange(history), fields.Options{}).Block
+}
+
+// previousExchange is the turn before this one as fields.CandidatesAfter
+// reads it: the merchant's last stored request text (its <context> and
+// <candidate_fields> blocks taken off, prompt.StripTurnBlocks) and the text
+// of the last assistant message after it that says something — the reply
+// the merchant saw last. Zero when the conversation has no earlier turn.
+func previousExchange(history []anthropic.BetaMessageParam) fields.Previous {
+	at := -1
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == anthropic.BetaMessageParamRoleUser && textOf(history[i]) != "" {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return fields.Previous{}
+	}
+	var user []string
+	for _, c := range history[at].Content {
+		if c.OfText != nil {
+			if s := strings.TrimSpace(prompt.StripTurnBlocks(c.OfText.Text)); s != "" {
+				user = append(user, s)
+			}
+		}
+	}
+	prev := fields.Previous{User: strings.Join(user, "\n")}
+	for i := len(history) - 1; i > at; i-- {
+		if history[i].Role == anthropic.BetaMessageParamRoleAssistant {
+			if s := textOf(history[i]); s != "" {
+				prev.Assistant = s
+				break
+			}
+		}
+	}
+	return prev
+}
+
+// textOf joins a message's text blocks (thinking, tool_use and tool_result
+// blocks are not text), trimmed.
+func textOf(m anthropic.BetaMessageParam) string {
+	var parts []string
+	for _, c := range m.Content {
+		if c.OfText != nil {
+			if s := strings.TrimSpace(c.OfText.Text); s != "" {
+				parts = append(parts, s)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // storeUnavailableStart is the exit of a Start whose row status could not

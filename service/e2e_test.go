@@ -293,7 +293,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	status, body, _ = e.do("GET", "/version", nil)
 	if status != 200 || !strings.Contains(string(body), `"build_id":"e2e"`) || !strings.Contains(string(body), `"opus"`) ||
-		!strings.Contains(string(body), `"route_info":{"default":{"kind":"anthropic","fields_context":false,"fallback":null,"report_as":null}`) || !strings.Contains(string(body), `"default_route":"default"`) {
+		!strings.Contains(string(body), `"route_info":{"default":{"kind":"anthropic","fields_context":true,"fallback":null,"report_as":null}`) || !strings.Contains(string(body), `"default_route":"default"`) {
 		t.Fatalf("version %d %s", status, body)
 	}
 	// Auth gate.
