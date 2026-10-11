@@ -89,6 +89,65 @@ type Route struct {
 	// id, else `model`. README §5/§6: the id must exist on the thermometer's
 	// rate card.
 	ReportAs string `json:"report_as,omitempty"`
+	// Prime ("on"|"off") lets the service prime the model server's prompt
+	// cache for this route (internal/model Primer, README §4 "Prompt-cache
+	// priming"): off the critical path, it sends the NEXT turn's prefix
+	// (system, tools, stable history) with a filler user message and
+	// max_tokens 1, so the server keeps a context checkpoint exactly where
+	// the next real request starts to differ. Messages-compatible routes
+	// only, and opt-in: unset = off. PrimeFillerTokens is calibrated for one
+	// server and template (the int Ollama + Qwen3.5 server, n_ubatch 1024);
+	// a route on another server (a lab A/B arm on gemma or qwen3.8, a
+	// scripted fake in a capture) must not get mis-sized primes it never
+	// asked for. An anthropic route rejects "on" (Claude's prompt cache
+	// needs no priming).
+	Prime string `json:"prime,omitempty"`
+	// PrimeFillerTokens is the length of the filler user message, in tokens
+	// (each "x" of "x x … x" is one token on the Qwen tokenizer). llama.cpp
+	// checkpoints a prompt of n tokens at n−n_ubatch (1024 on the int model
+	// server) and n−4; with the renderer's 9-token generation tail
+	// (`<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`) a
+	// filler of 1024−9 = 1015 puts the first checkpoint exactly at the
+	// filler message's `<|im_start|>user\n`. Change it with the server's
+	// batch size or the chat template. 0 = DefaultPrimeFillerTokens.
+	PrimeFillerTokens int `json:"prime_filler_tokens,omitempty"`
+	// FastFinish ("on"|"off"; any kind) ends a turn without its closing
+	// model call when a batch of browser ops comes back clean (README §4
+	// "Fast finish"): every call of the batch a browser op other than an
+	// edit_list add/duplicate, every result ok with no warnings, hidden
+	// gates, new section id or asset, no error earlier in the turn, no
+	// escalation. The service then says a fixed "Done" line
+	// (text.delta `source:"service"`) and turn.done carries
+	// `fast_finish:true`. Unset = off: the route behaves as before. Meant
+	// for the in-house route, whose closing reply after a clean batch adds
+	// a caveat or question 7% of the time; Claude's does in 25%, so an
+	// anthropic route normally leaves it off.
+	FastFinish string `json:"fast_finish,omitempty"`
+}
+
+// Prime values a route may name, and the default filler length.
+const (
+	PrimeOn                  = "on"
+	PrimeOff                 = "off"
+	DefaultPrimeFillerTokens = 1015
+	// MaxPrimeFillerTokens bounds prime_filler_tokens (a typo must not send
+	// a 100k-token prime).
+	MaxPrimeFillerTokens = 8192
+)
+
+// PrimeEnabled reports whether the service primes the model server's
+// prompt cache for this route: a messages-compatible route that says "on";
+// never an anthropic route.
+func (r Route) PrimeEnabled() bool {
+	return r.Kind == RouteMessagesCompatible && r.Prime == PrimeOn
+}
+
+// PrimeFiller is the filler length a prime on this route uses.
+func (r Route) PrimeFiller() int {
+	if r.PrimeFillerTokens > 0 {
+		return r.PrimeFillerTokens
+	}
+	return DefaultPrimeFillerTokens
 }
 
 // MaxReportAs bounds a route's `report_as`.
@@ -153,6 +212,18 @@ func ValidateFallbacks(routes map[string]Route) []error {
 		}
 	}
 	return errs
+}
+
+// FastFinish values a route may name.
+const (
+	FastFinishOn  = "on"
+	FastFinishOff = "off"
+)
+
+// FastFinishEnabled reports whether this route's turns may end without the
+// closing model call after a clean batch: only when it says "on".
+func (r Route) FastFinishEnabled() bool {
+	return r.FastFinish == FastFinishOn
 }
 
 // FieldsContext values a route may name.
@@ -394,10 +465,26 @@ func validateRoute(name string, r Route) error {
 	default:
 		return fmt.Errorf("MODEL_ROUTES[%s]: fields_context %q is not on|off", name, r.FieldsContext)
 	}
+	switch r.FastFinish {
+	case "", FastFinishOn, FastFinishOff:
+	default:
+		return fmt.Errorf("MODEL_ROUTES[%s]: fast_finish %q is not on|off", name, r.FastFinish)
+	}
 	if r.ReportAs != "" && !ValidReportAs(r.ReportAs) {
 		return fmt.Errorf("MODEL_ROUTES[%s]: report_as %q is not a plain token ([a-z0-9][a-z0-9._-]*, at most %d characters)", name, r.ReportAs, MaxReportAs)
 	}
+	switch r.Prime {
+	case "", PrimeOn, PrimeOff:
+	default:
+		return fmt.Errorf("MODEL_ROUTES[%s]: prime %q is not on|off", name, r.Prime)
+	}
+	if r.PrimeFillerTokens < 0 || r.PrimeFillerTokens > MaxPrimeFillerTokens {
+		return fmt.Errorf("MODEL_ROUTES[%s]: prime_filler_tokens %d is not within 0..%d", name, r.PrimeFillerTokens, MaxPrimeFillerTokens)
+	}
 	if r.Kind == RouteAnthropic {
+		if r.Prime == PrimeOn || r.PrimeFillerTokens != 0 {
+			return fmt.Errorf("MODEL_ROUTES[%s]: prime/prime_filler_tokens are only valid for messages-compatible routes", name)
+		}
 		if r.Thinking != "" {
 			return fmt.Errorf("MODEL_ROUTES[%s]: thinking is only valid for messages-compatible routes (Claude runs adaptive thinking)", name)
 		}

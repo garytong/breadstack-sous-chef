@@ -267,8 +267,10 @@ func TestStart_SupersedesSuspendedTurn(t *testing.T) {
 	h.start(h.request("z"))
 	reqs := h.fake.Requests()
 	assertReplayable(t, reqs[len(reqs)-1])
-	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 6 {
-		t.Errorf("third request replayed %d messages, want 6", n)
+	// 6 stored; the superseded batch's answer and the second turn's text go
+	// as one user message (prompt.MergeUserRuns).
+	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 5 {
+		t.Errorf("third request replayed %d messages, want 5", n)
 	}
 }
 

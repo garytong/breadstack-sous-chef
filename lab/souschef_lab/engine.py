@@ -496,6 +496,196 @@ class Engine:
         }
 
 
+SERVER_SCRIPT = Path(__file__).resolve().parent / "js" / "engine_server.mjs"
+
+
+class _Server:
+    """One `node js/engine_server.mjs` process: the engine booted once,
+    answering one request at a time (the pool hands a server to one caller)."""
+
+    def __init__(self, owner: "PersistentEngine"):
+        import queue as _q
+        self.owner = owner
+        env = dict(os.environ)
+        env["COOKIE_CUTTER_DIR"] = str(owner.cookie_cutter_dir)
+        env.setdefault("NODE_NO_WARNINGS", "1")
+        if owner.env:
+            env.update(owner.env)
+        t0 = time.monotonic()
+        self.proc = subprocess.Popen([owner.node, str(SERVER_SCRIPT), str(owner.client_root), str(owner.manifest_path)],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                     encoding="utf-8", cwd=str(owner.client_root), env=env, bufsize=1)
+        self.lines: "_q.Queue[str | None]" = _q.Queue()
+        self.err: list[str] = []
+        threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._pump_err, daemon=True).start()
+        ready = self._line(owner.boot_timeout_s)
+        if not ready or not json.loads(ready).get("ready"):
+            self.close()
+            raise EngineError(f"engine server did not start: {''.join(self.err)[-2000:]}", returncode=1, stderr="".join(self.err))
+        self.boot_s = time.monotonic() - t0
+        self.n = 0
+        self.broken = False
+
+    def _pump(self) -> None:
+        for line in self.proc.stdout:  # type: ignore[union-attr]
+            self.lines.put(line)
+        self.lines.put(None)
+
+    def _pump_err(self) -> None:
+        for line in self.proc.stderr:  # type: ignore[union-attr]
+            self.err.append(line)
+            del self.err[:-200]
+
+    def _line(self, timeout: float) -> str | None:
+        import queue as _q
+        try:
+            return self.lines.get(timeout=timeout)
+        except _q.Empty:
+            return None
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None and not self.broken
+
+    def request(self, state: dict, ops: list[dict], ctx: dict, timeout: float) -> tuple[int, dict]:
+        self.n += 1
+        with tempfile.TemporaryDirectory(prefix="souschef-engine-") as tmp:
+            out = Path(tmp) / "result.json"
+            line = json.dumps({"id": self.n, "state": state, "ops": ops, "ctx": ctx, "out": str(out)})
+            try:
+                self.proc.stdin.write(line + "\n")  # type: ignore[union-attr]
+                self.proc.stdin.flush()  # type: ignore[union-attr]
+            except (BrokenPipeError, OSError) as e:
+                self.broken = True
+                raise EngineError(f"engine server is gone: {e}; {''.join(self.err)[-1000:]}", returncode=1) from e
+            reply = self._line(timeout)
+            if reply is None:
+                self.broken = True
+                raise EngineError(f"engine server: no answer in {timeout}s (or it exited): {''.join(self.err)[-1000:]}",
+                                  returncode=1)
+            doc = json.loads(reply)
+            if doc.get("id") != self.n:
+                self.broken = True
+                raise EngineError(f"engine server answered request {doc.get('id')} for {self.n}", returncode=1)
+            if doc.get("exit") == 1:
+                raise EngineError(f"engine exit 1: {doc.get('error')}", returncode=1, stderr=str(doc.get("error")))
+            return int(doc.get("exit") or 0), json.loads(out.read_text(encoding="utf-8"))
+
+    def close(self) -> None:
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+            self.proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            self.proc.kill()
+
+
+class PersistentEngine(Engine):
+    """`Engine` with the engine booted once per server process instead of
+    once per call: a pool of up to `size` `js/engine_server.mjs` processes
+    (each answers one request at a time; a caller takes a free one, a new one
+    boots when none is free and the pool is not full). Same `run` contract,
+    same cache keys and the same fingerprint as `Engine`: the server runs
+    headless.mjs's steps on the same modules (tests/test_engine_server.py
+    holds the two byte-equal on real requests), so a cached answer is the
+    same answer whichever produced it. A request that crashes the engine
+    raises EngineError like headless.mjs's exit 1; a server that dies or
+    stops answering is replaced on the next call. `close()` ends the pool."""
+
+    def __init__(self, path: str | Path | None = None, *, size: int = 4, boot_timeout_s: float = 300.0, **kw):
+        super().__init__(path, **kw)
+        if not SERVER_SCRIPT.is_file():
+            raise EngineError(f"{SERVER_SCRIPT} is missing")
+        import queue as _q
+        self.size = max(1, int(size))
+        self.boot_timeout_s = boot_timeout_s
+        self._free: "_q.Queue[_Server]" = _q.Queue()
+        self._started = 0
+        self._pool_lock = threading.Lock()
+        self.server_boots: list[float] = []
+
+    def _take(self) -> _Server:
+        import queue as _q
+        try:
+            return self._free.get_nowait()
+        except _q.Empty:
+            pass
+        with self._pool_lock:
+            grow = self._started < self.size
+            if grow:
+                self._started += 1
+        if grow:
+            try:
+                srv = _Server(self)
+            except Exception:
+                with self._pool_lock:
+                    self._started -= 1
+                raise
+            with self._lock:
+                self.server_boots.append(srv.boot_s)
+            return srv
+        return self._free.get()
+
+    def _give(self, srv: _Server, ok: bool) -> None:
+        if ok and srv.alive():
+            self._free.put(srv)
+            return
+        srv.close()
+        with self._pool_lock:
+            self._started -= 1
+
+    def run(self, state: dict, ops: list[dict] | dict, ctx: dict | None = None, *, print_state: bool = False,
+            use_cache: bool = True) -> EngineResult:
+        ops_list = ops if isinstance(ops, list) else [ops]
+        ctx = GOLDEN_CTX if ctx is None else ctx
+        key_state = request_hash(state, ops_list, ctx, self.manifest_hash + ":state", self.fingerprint)
+        key_plain = request_hash(state, ops_list, ctx, self.manifest_hash, self.fingerprint)
+        key = key_state if print_state else key_plain
+        with self._lock:
+            self.calls += 1
+        if use_cache:
+            hit = self._cache_get(key)
+            if hit is not None:
+                return EngineResult.from_output(hit, returncode=0 if hit.get("ok") else 2, elapsed_s=0.0, cached=True)
+        srv = self._take()
+        t0 = time.monotonic()
+        try:
+            rc, full = srv.request(state, ops_list, ctx, self.timeout_s)
+        except EngineError:
+            self._give(srv, ok=srv.alive())  # an exit-1 answer leaves the server sound; a timeout does not
+            raise
+        except Exception:
+            self._give(srv, ok=False)
+            raise
+        self._give(srv, ok=True)
+        elapsed = time.monotonic() - t0
+        with self._lock:
+            self.boots += 1  # an engine evaluation (not a boot here; `server_boots` counts those)
+            self.boot_seconds.append(elapsed)
+        plain = {k: v for k, v in full.items() if k != "state"}
+        if use_cache:
+            self._cache_put(key_state, full)
+            self._cache_put(key_plain, plain)
+        return EngineResult.from_output(full if print_state else plain, returncode=rc, elapsed_s=elapsed)
+
+    def close(self) -> None:
+        import queue as _q
+        while True:
+            try:
+                srv = self._free.get_nowait()
+            except _q.Empty:
+                break
+            srv.close()
+        with self._pool_lock:
+            self._started = 0
+
+    def stats(self) -> dict:
+        d = super().stats()
+        d.update({"servers": self.size, "server_boots": len(self.server_boots),
+                  "server_boot_s_max": round(max(self.server_boots), 1) if self.server_boots else None})
+        return d
+
+
 def default_cache_dir() -> Path:
     return DATA_DIR / "engine-cache"
 

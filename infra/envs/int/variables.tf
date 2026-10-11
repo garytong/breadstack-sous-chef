@@ -165,8 +165,8 @@ variable "gpu_model_route" {
   default = {
     name         = "blueberry-muffin" # the in-house model's name (2026-10-04): the route a turn's `model` names, the drawer badge, and what usage rows report
     model        = "sous-chef"        # the Ollama model name inside the image (infrastructure name, like the thermometer's "sourdough")
-    max_tokens   = 4096
-    call_timeout = "180s"
+    max_tokens   = 1024               # 2026-10-10: real answers stay under ~450 tokens (eval p99 414); a runaway now hands off to Claude after ~25 s instead of ~110 s at 4096
+    call_timeout = "60s"              # 2026-10-10: was 180s; a warm call is <40 s even at the 1024 cap, and a stuck or cold call should hand off to Claude within a minute (60s was the pre-GPU default)
     temperature  = 0.3
     fallback     = "default"
   }

@@ -40,7 +40,9 @@ from typing import Iterable
 from . import render
 
 LAB_DIR = Path(__file__).resolve().parent.parent
-SERVICE_DIR = LAB_DIR.parent / "service"
+# SOUS_CHEF_SERVICE_DIR: another service tree (e.g. `git archive <deployed commit> service`), so the blocks, the
+# prefix and their recorded source identity are the DEPLOYED service's, not a working tree another workflow edits.
+SERVICE_DIR = Path(os.environ.get("SOUS_CHEF_SERVICE_DIR") or LAB_DIR.parent / "service")
 CACHE_DIR = Path(os.environ.get("SOUS_CHEF_LAB_CACHE") or LAB_DIR / ".cache") / "fields"
 BIN_ENV = "SOUS_CHEF_FIELDS_BIN"
 BIN_NAME = "sous-chef-fields"
@@ -146,8 +148,8 @@ def _go_binary(package: str, name: str, env_name: str, service: Path, cache: Pat
 
 # --- blocks -------------------------------------------------------------------------------------------------------------
 
-def _key(context: dict | None, text: str) -> str:
-    return render.compact_json([context, text])
+def _key(context: dict | None, text: str, previous: tuple[str, str] | None = None) -> str:
+    return render.compact_json([context, text] if not previous else [context, text, list(previous)])
 
 
 class Fields:
@@ -174,12 +176,14 @@ class Fields:
                 "manifest_file": str(self.manifest),
                 "manifest_file_sha256": hashlib.sha256(self.manifest.read_bytes()).hexdigest()}
 
-    def _run(self, turns: list[tuple[dict | None, str]]) -> list[str]:
+    def _run(self, turns: list[tuple]) -> list[str]:
         lines = []
-        for context, text in turns:
+        for context, text, *rest in turns:
             row: dict = {"text": text}
             if context is not None:
                 row["context"] = context
+            if rest and rest[0]:  # (previous user text, previous reply): fields.CandidatesAfter's follow-up rule
+                row["history"] = [{"user": rest[0][0], "assistant": rest[0][1]}]
             lines.append(render.compact_json(row) + "\n")
         p = subprocess.run([str(self.exe), "-manifest", str(self.manifest), "-jsonl"], input="".join(lines),
                            capture_output=True, text=True, encoding="utf-8", check=False)
@@ -190,16 +194,18 @@ class Fields:
             raise FieldsError(f"{BIN_NAME} answered {len(out)} of {len(turns)} turns")
         return out
 
-    def prime(self, turns: Iterable[tuple[dict | None, str]]) -> None:
+    def prime(self, turns: Iterable[tuple]) -> None:
         """Compute every turn not yet cached, in one process. A turn whose
         context the retrieval refuses gets "" (the service logs it and runs
-        the turn without a block); a manifest the CLI refuses raises."""
-        todo: dict[str, tuple[dict | None, str]] = {}
-        for context, text in turns:
+        the turn without a block); a manifest the CLI refuses raises. A turn
+        is (context, text) or (context, text, previous) — see `block`."""
+        todo: dict[str, tuple] = {}
+        for context, text, *rest in turns:
             text = render.go_trim_space(text or "")
-            k = _key(context, text)
+            previous = tuple(rest[0]) if rest and rest[0] else None
+            k = _key(context, text, previous)
             if k not in self._cache and k not in todo:
-                todo[k] = (context, text)
+                todo[k] = (context, text, previous) if previous else (context, text)
         if not todo:
             return
         keys, items = list(todo), list(todo.values())
@@ -220,11 +226,17 @@ class Fields:
         with self._lock:
             self._cache.update(zip(keys, blocks))
 
-    def block(self, context: dict | None, text: str) -> str:
+    def block(self, context: dict | None, text: str, previous: tuple[str, str] | None = None) -> str:
+        """The turn's block. `previous` = (the merchant's previous request
+        text, the assistant's last reply to it) for a turn that continues a
+        conversation: the service reads it as `fields.CandidatesAfter` does
+        (loop.previousExchange — a short follow-up such as "yes please" is
+        read with the turn before it); None = the conversation's first turn."""
         text = render.go_trim_space(text or "")
-        k = _key(context, text)
+        previous = tuple(previous) if previous and any(previous) else None
+        k = _key(context, text, previous)
         if k not in self._cache:
-            self.prime([(context, text)])
+            self.prime([(context, text, previous)])
         return self._cache[k]
 
 
@@ -346,11 +358,14 @@ def first_user(hf: dict) -> dict | None:
 
 def block_stats(rows: Iterable[dict]) -> dict:
     """How many built rows (dataset.to_hf's shape) carry the block in their
-    first user turn — what train.py records in run.json."""
+    SCORED user turn — the last one (a follow-up row's earlier user turns are
+    stripped to their text, prompt.StableHistory; a single-turn row's last is
+    its first) — what train.py records in run.json."""
     n = with_block = 0
     for r in rows:
         n += 1
-        u = first_user(r)
+        users = [m for m in r.get("messages") or [] if m.get("role") == "user"]
+        u = users[-1] if users else None
         with_block += bool(u and has_block(u.get("content")))
     return {"rows": n, "with_block": with_block}
 

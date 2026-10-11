@@ -46,6 +46,13 @@ const (
 	EventHeartbeat     = "heartbeat"
 )
 
+// TextSourceService is a text.delta's `source` when the service wrote the
+// text itself rather than the model: the fixed closing line of a turn that
+// ended without its closing model call (turn.done `fast_finish:true`,
+// README §4 "Fast finish"). A model's text.delta carries no `source`. The
+// launcher shows both alike; the lab's collector must not train on it.
+const TextSourceService = "service"
+
 // ManifestRegistry is the content-addressed manifest store (README §1, §1.1).
 //
 // POST /v1/manifests (hash computed server-side) uses ComputeRegistrar when
@@ -289,3 +296,30 @@ type OptOutStore interface {
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
+
+// Primer warms the in-house model server's prompt cache ahead of a
+// merchant's turn (README §4 "Prompt-cache priming"; loop.Runner implements
+// it). Every method returns at once — the work runs in the background and
+// never changes the response. Optional: a nil Deps.Primer is off.
+//
+// The PrimeDispatch each returns is closed once the prime's requests are on
+// the wire (or it was skipped or deferred); nil when nothing was scheduled.
+// The handler, having sent its complete response, waits on it (bounded by
+// PrimeHold) before returning: Cloud Run with request-based CPU throttles a
+// goroutine once no request is in flight.
+type Primer interface {
+	// ManifestRegistered: PUT/POST /v1/manifests succeeded for hash.
+	ManifestRegistered(hash string) PrimeDispatch
+	// ConversationOpened: GET /v1/conversations/{siteId} (the panel opening)
+	// with X-Manifest-Hash; conversationID "" when the site has none open.
+	ConversationOpened(siteID, conversationID, manifestHash string) PrimeDispatch
+	// ConversationEnded: DELETE /v1/conversations/{siteId} succeeded.
+	ConversationEnded(siteID, manifestHash string) PrimeDispatch
+}
+
+// PrimeDispatch is closed when a scheduled prime no longer needs the
+// instance's CPU (model.Dispatch); nil = nothing scheduled.
+type PrimeDispatch <-chan struct{}
+
+// PrimeHold bounds a handler's wait on a PrimeDispatch.
+const PrimeHold = 3 * time.Second

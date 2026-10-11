@@ -129,6 +129,9 @@ func serve(ctx context.Context, cfg *config.Config, getenv func(string) string) 
 	runner, err := loop.New(loop.Deps{
 		Store: st, Manifests: reg, Models: models, Usage: usageRec,
 		TurnTTL: cfg.TurnTTL, MaxConcurrent: cfg.MaxConcurrentTurns,
+		// Prompt-cache priming (README §4): acts only on routes with
+		// prime:"on" (opt-in; none by default).
+		Primer: model.NewPrimer(model.PrimerOptions{}),
 	})
 	if err != nil {
 		return err
@@ -154,6 +157,7 @@ func serve(ctx context.Context, cfg *config.Config, getenv func(string) string) 
 		Feedback:      &loop.Feedback{St: st},
 		OptOut:        loop.OptOut{St: st},
 		DB:            st,
+		Primer:        runner,
 	})
 
 	httpSrv := &http.Server{

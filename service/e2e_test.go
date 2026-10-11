@@ -777,8 +777,10 @@ func TestEndToEnd_SiteCheckAndSupersede(t *testing.T) {
 	// Turn C's request replayed a valid history; the conversation view lists the status.
 	reqs := e.fake.Requests()
 	lastReq := reqs[len(reqs)-1].Body["messages"].([]any)
-	if n := len(lastReq); n != 8 { // u a u(res) a | u a(pa1) u(superseded) | u
-		t.Fatalf("superseding turn replayed %d messages, want 8", n)
+	// Stored u a u(res) a | u a(pa1) u(superseded) | u; the superseded
+	// answer and C's text go as one user message (prompt.MergeUserRuns).
+	if n := len(lastReq); n != 7 {
+		t.Fatalf("superseding turn replayed %d messages, want 7", n)
 	}
 	status, body, _ = e.do("GET", "/v1/conversations/site-e2e", nil)
 	if status != 200 || !strings.Contains(string(body), `"status":"superseded"`) || !strings.Contains(string(body), turnC) {

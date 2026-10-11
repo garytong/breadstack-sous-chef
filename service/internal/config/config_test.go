@@ -279,3 +279,41 @@ func TestReportAsOption(t *testing.T) {
 		}
 	}
 }
+
+// Priming is opt-in: unset is off on every route kind.
+func TestRoutePrime(t *testing.T) {
+	load := func(routes string) (*Config, error) {
+		m := minimal()
+		m["MODEL_ROUTES"] = routes
+		m["MODEL_ROUTE_ALLOWLIST"] = "default"
+		return Load(env(m))
+	}
+	c, err := load(`{"default":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10},
+		"on":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10,"prime":"on"},
+		"off":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10,"prime":"off"},
+		"filler":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10,"prime":"on","prime_filler_tokens":500},
+		"claude":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10,"prime":"off"}}`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for name, want := range map[string]struct {
+		on     bool
+		filler int
+	}{"default": {false, DefaultPrimeFillerTokens}, "on": {true, DefaultPrimeFillerTokens}, "off": {false, DefaultPrimeFillerTokens}, "filler": {true, 500}, "claude": {false, DefaultPrimeFillerTokens}} {
+		r := c.ModelRoutes[name]
+		if r.PrimeEnabled() != want.on || r.PrimeFiller() != want.filler {
+			t.Errorf("%s: PrimeEnabled=%v PrimeFiller=%d, want %v %d", name, r.PrimeEnabled(), r.PrimeFiller(), want.on, want.filler)
+		}
+	}
+	for _, bad := range []string{
+		`{"default":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10,"prime":"yes"}}`,
+		`{"default":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10,"prime_filler_tokens":-1}}`,
+		`{"default":{"kind":"messages-compatible","url":"http://m","auth":"none","model":"m","max_tokens":10,"prime_filler_tokens":9000}}`,
+		`{"default":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10,"prime":"on"}}`,
+		`{"default":{"kind":"anthropic","auth":"api-key","model":"claude-sonnet-5-5","max_tokens":10,"prime_filler_tokens":1015}}`,
+	} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), "prime") {
+			t.Errorf("%s: err = %v, want a prime error", bad, err)
+		}
+	}
+}

@@ -39,7 +39,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import FIXTURES_DIR
+from . import FIXTURES_DIR, browser_defaults
 from .manifest import SECTION_PREFIX_FAMILIES, Container, Field, Manifest, lookup_section_type_id, section_type_id
 
 # pageSections.jsx:379-382 — the ten basic templates; `default` is NOT one
@@ -533,6 +533,85 @@ def _fill_defaults(target: dict, container: Container, *, prefix: str) -> None:
 _SENTINEL = object()
 
 
+# ── the probe fixture's placeholder copy ─────────────────────────────────────
+# The probe fixture names its list rows "Zq Fixture Bullet One", "Zq Fixture
+# Post Two" … (a marker its tests grep for). A real site never shows that: the
+# outline the browser sends carries row titles, so a training context full of
+# "Zq Fixture Column One" teaches the model a site nobody has (the FAQ fix of
+# 2026-10-10 removed the premium FAQ rows for the same reason). `humanize`
+# swaps every such title / name for plausible dispensary copy — strings only,
+# no row added, removed or reshaped, ids (`zq-cat-1` …) untouched — the same
+# copy the r4 F4/F5 author used, so their states are unchanged by it.
+HUMAN_ROWS: dict[tuple[str, str], list[str]] = {
+    ("heroBanner", "slides[0].bullets"): ["Lab-tested quality", "Same-day delivery"],
+    ("heroBanner", "slides[1].bullets"): ["Members earn points", "Curbside pickup"],
+    ("contentBlock-1", "items"): ["Locally grown", "Budtender picks", "Fair prices"],
+    ("contentBlock-1", "bullets"): ["Small-batch growers", "Hand-trimmed buds"],
+    ("contentBlock-2", "items"): ["Founded in 2019", "Family owned", "Community first"],
+    ("contentBlock-2", "bullets"): ["Locally owned", "Award-winning staff"],
+    ("contentBlock-3", "items"): ["Open 7 days", "Free parking", "Wheelchair accessible"],
+    ("contentBlock-3", "bullets"): ["Curbside pickup", "ATM on site"],
+    ("contentBlock-features", "items"): ["Huge selection", "Expert budtenders", "Loyalty rewards"],
+    ("contentBlock-features", "bullets"): ["Price match", "Daily deals"],
+    ("contentBlock-icons", "items"): ["Fast delivery", "Secure checkout", "Discreet packaging"],
+    ("contentBlock-icons", "bullets"): ["Text order updates", "Tap to pay"],
+}
+HUMAN_FALLBACK = ["Quality you can trust", "Friendly budtenders", "Local favourites", "Fresh every week",
+                  "Easy pickup", "Members save more"]
+HUMAN_POSTS = ["Beginner's guide to edibles", "What are terpenes?", "Indica vs sativa: does it matter?",
+               "How to store your flower", "Meet our budtenders", "New: local craft pre-rolls"]
+HUMAN_LEGAL = ["Introduction", "Information we collect", "How we use your information", "Sharing your information",
+               "Cookies", "Data retention", "Your rights", "Age requirements", "Security", "Third-party links",
+               "Changes to this policy", "Contact us", "Governing law", "Limitation of liability", "Termination"]
+HUMAN_CERTS = ["Health Canada Licensed", "AGCO Authorized Retailer"]
+HUMAN_TERMS = ["Acceptance of terms", "Eligibility", "Your account", "Orders and payment", "Pricing", "Delivery", "Pickup",
+               "Returns", "Prohibited use", "Intellectual property", "Disclaimers", "Limitation of liability",
+               "Governing law", "Changes to these terms", "Contact us"]
+HUMAN_RETURNS = ["Our return policy", "How refunds work"]
+HUMAN_CATEGORIES = {"zq-cat-1": "Topicals", "zq-cat-2": "Beverages"}
+PROBE_MARK = "Zq Fixture"
+
+
+def _is_probe(v: Any) -> bool:
+    return isinstance(v, str) and v.startswith("Zq")
+
+
+def humanize(state: dict) -> dict:
+    """`state` with the probe fixture's "Zq Fixture …" titles and names replaced
+    by realistic copy (in place; returned). Idempotent."""
+    def rows(lst: Any, names: list[str], member: str) -> None:
+        for j, it in enumerate(lst or []):
+            if isinstance(it, dict) and _is_probe(it.get(member)):
+                it[member] = names[j % len(names)]
+
+    for page_rows in [state.get("homeSections") or []] + [v for v in (state.get("pageSectionsAll") or {}).values()
+                                                         if isinstance(v, list)]:
+        for row in page_rows:
+            if not isinstance(row, dict):
+                continue
+            sid, st = str(row.get("id") or ""), row.get("settings") or {}
+            for i, slide in enumerate(st.get("slides") or []):
+                if isinstance(slide, dict):
+                    rows(slide.get("bullets"), HUMAN_ROWS.get((sid, f"slides[{i}].bullets"), HUMAN_FALLBACK), "title")
+            for lst in ("items", "bullets"):
+                rows(st.get(lst), HUMAN_ROWS.get((sid, lst), HUMAN_FALLBACK), "title")
+    pv = state.get("pageVisibility") or {}
+    rows((pv.get("blog") or {}).get("posts"), HUMAN_POSTS, "title")
+    rows((pv.get("_meta") or {}).get("headerNavCustomLinks"), ["Deals"], "name")
+    rows((state.get("branding") or {}).get("certifications"), HUMAN_CERTS, "name")
+    for key, names in (("terms", HUMAN_TERMS), ("privacy", HUMAN_LEGAL), ("returnRefund", HUMAN_RETURNS)):
+        rows(state.get(key), names, "title")
+    for slug, v in ((state.get("globalSettings") or {}).get("categories") or {}).items():
+        if isinstance(v, dict) and _is_probe(v.get("name")):
+            v["name"] = HUMAN_CATEGORIES.get(slug, "Specials")
+    for col in (state.get("globalSettings") or {}).get("footerCustomColumns") or []:
+        if isinstance(col, dict):
+            if _is_probe(col.get("title")):
+                col["title"] = "Shop"
+            rows(col.get("links"), ["Flower", "Pre-rolls", "Edibles"], "label")
+    return state
+
+
 def build_state(
     manifest: Manifest,
     *,
@@ -544,7 +623,8 @@ def build_state(
     """A basic-template EditorState: `DEFAULT_DEFAULT_HOME_SECTIONS` rows,
     rich settings from the probe fixture for the sampled section types and
     the HeaderSection / pinned:products global, branding and pageVisibility
-    slices, then manifest `default`s for whatever is still unset."""
+    slices (its "Zq Fixture …" titles replaced by realistic copy: `humanize`),
+    then manifest `default`s for whatever is still unset."""
     if template not in BASIC_TEMPLATE_IDS:
         raise ValueError(f"{template!r} is not a basic template ({', '.join(BASIC_TEMPLATE_IDS)})")
     state = copy.deepcopy(EMPTY_STATE)
@@ -582,9 +662,20 @@ def build_state(
             if f.has_default and "[]" not in f.path and get_path(state, f.path, _SENTINEL) is _SENTINEL:
                 set_path(state, f.path, copy.deepcopy(f.default))
     state["customPages"] = copy.deepcopy(ctxf.get("customPages") or [])
+    # The FAQ categories a basic-template site starts with: PreviewPage.jsx
+    # seeds `faqCategories` with getDefaultFaqForTemplate(template) when
+    # nothing was saved — `defaultBasicFaqCategories` ({name, items:[{q, a}]},
+    # the schema of the manifest's faqCategories[].items) for every basic id.
+    # The probe's rows are the premium {name, icon, questions:[…]} schema a
+    # basic site never holds, so they never stand in for it (r1-r3 states
+    # carried them; docs/LAB.md §2 "Browser defaults").
+    faq = browser_defaults.faq_categories(template)
+    if faq is not None:
+        state["faqCategories"] = faq
     # The products page persists its reorderable pinned placeholder (schema.js PINNED_BY_PAGE).
     state["pageSectionsAll"].setdefault("products", [{"id": PINNED_BY_PAGE["products"]["id"], "enabled": True}])
-    return state
+    # No "Zq Fixture …" placeholder copy: no real site has it (see `humanize`).
+    return humanize(state)
 
 
 # ── context (turnContext.js) ────────────────────────────────────────────────
@@ -1078,11 +1169,16 @@ def named_pages(text: Any, custom_pages: list | None = None, nav: list | None = 
     return [slug for _, slug in ranked[:NAMED_PAGES_MAX]]
 
 
-def _page_rows(state: dict, page: str) -> list:
+def _page_rows(state: dict, page: str, template: Any = None) -> list:
+    """The page's section rows as targets.resolveSectionSlot gives them to
+    the browser's turn context: home = `homeSections`; another page = its
+    saved rows when there are any, else the template's defaults
+    (`getDefaultPageSections(template, page) || []`, browser_defaults) —
+    never a pinned row the browser does not list."""
     rows = sections_of(state, page)
-    if page != "home" and not rows and page in PINNED_BY_PAGE:
-        rows = [{"id": PINNED_BY_PAGE[page]["id"], "enabled": True}]
-    return rows
+    if page == "home" or (isinstance(rows, list) and rows):
+        return rows if isinstance(rows, list) else []
+    return browser_defaults.page_sections(template, page)
 
 
 def context_of(state: dict, page: str = "home", extras: dict | None = None, manifest: Any = None,
@@ -1093,18 +1189,19 @@ def context_of(state: dict, page: str = "home", extras: dict | None = None, mani
     `manifest` (a Manifest or its doc) feeds the list outline; `view` is the
     host ctx focus (`tab`, `activeSectionId`, `globalSection`) — none = the
     editor tab with nothing open; `text` (the merchant's request) adds the
-    pages it names to the outline (`named_pages`). The browser fills a
-    never-saved non-home page with its template defaults (JSX, out of the
-    lab's reach); the lab uses the pinned row — parity cases name saved
-    pages only."""
+    pages it names to the outline (`named_pages`). A never-saved non-home
+    page lists its template's default rows, as the browser does
+    (`_page_rows`; the template is the host ctx's `templateId` when `view`
+    carries one, else the state's)."""
     ex = extras or {}
-    sections = _page_rows(state, page)
+    tpl = (view or {}).get("templateId") if isinstance(view, dict) and (view or {}).get("templateId") else (state.get("template") or {}).get("id")
+    sections = _page_rows(state, page, tpl)
     layouts = state.get("layouts") if isinstance(state.get("layouts"), dict) else {}
     custom_pages = state.get("customPages") if isinstance(state.get("customPages"), list) else []
     focus = focus_summary(view)
     nav = nav_summaries(state.get("pageVisibility"), custom_pages)
     doc = manifest.doc if isinstance(manifest, Manifest) else manifest
-    others = ([{"page": slug, "sections": _page_rows(state, slug)}
+    others = ([{"page": slug, "sections": _page_rows(state, slug, tpl)}
                for slug in named_pages(text, custom_pages, nav, _s(page))]
               if isinstance(doc, dict) and isinstance(text, str) and text else [])
     outline, truncated = build_outline(state, manifest, _s(page), sections, focus["sectionId"], OUTLINE_MAX, others)

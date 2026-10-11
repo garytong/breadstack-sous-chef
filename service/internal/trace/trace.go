@@ -71,10 +71,13 @@ type Usage struct {
 // browser results carry the seq of the tool.call they answer: the loop
 // records them via Event(seq, "tool.result", data) with the turn's own seq
 // and data.for_seq (README §4); Recorder.ToolResult is the legacy helper that
-// numbers from the event count and sets the top-level ForSeq instead.
+// numbers from the event count and sets the top-level ForSeq instead. A
+// turn that ended without its closing model call records a trace-only
+// "turn.fast_finish" event ({ops, route, calls}) before the service's own
+// text.delta (`source:"service"`) and turn.done (README §4 "Fast finish").
 type Event struct {
 	Seq    int             `json:"seq"`
-	Kind   string          `json:"event"` // text.delta | tool.call | turn.suspended | turn.waiting | turn.done | turn.error | tool.result
+	Kind   string          `json:"event"` // text.delta | tool.call | turn.suspended | turn.waiting | turn.escalated | turn.done | turn.error | tool.result | turn.fast_finish
 	Data   json.RawMessage `json:"data,omitempty"`
 	At     time.Time       `json:"at"`
 	ForSeq int             `json:"for_seq,omitempty"`

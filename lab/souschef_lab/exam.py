@@ -1360,6 +1360,10 @@ def cmd_run(args) -> int:
     if not args.site_prefix.startswith("lab-"):
         print("exam run: --site-prefix must start with lab- (the lab's own site ids)", file=sys.stderr)
         return 2
+    if args.rederive_contexts:
+        n = rederive_contexts(cases, Path(args.manifest))
+        print(f"contexts re-derived with today's browser mirror (state.context_of: focus, shopMenu, outline) "
+              f"for {n} turns of {len(cases)} rows")
     unlabelled = [c["id"] for c in cases if not is_labelled(c)]
     if unlabelled:
         print(f"note: {len(unlabelled)} row(s) carry no expected keys and are run unscored ({', '.join(unlabelled[:5])}…)")
@@ -1375,7 +1379,11 @@ def cmd_run(args) -> int:
     try:
         try:
             client, _ = C.connect(url, key, Path(args.manifest), cases, sse=args.sse, timeout_s=args.timeout, build_id="lab-exam")
-            engine = C.default_engine(args.engine, Path(args.manifest))
+            if args.persistent_engine:
+                from .engine import PersistentEngine
+                engine = C.DictEngine(PersistentEngine(args.engine, manifest_path=Path(args.manifest), size=1))
+            else:
+                engine = C.default_engine(args.engine, Path(args.manifest))
             fields, record = C.resolve_fields(args.fields_context, Path(args.manifest), client, args.route)
         except (C.ServiceError, OSError, json.JSONDecodeError, RuntimeError) as e:
             print(f"cannot start: {e}", file=sys.stderr)
@@ -1399,6 +1407,40 @@ def cmd_run(args) -> int:
     print(format_run(report))
     print(f"saved {path}")
     return 0
+
+
+def rederive_contexts(cases: list[dict], manifest_path: Path) -> int:
+    """r4 PLAN L7: every row's context (and each history turn's) re-derived
+    from the exam's own vintage state with today's browser mirror
+    (state.context_of: `focus`, `shopMenu`, `outline`, the pages the text
+    names) instead of the recorded 10-06 browser's. A row with
+    `meta.selected_section_id` is asked with that section's editor open (the
+    browser now sends it as `focus`). The state is the one run_set builds
+    (vintage_state from the rows' home context), so the contexts describe
+    exactly what the engine edits. Returns the number of contexts replaced."""
+    from .manifest import Manifest
+    from .state import context_of, load_context_fixture
+
+    home = next((c.get("context") for c in cases if (c.get("context") or {}).get("page") == "home"), None)
+    if home is None:
+        home = next((c.get("context") for c in load_set("paraphrase", manifest=manifest_path)
+                     if (c.get("context") or {}).get("page") == "home"), None)
+    state = vintage_state(manifest_path, home)
+    m = Manifest(json.loads(Path(manifest_path).read_text(encoding="utf-8")), Path(manifest_path))
+    extras = load_context_fixture()
+    n = 0
+    for c in cases:
+        sel = (c.get("meta") or {}).get("selected_section_id")
+        view = {"tab": "editor", "activeSectionId": sel} if sel else None
+        page = (c.get("context") or {}).get("page") or (c.get("meta") or {}).get("page") or "home"
+        c["context"] = context_of(state, page, extras, m, view=view, text=str(c.get("request") or ""))
+        n += 1
+        for h in c.get("history") or []:
+            hp = (h.get("context") or {}).get("page") or page
+            h["context"] = context_of(state, hp, extras, m, view=view, text=str(h.get("user") or ""))
+            n += 1
+        c.setdefault("meta", {})["context_source"] = "rederived"
+    return n
 
 
 def cmd_replay(args) -> int:
@@ -1483,6 +1525,11 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--sse", action="store_true")
     e.add_argument("--timeout", type=float, default=300.0)
     e.add_argument("--out-dir", default=str(RUNS_DIR))
+    e.add_argument("--rederive-contexts", action="store_true",
+                   help="r4 L7: re-derive every row's context with today's browser mirror (focus, shopMenu, outline; "
+                        "the selected section open) instead of the recorded 10-06 contexts")
+    e.add_argument("--persistent-engine", action="store_true",
+                   help="boot the engine once (js/engine_server.mjs) instead of once per call (~10 s each)")
     e.add_argument("--fake", action="store_true", help="dry run: the lab's fake service in process (no model)")
     e.add_argument("--oracle", action="store_true", help="with --fake: script every row with its expected writes")
     rp = sub.add_parser("replay", help="exam rows from a GET /v1/conversations/{siteId} body")

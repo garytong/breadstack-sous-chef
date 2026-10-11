@@ -126,9 +126,12 @@ func TestDangling_MaxCalls(t *testing.T) {
 	}
 	reqs := h.fake.Requests()
 	assertReplayable(t, reqs[len(reqs)-1])
-	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 8 {
-		t.Errorf("next request replayed %d messages, want 8", n)
+	// 8 stored messages; the abandon results and the new text go as one
+	// user message (prompt.MergeUserRuns).
+	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 7 {
+		t.Errorf("next request replayed %d messages, want 7", n)
 	}
+	wantResultsThenText(t, reqs[len(reqs)-1])
 }
 
 // P1: a stop other than tool_use (end_turn here, max_tokens below) that
@@ -355,9 +358,10 @@ func TestDangling_ContinueFailsAfterResume(t *testing.T) {
 	}
 	reqs := h2.fake.Requests()
 	assertReplayable(t, reqs[len(reqs)-1])
-	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 4 {
-		t.Errorf("guarded request has %d messages, want 4 (user, assistant, synthetic results, user)", n)
+	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 3 {
+		t.Errorf("guarded request has %d messages, want 3 (user, assistant, synthetic results + user text)", n)
 	}
+	wantResultsThenText(t, reqs[len(reqs)-1])
 }
 
 // P4: a parked turn that another instance continued and finished is
@@ -643,8 +647,10 @@ func TestDangling_RepairPersistedForNextTurn(t *testing.T) {
 	if warned {
 		t.Error("the third turn still needed the read-side repair: the fix was not persisted")
 	}
-	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 6 {
-		t.Errorf("third request has %d messages, want 6", n)
+	// 6 stored; the persisted repair and the second turn's text go as one
+	// user message (prompt.MergeUserRuns).
+	if n := len(reqs[len(reqs)-1].Body["messages"].([]any)); n != 5 {
+		t.Errorf("third request has %d messages, want 5", n)
 	}
 }
 

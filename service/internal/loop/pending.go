@@ -39,6 +39,11 @@ type pendingDoc struct {
 	// Start); turn.done states it. nil on a doc written before the member
 	// existed: the starting route's current option is used.
 	FieldsContext *bool `json:"fields_context,omitempty"`
+	// HadError is set once any results message of the turn so far carried
+	// an is_error tool_result (a refused or failed op, a server tool's
+	// error): a turn that has gone wrong once keeps its closing model call
+	// (fast finish, README §4), also when it continues on another instance.
+	HadError bool `json:"had_error,omitempty"`
 }
 
 // escalation is a hybrid turn's one move from its route to the route's

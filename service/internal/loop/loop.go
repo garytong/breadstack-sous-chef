@@ -101,6 +101,11 @@ type Deps struct {
 	RotateAt      int           // 0 → DefaultRotateAt
 	Logf          func(string, ...any)
 	Now           func() time.Time
+
+	// Primer primes the in-house model server's prompt cache after each
+	// turn and on the api.Primer triggers (prime.go, README §4); nil = off.
+	// New installs the Runner's primeBusy as its busy check.
+	Primer *model.Primer
 }
 
 // Runner implements api.TurnRunner.
@@ -161,7 +166,11 @@ func New(d Deps) (*Runner, error) {
 	if d.Now == nil {
 		d.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Runner{d: d, parked: map[string]*turn{}}, nil
+	r := &Runner{d: d, parked: map[string]*turn{}}
+	if d.Primer != nil {
+		d.Primer.SetBusy(r.primeBusy)
+	}
+	return r, nil
 }
 
 // Start implements api.TurnRunner.Start: the pre-checks that need an HTTP
@@ -691,7 +700,7 @@ func (r *Runner) rebuild(ctx context.Context, row *store.Turn) (*turn, error) {
 		req:     api.TurnRequest{SiteID: conv.SiteID, StoreID: conv.StoreID, ManifestHash: row.ManifestHash, BuildID: row.BuildID, UserEmail: row.UserEmail},
 		history: history, calls: pd.CallCount, usage: pd.Usage, seq: pd.Seq, started: row.Started, pending: &pd, tailSeq: tailSeq,
 		escalated: pd.Escalated, routes: pd.Routes, models: pd.Models, foreignBefore: pd.ForeignBefore,
-		origin: origin, fieldsContext: fieldsContext,
+		origin: origin, fieldsContext: fieldsContext, hadError: pd.HadError,
 	}, nil
 }
 
@@ -749,6 +758,7 @@ func (r *Runner) acquire() (func(), bool) {
 			r.mu.Lock()
 			r.live--
 			r.mu.Unlock()
+			r.d.Primer.Kick() // a deferred prime may run now (nil-safe)
 		})
 	}, true
 }
@@ -762,8 +772,35 @@ func (r *Runner) Live() int {
 
 func (r *Runner) park(t *turn) {
 	r.mu.Lock()
+	t.parkedAt = r.d.Now()
 	r.parked[t.id] = t
 	r.mu.Unlock()
+}
+
+// PrimeParkedBusy is how long a turn parked on its batch keeps the Primer
+// waiting (primeBusy): the browser normally answers in seconds, and the
+// turn's continuation resumes from the slot's state at its last call — a
+// prime in between would overwrite it (measured on int: 117 → 2,428 tokens
+// re-read, 0.53 → 1.6 s). A batch left unanswered longer than this is
+// likely abandoned; the reaper ages it out.
+const PrimeParkedBusy = 90 * time.Second
+
+// primeBusy is the Primer's busy check: a turn holds a slot here, or one
+// parked here less than PrimeParkedBusy ago. Turns on other instances are
+// not seen (README §4 "Prompt-cache priming").
+func (r *Runner) primeBusy() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.live > 0 {
+		return true
+	}
+	now := r.d.Now()
+	for _, t := range r.parked {
+		if now.Sub(t.parkedAt) < PrimeParkedBusy {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) unpark(id string) *turn {

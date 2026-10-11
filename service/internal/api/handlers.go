@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,6 +36,9 @@ func (s *Server) putManifest(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, res)
+	if s.deps.Primer != nil {
+		holdForPrime(w, s.deps.Primer.ManifestRegistered(res.Hash))
+	}
 }
 
 // postManifest is PUT /v1/manifests/{hash} without the hash in the URL: the
@@ -82,6 +86,9 @@ func (s *Server) postManifest(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, res)
+	if s.deps.Primer != nil {
+		holdForPrime(w, s.deps.Primer.ManifestRegistered(res.Hash))
+	}
 }
 
 func (s *Server) getManifest(w http.ResponseWriter, r *http.Request) {
@@ -222,12 +229,27 @@ func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) {
 	conv, err := s.deps.Conversations.Get(r.Context(), r.PathValue("siteId"), before)
 	if err != nil {
 		writeError(w, r, err)
+		var apiErr *Error
+		if before == 0 && errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			s.primeOpened(w, r, "") // no conversation open: the floor
+		}
 		return
 	}
 	if conv.Messages == nil {
 		conv.Messages = []StoredMessage{}
 	}
 	writeJSON(w, http.StatusOK, conv)
+	if before == 0 {
+		s.primeOpened(w, r, conv.ConversationID)
+	}
+}
+
+// primeOpened tells the Primer the launcher read a site's conversation —
+// the panel opening — when the proxy sent the manifest hash it runs on.
+func (s *Server) primeOpened(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if hash := r.Header.Get("X-Manifest-Hash"); s.deps.Primer != nil && isHexHash(hash) {
+		holdForPrime(w, s.deps.Primer.ConversationOpened(r.PathValue("siteId"), conversationID, hash))
+	}
 }
 
 func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +262,9 @@ func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+	if hash := r.Header.Get("X-Manifest-Hash"); s.deps.Primer != nil && isHexHash(hash) {
+		holdForPrime(w, s.deps.Primer.ConversationEnded(r.PathValue("siteId"), hash))
+	}
 }
 
 // ---- feedback ----

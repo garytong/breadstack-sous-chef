@@ -236,7 +236,8 @@ def test_context_layout_and_nav_rules():
     assert ctx["nav"] == [{"label": "Deals", "href": "/deals"}, {"label": "Reach us", "href": "/contact"},
                           {"label": "Shop", "href": "/products"}, {"label": "Locations", "href": "/locations"},
                           {"label": "About Us", "href": "/about"}, {"label": "Link", "href": "/"}]
-    assert ctx["sections"] == [{"id": "__pinned_product_list", "type": "__pinned_product_list", "title": "", "enabled": True}]
+    # never saved: editorial's default products rows, which are none — not the pinned row (the browser never lists it)
+    assert ctx["sections"] == []
 
 
 def test_nav_missing_flag_is_the_storefront_default_not_hidden():
@@ -370,7 +371,7 @@ def test_context_of_adds_named_pages_after_the_viewed_page(m):
     faq = [o for o in named["outline"] if o.get("other")]
     assert [o["page"] for o in faq] == ["faq"]
     assert list(faq[0]) == ["page", "other", "sections", "lists"]
-    assert faq[0]["sections"] == [{"id": "__pinned_faq", "type": "__pinned_faq", "title": "", "enabled": True}]
+    assert faq[0]["sections"] == []  # never saved: editorial's default faq rows (none), not the pinned row
     assert faq[0]["lists"][0] == {"key": "faqCategories", "count": 1, "rows": ["[0] Shopping"]}
     assert S.context_of(s, "faq", None, m, text="add a question to the FAQ")["outline"] == S.context_of(s, "faq", None, m)["outline"]
     assert S.context_of(s, "home", None, None, text="the FAQ")["outline"] == []

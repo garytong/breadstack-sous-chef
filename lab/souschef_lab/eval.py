@@ -270,6 +270,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--assets", type=Path, default=C.DEFAULT_ASSETS)
     p.add_argument("--engine", type=Path, default=os.environ.get("ENGINE"))
     p.add_argument("--out-dir", type=Path, default=DEFAULT_RUNS)
+    p.add_argument("--persistent-engine", action="store_true",
+                   help="boot the engine once (js/engine_server.mjs) instead of once per call")
     p.add_argument("--sse", action="store_true")
     p.add_argument("--timeout", type=float, default=C.DEFAULT_TIMEOUT_S)
     p.add_argument("--compare", nargs=2, type=Path, metavar=("A", "B"), help="two saved runs")
@@ -315,7 +317,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     label = args.label or args.route or "default"
     try:
-        engine = C.default_engine(args.engine, args.manifest)
+        if args.persistent_engine:
+            from .engine import PersistentEngine
+            engine = C.DictEngine(PersistentEngine(args.engine, manifest_path=args.manifest, size=1))
+        else:
+            engine = C.default_engine(args.engine, args.manifest)
     except RuntimeError as e:  # engine.EngineError
         print(f"cannot start: {e}", file=sys.stderr)
         return 1

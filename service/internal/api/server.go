@@ -66,6 +66,9 @@ type Deps struct {
 	Feedback      FeedbackSink
 	OptOut        OptOutStore
 	DB            Pinger
+	// Primer is told about manifest uploads and conversation reads/ends so
+	// it can warm the model server; nil = off (it is not a route's port).
+	Primer Primer
 }
 
 // Server is the HTTP layer.

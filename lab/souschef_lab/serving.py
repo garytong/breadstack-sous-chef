@@ -468,7 +468,7 @@ def _is_tool_response(content: str) -> bool:
 
 
 def render_conversation(messages: list[dict], tools: list[dict] | None, *, think_turns: str = "none",
-                        generation_prompt: bool = False, prefill: bool = False) -> str:
+                        generation_prompt: bool = False, prefill: bool = False, plain_first: int = 0) -> str:
     """The qwen3.5 renderer's prompt for a row's messages (dataset.to_hf
     shape: system, user, assistant{content, tool_calls}, tool{content}) and
     hf-form tools, with thinking disabled.
@@ -494,6 +494,11 @@ def render_conversation(messages: list[dict], tools: list[dict] | None, *, think
         sb.append(IM_START + "system\n" + go_trim_space(str(system.get("content") or "")) + IM_END + "\n")
 
     last_assistant = max((i for i, m in enumerate(msgs) if m.get("role") == "assistant"), default=-1)
+    # plain_first: the first k assistant turns are an EARLIER turn of the conversation (a follow-up row's resent
+    # history, masked out of the loss): Ollama renders them without the think block (qwen35.go:299-311 — only turns
+    # after the last user query may carry one), so the training text gives them none either and the context the
+    # row trains on is the served bytes; the turn being answered keeps "all".
+    plain = {i for n, i in enumerate(i for i, m in enumerate(msgs) if m.get("role") == "assistant") if n < plain_first}
     for i, m in enumerate(msgs):
         role = str(m.get("role") or "")
         content = go_trim_space(str(m.get("content") or ""))
@@ -502,7 +507,7 @@ def render_conversation(messages: list[dict], tools: list[dict] | None, *, think
         if role == "user" or (role == "system" and i != 0):
             sb.append(IM_START + role + "\n" + content + IM_END + "\n")
         elif role == "assistant":
-            render_think = think_turns == "all" or (think_turns == "last" and i == last_assistant)
+            render_think = (think_turns == "all" and i not in plain) or (think_turns == "last" and i == last_assistant)
             reasoning, content = _split_reasoning(content, str(m.get("reasoning_content") or ""), render_think)
             if render_think:
                 sb.append(IM_START + "assistant\n<think>\n" + reasoning + "\n</think>\n\n" + content)
@@ -539,11 +544,13 @@ def render_prompt(messages: list[dict], tools: list[dict] | None) -> str:
     return render_conversation(messages, tools, think_turns="none", generation_prompt=True, prefill=True)
 
 
-def render_training(messages: list[dict], tools: list[dict] | None) -> str:
+def render_training(messages: list[dict], tools: list[dict] | None, history_turns: int = 0) -> str:
     """A row's training text (train.py): every assistant turn opened with
     the empty think block the served generation prompt ends with, ending
-    after the final reply's <|im_end|>."""
-    return render_conversation(messages, tools, think_turns="all", generation_prompt=False)
+    after the final reply's <|im_end|> — except a follow-up's first
+    `history_turns` assistant turns (the earlier turns, masked), which Ollama
+    serves without one."""
+    return render_conversation(messages, tools, think_turns="all", generation_prompt=False, plain_first=history_turns)
 
 
 def strip_history_think(text: str, keep_last: bool = True) -> str:

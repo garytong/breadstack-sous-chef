@@ -86,7 +86,8 @@ MODEL_IMAGE   = $(MODEL_REPO)/model:$(MODEL_TAG)
 export COOKIE_CUTTER_DIR ENGINE SOUS_CHEF_ENGINE=$(ENGINE)
 
 .PHONY: exam-sets exam-build exam-retrieval exam-run exam-dry exam-replay
-.PHONY: help venv test test-engine cases cases-dry cases-remeasure engine-fingerprint collect dataset fields-rerender pairs eval passk retrain-check parity parity-write train-env train-dry train-gpu-check train dpo export model-stage model-build model-push train-vm-init train-vm-plan train-vm-apply train-vm-up train-vm-ssh train-vm-down train-vm-status train-remote-push train-remote-pull fake-service fake-model clean
+.PHONY: r4-cases leak-check r4-collect-dry r4-dataset
+.PHONY: help venv test test-engine cases cases-dry cases-remeasure browser-defaults browser-defaults-check engine-fingerprint collect dataset fields-rerender pairs eval passk retrain-check parity parity-write train-env train-dry train-gpu-check train dpo export model-stage model-build model-push train-vm-init train-vm-plan train-vm-apply train-vm-up train-vm-ssh train-vm-down train-vm-status train-remote-push train-remote-pull fake-service fake-model clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -112,6 +113,11 @@ cases-dry: ## generate cases without the engine (expected.diff left empty)
 
 cases-remeasure: ## refresh expected.diff + engine_fingerprint of $(CASES) in place with the current engine (CASES=$(DATA)/cases.jsonl)
 	$(LABPY) -m souschef_lab.cases remeasure --cases $(or $(CASES),$(DATA)/cases.jsonl) --manifest $(MANIFEST) --engine $(ENGINE) --workers $(WORKERS)
+
+browser-defaults: ## re-dump fixtures/browser-defaults.json (getDefaultPageSections per basic template x page, the basic FAQ starter categories) from COOKIE_CUTTER_DIR through node (docs/LAB.md §2 "Browser defaults")
+	$(LABPY) -m souschef_lab.browser_defaults --write
+browser-defaults-check: ## exit 1 when fixtures/browser-defaults.json differs from what COOKIE_CUTTER_DIR's launcher computes
+	$(LABPY) -m souschef_lab.browser_defaults --check
 
 engine-fingerprint: ## print the engine's identity (sha256 over the static import closure of headless.mjs + cookie-cutter HEAD)
 	$(LABPY) -m souschef_lab.engine --engine $(ENGINE) --fingerprint
@@ -142,7 +148,7 @@ exam-retrieval: ## offline recall@block of the candidate-fields block on SET (de
 # Row ranges + separate conversations (both exam-run and exam-dry): OFFSET=n LIMIT=n run rows n.. of the set (the file
 # name gains -r<from>-<to>, so parallel chunks never collide); SITE_PREFIX=lab-cand- keeps a second revision's turns out
 # of the first's conversations (siteId = <prefix><row id>; must start with lab-).
-EXAM_RANGE_ARGS = $(if $(OFFSET),--offset $(OFFSET),) $(if $(LIMIT),--limit $(LIMIT),) $(if $(SITE_PREFIX),--site-prefix $(SITE_PREFIX),) $(if $(ONLY),--only $(ONLY),)
+EXAM_RANGE_ARGS = $(if $(OFFSET),--offset $(OFFSET),) $(if $(LIMIT),--limit $(LIMIT),) $(if $(SITE_PREFIX),--site-prefix $(SITE_PREFIX),) $(if $(ONLY),--only $(ONLY),) $(if $(REDERIVE),--rederive-contexts,) $(if $(PENGINE),--persistent-engine,)
 exam-run: ## end-to-end on SET through SOUS_CHEF_URL / ROUTE (SPENDS model calls on a real service); HISTORY=live|last|none, N samples, OFFSET/LIMIT rows, SITE_PREFIX → runs/exam-<set>-<label>[-r<from>-<to>]-<UTC>.json
 	@test -n "$(SET)" || { echo "exam-run: pass SET=<one set or a .jsonl>"; exit 2; }
 	$(LABPY) -m souschef_lab.exam run --set $(SET) --route $(ROUTE) --label $(LABEL) --samples $(N) --history $(or $(HISTORY),live) --engine $(ENGINE) --url $(SOUS_CHEF_URL) --key '$(SOUS_CHEF_KEY)' --fields-context $(ROUTE_FIELDS_CONTEXT) $(EXAM_RANGE_ARGS)
@@ -310,6 +316,23 @@ train-remote-pull: ## remote training: NAME=<run> brings $(TRAIN_BUCKET)/runs/ad
 	  mkdir -p runs/$$kind/$(NAME) && gcloud storage rsync --recursive '$(TRAIN_BUCKET)'/runs/$$kind/$(NAME) runs/$$kind/$(NAME) && \
 	    echo "train-remote-pull: runs/$$kind/$(NAME) ($$(du -sh runs/$$kind/$(NAME) | cut -f1))" && n=$$((n + 1)); done; \
 	  test $$n -gt 0 || { echo "train-remote-pull: nothing named $(NAME) under $(TRAIN_BUCKET)/runs/adapters or runs/exports (on the VM: sous-chef-runs-push $(NAME))"; exit 1; }
+
+# ── r4 retrain (docs/LAB.md §5b; the runbooks COLLECT.md / TRAIN.md / EVAL.md sit beside the r4 cases) ──
+# R4=<folder holding cases-F*.jsonl>; the deployed service's tree pins the blocks and the prefix:
+# SOUS_CHEF_SERVICE_DIR=<git archive f79753b service> (+ SOUS_CHEF_FIELDS_BIN / SOUS_CHEF_PREFIX_BIN built from it).
+R4_MANIFEST ?= fixtures/exam/manifest-real.json
+# the authored case files, in merge order (cases-F0X-exam.jsonl is an OUTPUT: never an input)
+R4_INPUTS ?= F1a F1b F1c F1d F2F6 F3 F4F5 F7cov
+r4-cases: ## merge R4/cases-<R4_INPUTS>.jsonl + the verbatim int-run3 cases (rebased: F0/F0H) with R4/r4-revisions.json → R4/cases-all.jsonl (humanized states, re-derived contexts, re-measured diffs, dedup, hold-out filter, trims) and R4/cases-F0X-exam.jsonl (seen-key tags) (WHY=<study dir>)
+	@test -n "$(R4)" || { echo "r4-cases: pass R4=<the r4 scratch folder>"; exit 2; }
+	$(LABPY) -m souschef_lab.r4cases merge $(foreach f,$(R4_INPUTS),--in $(R4)/cases-$(f).jsonl) --verbatim data/int-run3/cases.jsonl --manifest $(R4_MANIFEST) --revisions $(R4)/r4-revisions.json $(if $(WHY),--why $(WHY),) --out $(R4)/cases-all.jsonl
+	$(LABPY) -m souschef_lab.r4cases verbatim-exam --verbatim data/int-run3/cases.jsonl --seen-from $(R4)/cases-all.jsonl --out $(R4)/cases-F0X-exam.jsonl
+leak-check: ## the hold-out filter on CASES=<jsonl> (rule 1 Jaccard >= 0.6, rule 2 same key+value at >= 0.4, rule 3 containment >= 0.8 on the same key) → exit 1 on any hit (WHY=<study dir>)
+	$(LABPY) -m souschef_lab.leak --cases $(CASES) $(if $(WHY),--why $(WHY),) --report $(basename $(CASES))-leak.json
+r4-collect-dry: ## the r4 collector against the in-process fake service with oracle scripts (no network, no model): R4=…, LIMIT=n
+	$(LABPY) -m souschef_lab.r4collect run --cases $(R4)/cases-all.jsonl --log $(R4)/dry/oracle.jsonl --route default --manifest $(R4_MANIFEST) --workers 8 --fake --oracle $(if $(LIMIT),--limit $(LIMIT),)
+r4-dataset: ## build DATA=data/r4 from LOGS=<r4 collect logs> on R4/cases-all.jsonl (WHY=<study dir> for the final hold-out check)
+	$(LABPY) -m souschef_lab.r4dataset --cases $(R4)/cases-all.jsonl $(foreach f,$(LOGS),--log $(f)) --manifest $(R4_MANIFEST) --out $(DATA) $(if $(WHY),--why $(WHY),)
 
 fake-service: ## run the tests' fake Sous Chef service on 127.0.0.1:8089 (SCRIPTS=dir of <case id>.json)
 	$(LABPY) -m tests.fake_service --port 8089 --manifest $(MANIFEST) --key '$(SOUS_CHEF_KEY)' $(if $(SCRIPTS),--scripts $(SCRIPTS),)

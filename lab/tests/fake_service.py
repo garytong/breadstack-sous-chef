@@ -74,6 +74,17 @@ from urllib.parse import parse_qs, unquote, urlparse
 MANIFEST_BODY_LIMIT = 8 * 1024 * 1024  # README §1: manifest bodies ≤ 8 MiB
 MAX_BODY_BYTES = 256 * 1024  # README §1: every other JSON body ≤ 256 KB
 TURN_REQUIRED = ("siteId", "storeId", "manifestHash", "buildId")
+SERVER_TOOL_NAMES = ("report_unsupported", "lookup_fields", "describe_target")
+
+
+def _user_text(context, text: str, block: str = "") -> str:
+    from souschef_lab import render  # the lab's renderer = prompt.UserText (+ the block when FakeService.block_for is set)
+    return render.context_block(context if isinstance(context, dict) else None, text, block)
+
+
+def _result_content(name: str, item: dict) -> tuple[str, bool]:
+    from souschef_lab import render
+    return render.tool_result_content(name, {k: v for k, v in item.items() if k != "toolCallId"})
 SUPERSEDED = "superseded"
 
 
@@ -189,6 +200,17 @@ class FakeService:
         self.turn_requests: list[dict] = []
         self.feedback: list[dict] = []
         self.conversation_ends: list[str] = []  # DELETE /v1/conversations/{siteId}, in order
+        # GET /v1/conversations/{siteId}: the stored messages of the site's open conversation, built the way the
+        # service stores them (user text = the context block — the fake computes no candidate-fields block;
+        # assistant = text + tool_use; a server tool (report_unsupported, the lookups) closes its assistant
+        # message and is answered with a FAKE result — the real one is toolgen.Dispatch's; posted browser
+        # results as tool_result blocks rendered like loop.browserResult).
+        self.conversations: dict[str, list[dict]] = {}
+        # Optional: (context, text, previous) → the candidate-fields block the REAL service would put in the stored
+        # user text (r4collect --fake sets it with the deployed CLI, so a dry `smoke-check` can come out drift-free:
+        # its success path is rehearsed, not only its failure). `previous` = loop.previousExchange of the site's
+        # stored conversation (the previous request text, the last assistant text after it) or None.
+        self.block_for = None
         self.manifest_posts: int = 0
         self.unauthorized: int = 0
         # What /version states per route (`route_info`), and what turn.done repeats as `route` = {name,
@@ -304,10 +326,19 @@ class FakeService:
             return self._start_turn(h)
         if method == "POST" and len(parts) == 4 and parts[:2] == ["v1", "turns"] and parts[3] == "tool-results":
             return self._tool_results(h, parts[2])
+        if method == "GET" and len(parts) == 3 and parts[:2] == ["v1", "conversations"]:
+            site_id = unquote(parts[2])
+            with self.lock:
+                msgs = [dict(m, seq=i + 1) for i, m in enumerate(self.conversations.get(site_id) or [])]
+            if not msgs:
+                raise _Reply(404, {"error": "not_found", "message": "no open conversation"})
+            return self._json(h, 200, {"conversationId": f"fake-{site_id}", "messages": msgs, "turns": []})
         if method == "DELETE" and len(parts) == 3 and parts[:2] == ["v1", "conversations"]:
             # README §1.1: supersede the site's live turns, end its open conversation; 204 either way
             site_id = unquote(parts[2])
             self.conversation_ends.append(site_id)
+            with self.lock:
+                self.conversations.pop(site_id, None)
             with self.lock:
                 for t in self.turns.values():
                     if t.site_id == site_id and t.status in ("waiting_tools", "suspended", "running"):
@@ -369,7 +400,67 @@ class FakeService:
         turn.route = str(body.get("model") or "default")
         with self.lock:
             self.turns[turn.id] = turn
+            text = str(body.get("text") or "")
+            block = self.block_for(body.get("context"), text, self._previous_exchange(turn.site_id)) if self.block_for else ""
+            self._store(turn.site_id, "user", [{"type": "text", "text": _user_text(body.get("context"), text, block)}])
         self._stream(h, turn)
+
+    def _previous_exchange(self, site_id: str) -> tuple[str, str] | None:
+        from souschef_lab import render
+        from souschef_lab.r4dataset import strip_turn_blocks
+        msgs = self.conversations.get(site_id) or []
+        users = [i for i, m in enumerate(msgs) if m["role"] == "user" and any(b.get("type") == "text" for b in m["content"])]
+        if not users:
+            return None
+        i = users[-1]
+        prev = render.go_trim_space(strip_turn_blocks(next(b["text"] for b in msgs[i]["content"] if b.get("type") == "text")))
+        reply = ""
+        for m in msgs[i + 1:]:
+            if m["role"] == "assistant":
+                for b in m["content"]:
+                    if b.get("type") == "text" and str(b.get("text") or "").strip():
+                        reply = render.go_trim_space(b["text"])
+        return (prev, reply)
+
+    def _store(self, site_id: str, role: str, content: list) -> None:
+        if content:
+            self.conversations.setdefault(site_id, []).append({"role": role, "content": content})
+
+    def _store_stream(self, turn: "_Turn", events: list) -> None:
+        """The stream's assistant message(s) as the service stores them."""
+        blocks: list[dict] = []
+        text: list[str] = []
+        names = getattr(turn, "names", None)
+        if names is None:
+            names = turn.names = {}
+
+        def flush() -> None:
+            nonlocal blocks, text
+            content = ([{"type": "text", "text": "".join(text)}] if "".join(text) else []) + blocks
+            self._store(turn.site_id, "assistant", content)
+            blocks, text = [], []
+
+        server: list[dict] = []
+        for name, data in events:
+            if server and name in ("text.delta", "tool.call"):  # the server answered; the model is called again
+                flush()
+                self._store(turn.site_id, "user", [{"type": "tool_result", "tool_use_id": u["id"],
+                                                    "content": json.dumps({"ok": True, "fake": True})} for u in server])
+                server = []
+            if name == "text.delta":
+                text.append(str(data.get("text") or ""))
+            elif name == "tool.call":
+                tid, tname = str(data.get("id")), str(data.get("name"))
+                names[tid] = tname
+                blocks.append({"type": "tool_use", "id": tid, "name": tname, "input": data.get("input") or {}})
+                if tname in SERVER_TOOL_NAMES:
+                    server.append({"id": tid})
+            elif name == "turn.suspended":
+                tid = str(data.get("toolCallId"))
+                names[tid] = "pick_asset"
+                blocks.append({"type": "tool_use", "id": tid, "name": "pick_asset",
+                               "input": {"asset_type": data.get("assetType") or "image", "purpose": data.get("purpose") or ""}})
+        flush()
 
     def _tool_results(self, h, turn_id: str) -> None:
         body = self._read_json(h, self.max_body_bytes)
@@ -404,6 +495,16 @@ class FakeService:
             if picked is None or not isinstance(picked.get("asset"), dict) or not picked["asset"].get("public_url"):
                 raise _Reply(400, {"error": "bad_request", "message": "the suspended pick_asset needs an asset"})
         self.tool_results.append({"turnId": turn_id, "body": body, "answer": 200, "missing": missing})
+        with self.lock:
+            names = getattr(turn, "names", {}) or {}
+            blocks = []
+            for r in results:
+                content, is_error = _result_content(names.get(str(r["toolCallId"]), ""), r)
+                b = {"type": "tool_result", "tool_use_id": str(r["toolCallId"]), "content": content}
+                if is_error:
+                    b["is_error"] = True
+                blocks.append(b)
+            self._store(turn.site_id, "user", blocks)
         turn.seq += len(results)  # the real service's trace numbers one tool.result per posted item here (trace.go)
         self._stream(h, turn)
 
@@ -415,6 +516,9 @@ class FakeService:
             if events == SUPERSEDED:  # a script cannot start with it; treat as an error stream
                 events = [("turn.error", {"code": "turn_expired", "message": "superseded"})]
         turn.next_stream += 1
+        if isinstance(events, list):
+            with self.lock:
+                self._store_stream(turn, events)
         framed = []
         turn.pending, turn.suspended_id = [], None
         turn.status = "running"

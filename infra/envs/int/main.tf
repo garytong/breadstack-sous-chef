@@ -88,6 +88,12 @@ locals {
     # call fails, the same turn continues on this route (at most once). ""
     # turns it off. Needs a service build that knows the option (after 3b15f6b).
     fallback = var.gpu_model_route.fallback
+    # 2026-10-10 speed A/B (lab/runs/measure-speed): keep a GPU cache point at
+    # the fixed prompt prefix, and end a clean turn without a closing call.
+    # Median turn 11.8 s -> 7.7 s, multi-turn 14-15 s -> 7.5 s, same pass rate.
+    # Ship both together: fast finish alone made follow-up turns slower.
+    prime       = "on"
+    fast_finish = "on"
     # What usage rows (the thermometer) and turn.done call this model: the
     # route's name, not the Ollama tag the server echoes back.
     report_as = var.gpu_model_route.name

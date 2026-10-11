@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // Error is a typed API error: `{error, message, ...extra}` with an HTTP
@@ -86,15 +89,38 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	writeJSON(w, apiErr.Status, apiErr.envelope())
 }
 
-// writeJSON writes v as JSON with the given status.
+// writeJSON writes v as JSON with the given status. The body is sized
+// (Content-Length), so the response is complete for the client as soon as
+// it is flushed, even while the handler goes on (holdForPrime).
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
 	if v == nil {
+		w.WriteHeader(status)
 		return
 	}
-	enc := json.NewEncoder(w)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.WriteHeader(status)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// holdForPrime, after a handler has written its complete response, flushes
+// it and waits (at most PrimeHold) until the prime the request triggered is
+// on the wire, so the instance keeps its CPU meanwhile (api.Primer). A nil
+// dispatch returns at once.
+func holdForPrime(w http.ResponseWriter, d PrimeDispatch) {
+	if d == nil {
+		return
+	}
+	_ = http.NewResponseController(w).Flush()
+	t := time.NewTimer(PrimeHold)
+	defer t.Stop()
+	select {
+	case <-d:
+	case <-t.C:
+	}
 }

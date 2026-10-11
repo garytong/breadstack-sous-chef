@@ -332,3 +332,24 @@ func (b *Backend) Fallback() *Backend { return b.fallback }
 // FieldsContext reports whether this route's user turns carry the
 // candidate-fields block (config.Route.FieldsContextEnabled).
 func (b *Backend) FieldsContext() bool { return b.route.FieldsContextEnabled() }
+
+// PrimeEnabled reports whether the route's model server is primed
+// (config.Route.PrimeEnabled: a messages-compatible route with prime "on");
+// PrimeFiller is the filler length its primes use.
+func (b *Backend) PrimeEnabled() bool { return b.route.PrimeEnabled() }
+func (b *Backend) PrimeFiller() int   { return b.route.PrimeFiller() }
+
+// Server identifies the model server behind the route — its URL and model
+// — for the Primer's per-server state: two routes on one server (an A/B arm
+// that differs only in sampling) share one slot and one set of checkpoints.
+// An anthropic route's is its model id behind the API.
+func (b *Backend) Server() string {
+	if b.route.Kind == config.RouteMessagesCompatible {
+		return strings.TrimSuffix(b.route.URL, "/") + " " + b.route.Model
+	}
+	return "anthropic " + b.route.Model
+}
+
+// FastFinish reports whether this route's turns may end without the closing
+// model call after a clean batch (config.Route.FastFinishEnabled).
+func (b *Backend) FastFinish() bool { return b.route.FastFinishEnabled() }

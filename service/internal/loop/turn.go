@@ -114,6 +114,20 @@ type turn struct {
 	// models is, per route name, the model id the turn's calls on that route
 	// were reported under (noteModel); turn.done states it.
 	models map[string]string
+
+	// primeNext: the turn ended turn.done; Run primes the conversation's next
+	// turn once the slot is released (prime.go).
+	primeNext bool
+	// parkedAt: when the turn last parked on a batch (Runner.primeBusy).
+	parkedAt time.Time
+
+	// Fast finish (fastfinish.go, README §4). hadError: a results message of
+	// this turn carried an is_error tool_result (pending doc `had_error`).
+	// fastFinish: the clean batch's op count once resume armed a fast
+	// finish (0 = the closing call runs); fastFinished once Run took it.
+	hadError     bool
+	fastFinish   int
+	fastFinished bool
 }
 
 // sendable is the request the next model call sends: t.next, without the
@@ -131,6 +145,13 @@ type turn struct {
 // (preserved thinking — a 400 on accounts created on or after 2026-08-31),
 // and it would also move the automatic cache breakpoint's prefix every
 // turn, turning the history's cache reads (0.1× input) into fresh writes.
+//
+// On both kinds, a tool_result-only user message followed by another user
+// message is sent as one (prompt.MergeUserRuns): results first, then the
+// text. A fast-finished turn leaves the conversation on its results message
+// and the next turn's text is stored as a row of its own, so its request
+// would otherwise carry two user messages in a row. The merge runs last:
+// foreignBefore counts stored messages.
 func (t *turn) sendable() model.Request {
 	req := t.next
 	if t.backend.Kind() == config.RouteMessagesCompatible {
@@ -139,6 +160,7 @@ func (t *turn) sendable() model.Request {
 	if t.foreignBefore > 0 {
 		req.Messages = model.WithoutThinkingBefore(req.Messages, t.foreignBefore)
 	}
+	req.Messages = prompt.MergeUserRuns(req.Messages)
 	return req
 }
 
@@ -271,6 +293,15 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 			t.release()
 			t.release = nil
 		}
+		// After the slot is released, so the Primer's busy check does not
+		// count this turn (prime.go). It holds Run — the turn's request —
+		// until the prime's requests are on the wire (bounded): the
+		// launcher has stopped reading at turn.done, and an instance with
+		// request-based CPU would otherwise throttle the prime.
+		if t.primeNext {
+			t.primeNext = false
+			t.primeAfterDone()
+		}
 	}()
 	for {
 		// The row is re-read before every model call: the TTL reaper (or a
@@ -280,6 +311,11 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		// no further call and ends as turn_expired.
 		if err := t.checkRunning(ctx); err != nil {
 			return t.fail(ctx, em, err)
+		}
+		// A clean batch on a fast_finish route (resume armed it): no closing
+		// call, the service's own line and turn.done.
+		if t.fastFinish > 0 {
+			return t.finishFast(ctx, em)
 		}
 		// An escalation decided while the turn was not streaming (a refused
 		// op in the tool-results just posted, or in an all-server batch):
@@ -331,6 +367,7 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		t.usage = addUsage(t.usage, resp.Usage)
 		t.noteModel(resp.Model)
 		t.traceCall(resp)
+		t.observe(resp)
 		if mayEscalate && resp.StopReason == string(anthropic.BetaStopReasonMaxTokens) {
 			// A cut-off reply is discarded whole — not stored, not shown (its
 			// usage and trace entry stay) — and the same request goes to the
@@ -418,6 +455,7 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		pending.ForeignBefore = t.foreignBefore
 		fc := t.fieldsContext
 		pending.FieldsContext = &fc
+		pending.HadError = t.hadError
 		pending.CallCount = t.calls
 		pending.Usage = t.usage
 		pending.Rotated = t.rotated
@@ -690,6 +728,8 @@ func (t *turn) resume(ctx context.Context, body api.ToolResultsRequest) error {
 			hidden = append(hidden, hiddenWrites(t.compiled.Manifest, t.viewedPage(), c.Name, c.Input, res)...)
 		}
 	}
+	ops, clean := t.cleanBatch(answered)
+	hadErrorBefore := t.hadError
 	if err := t.appendResults(ctx, results); err != nil {
 		return err // t.pending kept: failResume answers the batch from it
 	}
@@ -702,6 +742,7 @@ func (t *turn) resume(ctx context.Context, body api.ToolResultsRequest) error {
 		t.r.d.Logf("loop: turn %s: hidden write(s) %v on route %s", t.id, hidden, t.backend.Name())
 		t.wantEscalate = EscalateHiddenWrite
 	}
+	t.decideFastFinish(ops, clean, hadErrorBefore)
 	return nil
 }
 
@@ -775,6 +816,12 @@ func (t *turn) appendResults(ctx context.Context, results []model.ToolResult) er
 	t.history = next.Messages
 	t.next = next
 	t.operation = usage.OpToolTurn
+	for _, r := range results {
+		if r.IsError {
+			t.hadError = true
+			break
+		}
+	}
 	return nil
 }
 
@@ -827,7 +874,13 @@ func (t *turn) done(ctx context.Context, em api.Emitter, stop string) error {
 		data["routes"] = append([]string{}, t.routes...)
 		data["models"] = t.modelsDoc()
 	}
+	if t.fastFinished {
+		// No closing model call: the last text.delta was the service's own
+		// (`source:"service"`), and no assistant message closes the turn.
+		data["fast_finish"] = true
+	}
 	t.emit(em, api.EventTurnDone, data)
+	t.primeNext = true
 	if err := t.rec.Finish(context.WithoutCancel(ctx), "done", stop, ""); err != nil {
 		t.r.d.Logf("loop: turn %s: trace: %v", t.id, err)
 	}
@@ -969,7 +1022,8 @@ func (t *turn) usageDoc() map[string]any {
 }
 
 // storedUsage is the turns.usage column: usageDoc, plus — on a hybrid turn
-// only — the routes it called and its escalation.
+// only — the routes it called and its escalation, and `fast_finish:true` on
+// a turn that ended without its closing model call.
 func (t *turn) storedUsage() map[string]any {
 	doc := t.usageDoc()
 	if t.hybrid() {
@@ -978,6 +1032,9 @@ func (t *turn) storedUsage() map[string]any {
 		if t.escalated != nil {
 			doc["escalated"] = t.escalated
 		}
+	}
+	if t.fastFinished {
+		doc["fast_finish"] = true
 	}
 	return doc
 }

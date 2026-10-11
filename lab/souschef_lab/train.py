@@ -57,7 +57,7 @@ RECIPE = {
 }
 
 CONFIG_KEYS = tuple(RECIPE) + ("data", "name", "output", "max_steps", "instruction_part", "response_part",
-                                "fields_context")
+                                "fields_context", "checkpoint_steps", "resume")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--eval-steps", type=int, default=RECIPE["eval_steps"],
                    help="validation loss every N updates, as well as before the first and after the last (0: only "
                         "those two) (default: %(default)s)")
+    p.add_argument("--checkpoint-steps", type=int, default=0,
+                   help="a FULL trainer checkpoint (adapter + optimizer + scheduler + RNG) every N updates into "
+                        "<output>/checkpoints (the last 2 kept) — what --resume continues from after a Spot "
+                        "preemption (default 0 = none)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue from the newest <output>/checkpoints/checkpoint-* (same data, same flags); "
+                        "a fresh start when there is none")
     p.add_argument("--save-steps", type=int, default=RECIPE["save_steps"],
                    help="also save the adapter every N updates, overwriting one copy (adapter-latest) (default: 0, off)")
     p.add_argument("--val-max-rows", type=int, default=RECIPE["val_max_rows"],
@@ -115,6 +122,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.data = Path(args.data)
     if args.output is not None:
         args.output = Path(args.output)
+    if args.checkpoint_steps < 0:
+        p.error("--checkpoint-steps must be 0 or more")
     if args.save_steps < 0 or args.eval_steps < 0 or (args.val_max_rows is not None and args.val_max_rows < 1):
         p.error("--save-steps and --eval-steps must be 0 or more and --val-max-rows 1 or more")
     if args.rank < 1 or args.alpha < 1 or args.batch < 1 or args.grad_accum < 1 or args.lr <= 0 \
@@ -124,14 +133,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def render_text(messages: list[dict], tools: list[dict] | None) -> str:
+def render_text(messages: list[dict], tools: list[dict] | None, history: int = 0) -> str:
     """A row's training text: the conversation as Ollama renders it for the
     served student (serving.render_training — the qwen3.5 renderer with
     thinking disabled, every assistant turn opened by the empty think block
     the served generation prompt ends with). Never the base's chat template:
     its tools block and echoed tool calls are not the served bytes
     (docs/LAB.md §5 "Serving parity")."""
-    return serving.render_training(messages, tools)
+    return serving.render_training(messages, tools, history)
 
 
 def served_markers(tok) -> None:
@@ -232,6 +241,7 @@ def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None
         "max_seq_length": args.max_seq_length, "optim": args.optim, "scheduler": "linear",
         "warmup_ratio": args.warmup_ratio, "weight_decay": args.weight_decay, "packing": False,
         "eval_steps": args.eval_steps, "save_steps": args.save_steps, "val_max_rows": args.val_max_rows,
+        "checkpoint_steps": args.checkpoint_steps, "resume": args.resume,
         "seed": args.seed, "tiled_mlp": tiled, "thinking": args.thinking, "data": str(args.data),
         "config": getattr(args, "config", None), "render": serving.DESCRIPTION,
         "manifest_hash": dataset_manifest(args.data).get("manifest_hash"),
@@ -254,7 +264,7 @@ PLAN_ORDER = ("kind", "base", "name", "output", "adapter", "data", "config", "ma
               "precision", "lora",
               "lr", "epochs", "max_steps", "updates", "batch", "grad_accum", "effective_batch", "max_seq_length",
               "optim", "scheduler", "warmup_ratio", "weight_decay", "packing", "tiled_mlp", "thinking", "eval_steps",
-              "save_steps", "val_max_rows", "seed", "rows", "tokens_estimate")
+              "save_steps", "checkpoint_steps", "resume", "val_max_rows", "seed", "rows", "tokens_estimate")
 
 
 def render_plan(p: dict) -> str:
@@ -338,7 +348,7 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
             if serving.unservable(r["messages"]):
                 unservable += 1  # its served echo would read back as another call (serving.unservable): never trained
                 continue
-            text = render_text(r["messages"], r["tools"])
+            text = render_text(r["messages"], r["tools"], history_turns(r))
             n = len(tok(text, add_special_tokens=False)["input_ids"])
             if n > args.max_seq_length:
                 dropped += 1  # truncating would cut the answer — the part being learned
@@ -427,7 +437,11 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         weight_decay=args.weight_decay,
         logging_steps=1,
         eval_strategy="no",  # validation_loss instead: the Trainer's evaluation builds full fp32 logits
-        save_strategy="no",  # the adapter is saved once at the end (and adapter-latest every --save-steps)
+        # The adapter is saved once at the end (and adapter-latest every --save-steps); --checkpoint-steps adds the
+        # Trainer's own full checkpoints, the only thing --resume can continue from.
+        save_strategy="steps" if args.checkpoint_steps else "no",
+        save_steps=args.checkpoint_steps or 500,
+        save_total_limit=2,
         bf16=True,
         seed=args.seed,
         report_to="none",
@@ -457,11 +471,20 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
 
     trainer.train_dataset = mask_followups(trainer.train_dataset, train_kept, "training")
     trainer.eval_dataset = mask_followups(trainer.eval_dataset, val_kept, "validation")
-    run_validation(0, 0.0)  # the base model's own loss on the validation rows, before any update
-    say("Training — the loss should fall over the first few dozen steps (Ctrl-C stops and saves nothing).")
+    ckpts = sorted((out / "checkpoints").glob("checkpoint-*"), key=lambda d: int(d.name.split("-")[-1])) \
+        if args.resume and (out / "checkpoints").is_dir() else []
+    resume_from = str(ckpts[-1]) if ckpts else None
+    if resume_from:
+        say(f"Resuming from {trainkit.rel(Path(resume_from))} (optimizer, scheduler and data position restored).")
+        log_line({"resumed_from": resume_from, "at": utc_now()})
+    else:
+        if args.resume:
+            say("--resume: no checkpoint yet under checkpoints/ — starting from the beginning.")
+        run_validation(0, 0.0)  # the base model's own loss on the validation rows, before any update
+    say("Training — the loss should fall over the first few dozen steps (Ctrl-C stops; --checkpoint-steps saves).")
     torch.cuda.reset_peak_memory_stats()
     t_train = time.monotonic()
-    stats = trainer.train()
+    stats = trainer.train(resume_from_checkpoint=resume_from) if resume_from else trainer.train()
     train_seconds = time.monotonic() - t_train
     peak_reserved = torch.cuda.max_memory_reserved() / 2**30
 
