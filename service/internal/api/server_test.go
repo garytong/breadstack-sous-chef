@@ -829,3 +829,129 @@ func TestPostManifest(t *testing.T) {
 		t.Errorf("oversized POST = %d %s", res.StatusCode, out)
 	}
 }
+
+// ---- GET /v1/manifests/deployed ----
+
+type fakeDeployedRegistry struct {
+	fakeRegistry
+	got  []DeployedQuery
+	info DeployedInfo
+	err  error
+}
+
+func (f *fakeDeployedRegistry) Deployed(_ context.Context, q DeployedQuery) (DeployedInfo, error) {
+	f.got = append(f.got, q)
+	if f.err != nil {
+		return DeployedInfo{}, f.err
+	}
+	info := f.info
+	if !q.Body {
+		info.Body = nil
+	}
+	return info, nil
+}
+
+func TestDeployedManifestRoute(t *testing.T) {
+	last := time.Date(2026, 10, 10, 3, 0, 0, 0, time.UTC)
+	reg := &fakeDeployedRegistry{info: DeployedInfo{
+		Hash: goodHash, BuildLine: "int", Source: "launcher", Basis: DeployedBasisRegistration, LauncherBuild: "1a2b3c4",
+		GeneratedFrom: json.RawMessage(`{"sha":"e7e90106"}`), LastRegisteredAt: &last, Registrations: 17, RealTurns7d: 42,
+		WindowDays: 30, Counts: map[string]int{"fields": 2094},
+		Candidates: []DeployedCandidate{{Hash: goodHash, LauncherBuild: "1a2b3c4", LastRegisteredAt: &last}},
+		Body:       json.RawMessage(`{"schema":1}`),
+	}}
+	ts := newTestServer(t, Deps{Manifests: reg})
+
+	// Auth first, like every /v1 route.
+	res, body := do(t, ts, "GET", "/v1/manifests/deployed?line=int", "", "")
+	if res.StatusCode != 401 || errCode(t, body) != "unauthorized" {
+		t.Errorf("no key = %d %s", res.StatusCode, body)
+	}
+	res, body = do(t, ts, "GET", "/v1/manifests/deployed?line=int", "wrong", "")
+	if res.StatusCode != 401 {
+		t.Errorf("wrong key = %d %s", res.StatusCode, body)
+	}
+
+	// The literal route wins over {hash} (which would be 400 bad hash).
+	res, body = do(t, ts, "GET", "/v1/manifests/deployed?line=int", "key-a", "")
+	if res.StatusCode != 200 {
+		t.Fatalf("deployed = %d %s", res.StatusCode, body)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"hash", "build_line", "source", "basis", "launcher_build", "generated_from", "first_seen",
+		"first_registered_at", "last_registered_at", "registrations", "last_real_turn_at", "real_turns_7d", "window_days", "counts", "candidates"} {
+		if _, ok := doc[k]; !ok {
+			t.Errorf("response lacks %q: %s", k, body)
+		}
+	}
+	if _, ok := doc["body"]; ok || doc["first_registered_at"] != nil || doc["last_registered_at"] != "2026-10-10T03:00:00Z" {
+		t.Errorf("body/timestamps wrong: %s", body)
+	}
+	if q := reg.got[len(reg.got)-1]; q != (DeployedQuery{Line: "int", Days: DefaultDeployedDays}) {
+		t.Errorf("query = %+v", q)
+	}
+
+	// Defaults (line int, days 30), body=1, days.
+	do(t, ts, "GET", "/v1/manifests/deployed", "key-b", "")
+	if q := reg.got[len(reg.got)-1]; q != (DeployedQuery{Line: "int", Days: 30}) {
+		t.Errorf("defaults = %+v", q)
+	}
+	res, body = do(t, ts, "GET", "/v1/manifests/deployed?line=prod&body=1&days=7", "key-a", "")
+	if res.StatusCode != 200 || !strings.Contains(body, `"body":{"schema":1}`) {
+		t.Errorf("body=1 = %d %s", res.StatusCode, body)
+	}
+	if q := reg.got[len(reg.got)-1]; q != (DeployedQuery{Line: "prod", Days: 7, Body: true}) {
+		t.Errorf("prod/body/days = %+v", q)
+	}
+
+	// Validation: 400 before the registry is asked.
+	n := len(reg.got)
+	for _, qs := range []string{"line=staging", "line=INT", "days=0", "days=366", "days=x", "days=-1"} {
+		res, body = do(t, ts, "GET", "/v1/manifests/deployed?"+qs, "key-a", "")
+		if res.StatusCode != 400 || errCode(t, body) != "bad_request" {
+			t.Errorf("%s = %d %s", qs, res.StatusCode, body)
+		}
+	}
+	if len(reg.got) != n {
+		t.Errorf("invalid queries reached the registry")
+	}
+
+	// 404 from the registry passes through with its code.
+	reg.err = ErrNoLauncherManifest("int", 30)
+	res, body = do(t, ts, "GET", "/v1/manifests/deployed?line=int", "key-a", "")
+	if res.StatusCode != 404 || errCode(t, body) != "no_launcher_manifest" || !strings.Contains(body, `"line":"int"`) {
+		t.Errorf("404 = %d %s", res.StatusCode, body)
+	}
+	reg.err = errors.New("db down")
+	res, body = do(t, ts, "GET", "/v1/manifests/deployed", "key-a", "")
+	if res.StatusCode != 500 || errCode(t, body) != "internal" || strings.Contains(body, "db down") {
+		t.Errorf("500 = %d %s", res.StatusCode, body)
+	}
+
+	// {hash} still works beside it, and other methods on "deployed" are not
+	// the deployed route.
+	reg.err = nil
+	reg.seen = map[string][]byte{goodHash: []byte(`{"schema":1}`)}
+	res, body = do(t, ts, "GET", "/v1/manifests/"+goodHash, "key-a", "")
+	if res.StatusCode != 200 || !strings.Contains(body, `"index":"s:hero f=2"`) {
+		t.Errorf("GET {hash} = %d %s", res.StatusCode, body)
+	}
+	res, body = do(t, ts, "PUT", "/v1/manifests/deployed", "key-a", `{"schema":1}`)
+	if res.StatusCode != 400 || errCode(t, body) != "bad_request" {
+		t.Errorf("PUT deployed = %d %s", res.StatusCode, body)
+	}
+}
+
+func TestDeployedManifestRoute501(t *testing.T) {
+	// No registry, or a registry without DeployedFinder.
+	for _, deps := range []Deps{{}, {Manifests: &fakeRegistry{}}} {
+		ts := newTestServer(t, deps)
+		res, body := do(t, ts, "GET", "/v1/manifests/deployed", "key-a", "")
+		if res.StatusCode != 501 || errCode(t, body) != "not_implemented" {
+			t.Errorf("deps %+v = %d %s", deps, res.StatusCode, body)
+		}
+	}
+}

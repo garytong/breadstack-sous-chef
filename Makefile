@@ -101,3 +101,64 @@ docker-push: ## tag $(IMAGE) as $(AR_REPO)/sous-chef:$(BUILD_ID) and push (needs
 	docker tag $(IMAGE) $(AR_REPO)/sous-chef:$(BUILD_ID)
 	docker push $(AR_REPO)/sous-chef:$(BUILD_ID)
 	@echo "pushed $(AR_REPO)/sous-chef:$(BUILD_ID)"
+
+# --- Sous Chef pipeline (infra/modules/pipeline; docs/RETRAIN.md, docs/DRIFT.md) ---
+# Every target here either builds in Cloud Build (lab-image, trainer-image),
+# changes production (model-rollout) or starts a workflow (pipeline-*): none
+# runs on its own, each is a person's command.
+GCP_PROJECT      ?= breadstack-sous-chef-int
+CB_PROJECT       ?= prod-devops-core-project
+PIPELINE_REGION  ?= us-central1
+MODEL_REGION     ?= us-east4
+MODEL_REPO       ?= us-east4-docker.pkg.dev/$(GCP_PROJECT)/sous-chef-model/model
+TAG              ?=
+MODE             ?= check
+RESUME           ?=
+RUN              ?=
+RETRAIN_FULL_DATA   = {"mode":"full","trigger":{"drift_run":null,"reason":"manual"}}
+RETRAIN_RESUME_DATA = {"resume_from":"$(RESUME)","run_id":"$(RUN)"}
+
+.PHONY: lab-image trainer-image trainer-tag model-rollout pipeline-smoke pipeline-drift pipeline-retrain pipeline-lint pipeline-tf-test
+
+lab-image: ## build + push sous-chef-lab:$(TAG) in Cloud Build ($(CB_PROJECT)) from THIS checkout — it must be the commit the service tag was built from
+	@test -n "$(TAG)" || { echo "TAG=<service tag> is required (the int service's image tag)"; exit 2; }
+	gcloud builds submit --project $(CB_PROJECT) --config images/lab-runtime/cloudbuild.yaml \
+	  --ignore-file=images/images.gcloudignore --substitutions=_TAG=$(TAG),_PROJECT_ID=$(GCP_PROJECT) .
+
+trainer-image: ## build sous-chef-trainer:t-<content hash> when absent, then tag it $(TAG) (Cloud Build, $(CB_PROJECT))
+	@test -n "$(TAG)" || { echo "TAG=<service tag> is required"; exit 2; }
+	gcloud builds submit --project $(CB_PROJECT) --config images/trainer/cloudbuild.yaml \
+	  --ignore-file=images/images.gcloudignore --substitutions=_TAG=$(TAG),_PROJECT_ID=$(GCP_PROJECT) .
+
+trainer-tag: ## print this checkout's trainer content tag (t-<hash12>)
+	@bash images/trainer/tag.sh
+
+# TAG may be a tag (r4) or a digest (sha256:…, what the pipeline's rollout.json names since it rolls out by digest)
+MODEL_REF = $(if $(filter sha256:%,$(TAG)),$(MODEL_REPO)@$(TAG),$(MODEL_REPO):$(TAG))
+
+model-rollout: ## roll sous-chef-model (production, int) to model:$(TAG) or model@$(TAG) (sha256:…) — rollouts by hand and ROLLBACKS (rollout.json names the old one)
+	@test -n "$(TAG)" || { echo "TAG=<model image tag or sha256:digest> is required, e.g. TAG=r4 or TAG=sha256:…"; exit 2; }
+	gcloud run services update sous-chef-model --project $(GCP_PROJECT) --region $(MODEL_REGION) \
+	  --image $(MODEL_REF)
+	@echo "model-rollout: sous-chef-model -> $(MODEL_REF); drift judges the model state/model.json (or its history) names for this digest (calibrating it if it has no baseline)"
+
+# `gcloud workflows execute` starts an execution and returns its name at once (`run` would block until it ends:
+# up to the decision for a retrain). Follow one with `gcloud workflows executions describe <name>` or the console.
+pipeline-smoke: ## start a SMOKE retrain round (2–6 h with the GPU wait, ~US$2 of API, ~1 GPU-hour; dry rollout)
+	gcloud workflows execute souschef-retrain --project $(GCP_PROJECT) --location $(PIPELINE_REGION) --data='{"mode":"smoke"}'
+
+pipeline-drift: ## run the drift workflow once: MODE=poll|check|weekly|calibrate|night (check/weekly/calibrate force a run)
+	gcloud workflows execute souschef-drift --project $(GCP_PROJECT) --location $(PIPELINE_REGION) \
+	  --data='{"mode":"$(MODE)","force":$(if $(filter poll night,$(MODE)),false,true)}'
+
+pipeline-retrain: ## start a full retrain round by hand (RESUME=<stage> RUN=<run id> resumes a failed round)
+	@test -z "$(RESUME)" || test -n "$(RUN)" || { echo "RESUME=<stage> needs RUN=<run id>"; exit 2; }
+	gcloud workflows execute souschef-retrain --project $(GCP_PROJECT) --location $(PIPELINE_REGION) \
+	  --data='$(if $(RESUME),$(RETRAIN_RESUME_DATA),$(RETRAIN_FULL_DATA))'
+
+pipeline-lint: ## offline lint of the two workflow definitions (+ SCHEMA=<workflows-samples jsonschema/workflows.json>)
+	python3 infra/modules/pipeline/tests/lint_workflows.py $(if $(SCHEMA),--schema $(SCHEMA),)
+
+pipeline-tf-test: ## terraform test for the pipeline module and the int root (mock providers; nothing is read or applied)
+	cd infra/modules/pipeline && terraform init -backend=false -input=false >/dev/null && terraform test
+	cd infra/envs/int && terraform init -backend=false -input=false >/dev/null && terraform test

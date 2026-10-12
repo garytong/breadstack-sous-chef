@@ -1,0 +1,19 @@
+# The lab runtime image's build context is the repository root; only the
+# service tree and the lab go in, without build output, data, runs, venvs
+# or caches (BuildKit reads <Dockerfile>.dockerignore beside the Dockerfile).
+*
+!service
+!lab
+service/bin
+service/coverage.*
+lab/data
+lab/runs
+lab/.venv
+lab/.venv-train
+lab/.cache
+lab/unsloth_compiled_cache
+lab/.pytest_cache
+lab/*.egg-info
+**/__pycache__
+**/.env
+**/.env.*

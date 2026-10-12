@@ -1,0 +1,2725 @@
+# souschef-retrain (DESIGN §3). Input:
+#   {mode: "full" | "smoke", trigger: {drift_run, reason}, dry_rollout: bool}
+#   {resume_from: "<stage>", run_id: "rt-..."}      (RETRAIN.md R8: resume a failed round)
+#
+#   init       lock state/locks/retrain.json (one round at a time; never
+#              broken automatically); resolve the lab and trainer images from
+#              the int service's serving tag; runs/<id>/run.json; notify
+#              retrain_started
+#   prepare    job souschef-prepare   -> runs/<id>/prepare/*
+#   collect    job souschef-collect   -> runs/<id>/collect/*  (teacher build
+#              changed -> images re-resolved, collection restarted once)
+#   dataset    job souschef-dataset   -> runs/<id>/dataset/*, model/context.tgz
+#   train      Vertex custom job ladder -> runs/<id>/train/{adapter,export,stage,DONE}
+#   build      Cloud Build: model:c-<id> -> runs/<id>/model/image.json
+#   candidate  sous-chef-model-cand -> the candidate image; warm
+#   eval       under gpu-eval: sous-chef-model-eval -> production digest;
+#              job souschef-eval -> report.json, decision.json,
+#              eval/candidate-baseline.json
+#   decide     candidate_ready (the decision row on the thermometer), then
+#              poll the decision every 10 min until approved / skipped /
+#              expired
+#   rollout    Approve: patch sous-chef-model's image (a dry rollout in SMOKE
+#              or with pipeline_rollout off), baseline reset, state/model.json,
+#              ack deleted, rolled_out
+#   skip       Skip or expiry: state/ack.json, state/parked/<candidate>.json,
+#              skipped (the round's authored cases stay in the pool)
+#   cleanup    trainer checkpoints deleted, the lock released
+#
+# Any failure: stage_failed (the thermometer @-mentions), run.json marked
+# failed, locks released, every artifact kept.
+#
+# Job contract (I3): python -m souschef_lab.pipeline <prepare|collect|dataset>
+# --run-id <id> --bucket <b> --mode <full|smoke>; eval --run-id <id>
+# --current-url <u> --candidate-url <u> --mode <m>. Each writes
+# runs/<id>/result-<stage>.json {status, stage, run_id, notification?, metrics,
+# artifacts}; exit 0 = finished, 1 = failed (retried), 2 = configuration
+# (never retried).
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - a: '${default(args, {})}'
+          - mode: '${default(map.get(a, "mode"), "full")}'
+          - resume_from: '${default(map.get(a, "resume_from"), "")}'
+          - trigger: '${default(map.get(a, "trigger"), {"drift_run": null, "reason": "manual"})}'
+          - dry_req: '${default(map.get(a, "dry_rollout"), false)}'
+          - accept_loss: '${default(map.get(a, "accept_rebase_loss"), "")}'
+          - wf: "souschef-retrain"
+          - stage: "init"
+          - run_id: "rt-unknown"
+          - candidate_id: null
+          - locked: false
+          - order: ["prepare", "collect", "dataset", "train", "build", "candidate", "eval", "decide"]
+    - valid:
+        switch:
+          - condition: '${not(mode in ["full", "smoke"])}'
+            raise:
+              error_class: "bad_input"
+              message: '${"mode must be full or smoke, not " + mode}'
+    - config:
+        call: load_config
+        result: cfg
+    - body:
+        try:
+          steps:
+            - identity:
+                call: retrain_identity
+                args:
+                  cfg: '${cfg}'
+                  a: '${a}'
+                  mode: '${mode}'
+                  resume_from: '${resume_from}'
+                  order: '${order}'
+                result: ident
+            - who:
+                assign:
+                  - run_id: '${ident.run_id}'
+                  - candidate_id: '${ident.candidate_id}'
+                  - mode: '${ident.mode}'
+                  - start_at: '${ident.start_at}'
+            - decided_guard:
+                # (before the lock: a refused resume leaves no failed-round
+                # behind) resuming at or before eval would re-post candidate_ready under
+                # the same candidate: refuse when the thermometer already holds a
+                # decision row for it (the approver would never see the new
+                # results, and an earlier approval would apply at once)
+                switch:
+                  - condition: '${resume_from != "" and start_at <= 6}'
+                    steps:
+                      - prior_decision:
+                          call: thermometer_decision
+                          args:
+                            cfg: '${cfg}'
+                            candidate_id: '${candidate_id}'
+                          result: prior
+                      - refuse_decided:
+                          switch:
+                            - condition: '${prior.error != null}'
+                              raise:
+                                pipeline_stage: "init"
+                                error_class: "decision_api"
+                                message: '${"cannot resume from " + resume_from + ": the decision API did not answer (" + prior.error + "), so whether " + candidate_id + " was already decided is unknown"}'
+                                attempt: 1
+                                attempts: 1
+                            - condition: '${prior.found}'
+                              raise:
+                                pipeline_stage: "init"
+                                error_class: "candidate_decided"
+                                message: '${"cannot resume from " + resume_from + ": " + candidate_id + " already has a decision on the thermometer (" + default(map.get(prior.d, "state"), "?") + "). resume_from decide re-attaches to it; otherwise start a new round (docs/RETRAIN.md R8)."}'
+                                attempt: 1
+                                attempts: 1
+            - lock:
+                call: retrain_lock
+                args:
+                  cfg: '${cfg}'
+                  run_id: '${run_id}'
+                  resume: '${resume_from != ""}'
+            - locked_now:
+                assign:
+                  - locked: true
+                  - stage: "init"
+            - clear_failed:
+                # this round runs again (a resume), or a person started a new
+                # round by hand: the failed-round block on automatic rounds goes
+                call: clear_failed_round
+                args:
+                  cfg: '${cfg}'
+                  run_id: '${run_id}'
+                  any_run: '${resume_from == "" and mode == "full"}'
+            - images_stage:
+                assign:
+                  - stage: "images"
+            - images:
+                call: require_images
+                args:
+                  cfg: '${cfg}'
+                result: imgs
+            - label:
+                assign:
+                  - smoke_label: ""
+            - label_smoke:
+                switch:
+                  - condition: '${mode == "smoke"}'
+                    assign:
+                      - smoke_label: " (SMOKE)"
+            - context:
+                assign:
+                  - ctx:
+                      run_id: '${run_id}'
+                      candidate_id: '${candidate_id}'
+                      mode: '${mode}'
+                      smoke: '${mode == "smoke"}'
+                      bucket: '${cfg.bucket}'
+                      prefix: '${"runs/" + run_id + "/"}'
+                      imgs: '${imgs}'
+                      trigger: '${default(map.get(default(ident.run, {}), "trigger"), trigger)}'
+                      dry_req: '${dry_req or default(map.get(default(ident.run, {}), "dry_rollout"), false)}'
+                      deployed: '${ident.deployed}'
+            - record:
+                call: run_record
+                args:
+                  cfg: '${cfg}'
+                  ctx: '${ctx}'
+                  existing: '${ident.run}'
+                  resume_from: '${resume_from}'
+            - started:
+                switch:
+                  - condition: '${resume_from == ""}'
+                    steps:
+                      - tell_start:
+                          call: notify
+                          args:
+                            cfg: '${cfg}'
+                            payload:
+                              id: '${run_id + "/retrain_started"}'
+                              kind: retrain_started
+                              severity: info
+                              run_id: '${run_id}'
+                              candidate_id: '${candidate_id}'
+                              title: '${"Sous Chef retrain started: " + run_id + smoke_label}'
+                              summary: '${"Trigger: " + default(map.get(ctx.trigger, "reason"), "manual") + " (drift run " + default(map.get(ctx.trigger, "drift_run"), "none") + "). Teacher and prompt build " + imgs.tag + ". The candidate decision should land in about 10 h (plus any wait for a training GPU)."}'
+                              dedup_key: null
+                              details:
+                                trigger: '${ctx.trigger}'
+                                service_tag: '${imgs.tag}'
+                                mode: '${mode}'
+            - point_jobs:
+                call: point_jobs
+                args:
+                  cfg: '${cfg}'
+                  imgs: '${imgs}'
+
+            - s_prepare:
+                switch:
+                  - condition: '${start_at <= 0}'
+                    steps:
+                      - st_prepare:
+                          assign:
+                            - stage: "prepare"
+                      - do_prepare:
+                          call: stage_job
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "prepare"
+                            job: '${cfg.jobs.prepare}'
+                            args: '${["prepare", "--run-id", run_id, "--bucket", "gs://" + cfg.bucket, "--mode", mode, "--accept-rebase-loss", accept_loss]}'
+                            timeout_s: 21600
+                            attempts: 2
+                      - done_prepare:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "prepare"
+            - s_collect:
+                switch:
+                  - condition: '${start_at <= 1}'
+                    steps:
+                      - st_collect:
+                          assign:
+                            - stage: "collect"
+                      - do_collect:
+                          call: stage_collect
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                          result: imgs_after
+                      - new_imgs:
+                          assign:
+                            - ctx.imgs: '${imgs_after}'
+                      - done_collect:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "collect"
+            - s_dataset:
+                switch:
+                  - condition: '${start_at <= 2}'
+                    steps:
+                      - st_dataset:
+                          assign:
+                            - stage: "dataset"
+                      - do_dataset:
+                          call: stage_job
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "dataset"
+                            job: '${cfg.jobs.dataset}'
+                            args: '${["dataset", "--run-id", run_id, "--bucket", "gs://" + cfg.bucket, "--mode", mode]}'
+                            timeout_s: 21600
+                            attempts: 2
+                      - context_tgz:
+                          call: gcs_meta
+                          args:
+                            bucket: '${cfg.bucket}'
+                            name: '${ctx.prefix + "model/context.tgz"}'
+                          result: tgz
+                      - need_tgz:
+                          switch:
+                            - condition: '${tgz == null}'
+                              raise:
+                                pipeline_stage: "dataset"
+                                error_class: "no_build_context"
+                                message: '${"the dataset stage finished without " + ctx.prefix + "model/context.tgz (the model image build context)"}'
+                                attempt: 1
+                                attempts: 1
+                      - done_dataset:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "dataset"
+            - s_train:
+                switch:
+                  - condition: '${start_at <= 3}'
+                    steps:
+                      - st_train:
+                          assign:
+                            - stage: "train"
+                      - do_train:
+                          call: stage_train
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                      - done_train:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "train"
+            - s_build:
+                switch:
+                  - condition: '${start_at <= 4}'
+                    steps:
+                      - st_build:
+                          assign:
+                            - stage: "build"
+                      - do_build:
+                          call: stage_build
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                      - done_build:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "build"
+            - s_candidate:
+                switch:
+                  - condition: '${start_at <= 5}'
+                    steps:
+                      - st_candidate:
+                          assign:
+                            - stage: "candidate"
+                      - do_candidate:
+                          call: stage_candidate
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                      - done_candidate:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "candidate"
+            - s_eval:
+                switch:
+                  - condition: '${start_at <= 6}'
+                    steps:
+                      - st_eval:
+                          assign:
+                            - stage: "eval"
+                      - do_eval:
+                          call: stage_eval
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                      - done_eval:
+                          call: mark_stage
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            stage: "eval"
+            - s_decide:
+                assign:
+                  - stage: "decide"
+            - do_decide:
+                call: stage_decide
+                args:
+                  cfg: '${cfg}'
+                  ctx: '${ctx}'
+                result: decision
+            - done_decide:
+                call: mark_stage
+                args:
+                  cfg: '${cfg}'
+                  ctx: '${ctx}'
+                  stage: "decide"
+                  extra: '${decision}'
+            - outcome:
+                switch:
+                  - condition: '${decision.state == "approved"}'
+                    steps:
+                      - st_rollout:
+                          assign:
+                            - stage: "rollout"
+                      - do_rollout:
+                          call: stage_rollout
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            d: '${decision}'
+                  - condition: true
+                    steps:
+                      - st_skip:
+                          assign:
+                            - stage: "skip"
+                      - do_skip:
+                          call: stage_skip
+                          args:
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
+                            d: '${decision}'
+            - st_cleanup:
+                assign:
+                  - stage: "cleanup"
+            - do_cleanup:
+                call: stage_cleanup
+                args:
+                  cfg: '${cfg}'
+                  ctx: '${ctx}'
+                  outcome: '${decision.state}'
+            - unlocked:
+                assign:
+                  - locked: false
+        except:
+          as: e
+          steps:
+            - shape:
+                call: as_stage_error
+                args:
+                  e: '${e}'
+                  stage: '${stage}'
+                result: err
+            - mark_failed:
+                # only a round this execution ran (held the lock): a refused
+                # resume or a busy lock leaves the named run's record alone
+                switch:
+                  - condition: '${locked}'
+                    steps:
+                      - mark_it:
+                          try:
+                            call: mark_failed
+                            args:
+                              cfg: '${cfg}'
+                              run_id: '${run_id}'
+                              err: '${err}'
+                          except:
+                            as: e2
+                            steps:
+                              - ignore_mark:
+                                  call: log
+                                  args:
+                                    text: "could not mark run.json failed"
+                                    severity: WARNING
+            - resume_at:
+                # the resume_from a person passes: the failed stage when the
+                # resume accepts it; rollout and skip re-attach at decide (the
+                # decision stands; a finished rollout is never patched twice);
+                # images (no run started) and cleanup (rollout or Skip done)
+                # leave nothing to resume and never block
+                assign:
+                  - resume_stage: '${default(map.get(err, "pipeline_stage"), "")}'
+            - resume_map:
+                switch:
+                  - condition: '${resume_stage == "rollout" or resume_stage == "skip" or resume_stage == "decision-api"}'
+                    assign:
+                      - resume_stage: "decide"
+                  - condition: '${not(resume_stage in order)}'
+                    assign:
+                      - resume_stage: ""
+            - failed_round:
+                # no automatic round starts while a failed one is not resumed
+                # (drift reads it): a deterministic failure must not cost a full
+                # round at every check. SMOKE never blocks.
+                switch:
+                  - condition: '${locked and mode != "smoke" and resume_stage != ""}'
+                    steps:
+                      - write_failed:
+                          try:
+                            call: gcs_write
+                            args:
+                              bucket: '${cfg.bucket}'
+                              name: "state/failed-round.json"
+                              data:
+                                run_id: '${run_id}'
+                                candidate_id: '${candidate_id}'
+                                stage: '${err.pipeline_stage}'
+                                error_class: '${default(map.get(err, "error_class"), "error")}'
+                                at: '${time.format(sys.now())}'
+                                execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+                                resume: '${"gcloud workflows execute souschef-retrain --project=" + cfg.project + " --location=" + cfg.workflows_region + " --data=" + json.encode_to_string(json.encode_to_string({"resume_from": resume_stage, "run_id": run_id}))}'
+                          except:
+                            as: e5
+                            steps:
+                              - ignore_failed:
+                                  call: log
+                                  args:
+                                    text: "could not write state/failed-round.json"
+                                    severity: WARNING
+                      - resume_hint:
+                          assign:
+                            - err.message: '${err.message + "\nNo new round starts automatically until this one is resumed (resume_from " + resume_stage + ") or state/failed-round.json is deleted."}'
+            - report:
+                call: notify_failure
+                args:
+                  cfg: '${cfg}'
+                  run_id: '${run_id}'
+                  wf: '${wf}'
+                  e: '${err}'
+                  candidate_id: '${candidate_id}'
+            - free_gpu:
+                try:
+                  call: lock_release
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: "state/locks/gpu-eval.json"
+                    run_id: '${run_id}'
+                except:
+                  as: e3
+                  steps:
+                    - ignore_gpu:
+                        assign:
+                          - e3: null
+            - free_round:
+                switch:
+                  - condition: '${locked}'
+                    steps:
+                      - release_round:
+                          try:
+                            call: lock_release
+                            args:
+                              bucket: '${cfg.bucket}'
+                              name: "state/locks/retrain.json"
+                              run_id: '${run_id}'
+                          except:
+                            as: e4
+                            steps:
+                              - ignore_round:
+                                  assign:
+                                    - e4: null
+            - fail:
+                raise: '${err}'
+    - done:
+        return:
+          run_id: '${run_id}'
+          candidate_id: '${candidate_id}'
+          outcome: '${decision.state}'
+
+as_stage_error:
+  # e as a stage error map, the current stage when e names none.
+  params: [e, stage]
+  steps:
+    - already:
+        switch:
+          - condition: '${get_type(e) == "map" and "pipeline_stage" in e}'
+            return: '${e}'
+    - text:
+        call: err_text
+        args:
+          e: '${e}'
+        result: msg
+    - cls:
+        call: err_class
+        args:
+          e: '${e}'
+        result: cls
+    - done:
+        return:
+          pipeline_stage: '${stage}'
+          error_class: '${cls}'
+          message: '${msg}'
+          attempt: 1
+          attempts: 1
+
+clear_failed_round:
+  # Delete state/failed-round.json when it names this run (or any run: a
+  # person started a new full round by hand). Never raises.
+  params: [cfg, run_id, any_run: false]
+  steps:
+    - read:
+        try:
+          call: gcs_read
+          args:
+            bucket: '${cfg.bucket}'
+            name: "state/failed-round.json"
+          result: fr
+        except:
+          as: e
+          steps:
+            - unreadable:
+                return: false
+    - mine:
+        switch:
+          - condition: '${fr != null and (any_run or default(map.get(fr, "run_id"), "") == run_id)}'
+            steps:
+              - note:
+                  call: log
+                  args:
+                    text: '${"clearing state/failed-round.json (" + json.encode_to_string(fr) + ") for " + run_id}'
+              - del:
+                  try:
+                    call: gcs_delete
+                    args:
+                      bucket: '${cfg.bucket}'
+                      name: "state/failed-round.json"
+                  except:
+                    as: e2
+                    steps:
+                      - keep:
+                          return: false
+              - cleared:
+                  return: true
+    - done:
+        return: false
+
+# ---- init ----------------------------------------------------------------------------
+
+retrain_identity:
+  params: [cfg, a, mode, resume_from, order]
+  steps:
+    - fresh:
+        switch:
+          - condition: '${resume_from == ""}'
+            next: new_run
+    - need_id:
+        switch:
+          - condition: '${default(map.get(a, "run_id"), "") == ""}'
+            raise:
+              pipeline_stage: "init"
+              error_class: "bad_input"
+              message: "resume_from needs run_id"
+              attempt: 1
+              attempts: 1
+    - find:
+        assign:
+          - rid: '${a.run_id}'
+          - at: -1
+    - scan:
+        for:
+          value: s
+          index: i
+          in: '${order}'
+          steps:
+            - hit:
+                switch:
+                  - condition: '${s == resume_from}'
+                    assign:
+                      - at: '${i}'
+    - known:
+        switch:
+          - condition: '${at < 0}'
+            raise:
+              pipeline_stage: "init"
+              error_class: "bad_input"
+              message: '${"resume_from must be one of " + json.encode_to_string(order)}'
+              attempt: 1
+              attempts: 1
+    - run:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"runs/" + rid + "/run.json"}'
+        result: run
+    - exists:
+        switch:
+          - condition: '${run == null}'
+            raise:
+              pipeline_stage: "init"
+              error_class: "bad_input"
+              message: '${"no runs/" + rid + "/run.json to resume"}'
+              attempt: 1
+              attempts: 1
+    - resumed:
+        return:
+          run_id: '${rid}'
+          candidate_id: '${run.candidate_id}'
+          mode: '${run.mode}'
+          start_at: '${at}'
+          run: '${run}'
+          deployed: '${map.get(run, "deployed")}'
+    - new_run:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/deployed.json"
+        result: st
+    - stamp:
+        call: now_compact
+        result: ts
+    - ids:
+        assign:
+          # the round's manifest, pinned in run.json: every stage reads this
+          # one, even if the launcher deploys again mid-round
+          - pin:
+              hash: '${map.get(default(st, {}), "hash")}'
+              launcher_build: '${map.get(default(st, {}), "launcher_build")}'
+              generated_from: '${map.get(default(st, {}), "generated_from")}'
+          - h: '${default(map.get(default(st, {}), "hash"), "nohash00")}'
+          - rid: '${"rt-" + ts + "-" + text.substring(h + "00000000", 0, 8)}'
+          - cand: '${"c-" + rid}'
+    - smoke_tag:
+        switch:
+          - condition: '${mode == "smoke"}'
+            assign:
+              - cand: '${"c-smoke-" + rid}'
+    - created:
+        return:
+          run_id: '${rid}'
+          candidate_id: '${cand}'
+          mode: '${mode}'
+          start_at: 0
+          run: null
+          deployed: '${pin}'
+
+retrain_lock:
+  params: [cfg, run_id, resume]
+  steps:
+    - take:
+        call: lock_acquire
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/retrain.json"
+          run_id: '${run_id}'
+          ttl_s: 259200
+          breakable: false
+        result: got
+    - ok:
+        switch:
+          - condition: '${got.acquired}'
+            return: true
+          # a resumed round whose earlier execution died without releasing
+          - condition: '${resume and got.holder != null and default(map.get(got.holder, "run_id"), "") == run_id}'
+            steps:
+              - takeover:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: "state/locks/retrain.json"
+                    data:
+                      holder: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+                      run_id: '${run_id}'
+                      expires_at: '${time.format(sys.now() + 259200)}'
+                      updated_at: '${time.format(sys.now())}'
+              - taken:
+                  return: true
+    - stale:
+        assign:
+          - note: ""
+    - is_stale:
+        switch:
+          - condition: '${got.holder != null and "expires_at" in got.holder and time.parse(got.holder.expires_at) < sys.now()}'
+            assign:
+              - note: " It has had no progress for 72 h: a stale lock. Look at that round first, then delete the lock by hand (docs/RETRAIN.md R8)."
+    - busy:
+        raise:
+          pipeline_stage: "init"
+          error_class: "retrain_locked"
+          message: '${"another round holds state/locks/retrain.json: " + json.encode_to_string(got.holder) + "." + note}'
+          attempt: 1
+          attempts: 1
+
+require_images:
+  params: [cfg]
+  steps:
+    - resolve:
+        call: resolve_images
+        args:
+          cfg: '${cfg}'
+        result: imgs
+    - lab:
+        switch:
+          - condition: '${not(imgs.lab_ok)}'
+            raise:
+              pipeline_stage: "images"
+              error_class: "lab_image_missing"
+              message: '${"lab image missing for " + imgs.tag + ": " + imgs.lab + " (CI pushes it; for a manual service build: make lab-image TAG=" + imgs.tag + "). A round never trains on a mismatched prompt."}'
+              attempt: 1
+              attempts: 1
+          - condition: '${not(imgs.trainer_ok)}'
+            raise:
+              pipeline_stage: "images"
+              error_class: "trainer_image_missing"
+              message: '${"trainer image missing for " + imgs.tag + ": " + imgs.trainer + " (CI tags it; by hand: make trainer-image TAG=" + imgs.tag + ")"}'
+              attempt: 1
+              attempts: 1
+    - done:
+        return: '${imgs}'
+
+point_jobs:
+  params: [cfg, imgs]
+  steps:
+    - each:
+        for:
+          value: j
+          in: '${[cfg.jobs.prepare, cfg.jobs.collect, cfg.jobs.dataset, cfg.jobs.eval]}'
+          steps:
+            - point:
+                call: job_set_image
+                args:
+                  cfg: '${cfg}'
+                  job: '${j}'
+                  image: '${imgs.lab}'
+    - done:
+        return: true
+
+run_record:
+  params: [cfg, ctx, existing, resume_from]
+  steps:
+    - fresh:
+        switch:
+          - condition: '${existing == null}'
+            steps:
+              - new_rec:
+                  assign:
+                    - rec:
+                        run_id: '${ctx.run_id}'
+                        candidate_id: '${ctx.candidate_id}'
+                        mode: '${ctx.mode}'
+                        trigger: '${ctx.trigger}'
+                        dry_rollout: '${ctx.dry_req}'
+                        deployed: '${ctx.deployed}'
+                        started_at: '${time.format(sys.now())}'
+                        updated_at: '${time.format(sys.now())}'
+                        execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+                        images: '${ctx.imgs}'
+                        status: running
+                        stages: {}
+                        resumes: []
+              - write_new:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${ctx.prefix + "run.json"}'
+                    data: '${rec}'
+              - created:
+                  return: '${rec}'
+    - resumed:
+        assign:
+          - rec: '${existing}'
+          - rec.status: running
+          - rec.updated_at: '${time.format(sys.now())}'
+          - rec.images: '${ctx.imgs}'
+          - rec.resumes: '${list.concat(default(map.get(existing, "resumes"), []), {"at": time.format(sys.now()), "from": resume_from, "execution": sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")})}'
+    - write:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "run.json"}'
+          data: '${rec}'
+    - done:
+        return: '${rec}'
+
+mark_stage:
+  # run.json stages.<stage> = done, and the retrain lock's progress stamp.
+  params: [cfg, ctx, stage, extra: null]
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "run.json"}'
+        result: rec
+    - init:
+        switch:
+          - condition: '${rec == null}'
+            assign:
+              - rec:
+                  run_id: '${ctx.run_id}'
+                  stages: {}
+    - stages:
+        switch:
+          - condition: '${not("stages" in rec) or rec.stages == null}'
+            assign:
+              - rec.stages: {}
+    - set:
+        assign:
+          - rec.stages[stage]:
+              status: done
+              at: '${time.format(sys.now())}'
+              detail: '${extra}'
+          - rec.updated_at: '${time.format(sys.now())}'
+          - rec.images: '${ctx.imgs}'
+    - write:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "run.json"}'
+          data: '${rec}'
+    - refresh:
+        call: lock_refresh
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/retrain.json"
+          run_id: '${ctx.run_id}'
+          ttl_s: 259200
+    - done:
+        return: true
+
+mark_failed:
+  params: [cfg, run_id, err]
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"runs/" + run_id + "/run.json"}'
+        result: rec
+    - none:
+        switch:
+          - condition: '${rec == null}'
+            return: false
+    - set:
+        assign:
+          - rec.status: failed
+          - rec.failed:
+              at: '${time.format(sys.now())}'
+              stage: '${err.pipeline_stage}'
+              error_class: '${default(map.get(err, "error_class"), "error")}'
+              message: '${default(map.get(err, "message"), "")}'
+              execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+          - rec.updated_at: '${time.format(sys.now())}'
+    - write:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"runs/" + run_id + "/run.json"}'
+          data: '${rec}'
+    - done:
+        return: true
+
+# ---- job stages ------------------------------------------------------------------------
+
+stage_job:
+  # Run a lab stage up to `attempts` times; post the notification its result
+  # carries (candidate_ready excepted: the decide stage sends that one with
+  # the decision). Exit 2 is never retried. {res, attempt, execution}
+  params: [cfg, ctx, stage, job, args, timeout_s, attempts, env: {}]
+  steps:
+    - base:
+        assign:
+          - jenv:
+              SERVICE_IMAGE_TAG: '${ctx.imgs.tag}'
+              PIPELINE_RUN_ID: '${ctx.run_id}'
+              PIPELINE_CANDIDATE_ID: '${ctx.candidate_id}'
+          - jenv: '${map.merge(jenv, env)}'
+    - tries:
+        for:
+          value: attempt
+          range: '${[1, attempts]}'
+          steps:
+            - run:
+                call: run_job
+                args:
+                  cfg: '${cfg}'
+                  job: '${job}'
+                  args: '${args}'
+                  env: '${jenv}'
+                  timeout_s: '${timeout_s}'
+                result: r
+            - res:
+                call: gcs_read
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: '${ctx.prefix + "result-" + stage + ".json"}'
+                result: res
+            - tell:
+                # candidate_ready is the decide stage's, sent with the decision
+                call: notify_result
+                args:
+                  cfg: '${cfg}'
+                  res: '${res}'
+                  run_id: '${ctx.run_id}'
+                  candidate_id: '${ctx.candidate_id}'
+                  id_prefix: '${ctx.run_id + "/" + stage + "/" + string(attempt)}'
+                  skip: ["heartbeat", "candidate_ready"]
+            - teacher:
+                # collect: the teacher's build changed; the caller restarts
+                switch:
+                  - condition: '${res != null and default(map.get(res, "status"), "") == "teacher_changed"}'
+                    return:
+                      res: '${res}'
+                      attempt: '${attempt}'
+                      execution: '${r.execution}'
+            - ok:
+                switch:
+                  - condition: '${r.ok}'
+                    return:
+                      res: '${res}'
+                      attempt: '${attempt}'
+                      execution: '${r.execution}'
+            - note:
+                call: result_note
+                args:
+                  res: '${res}'
+                result: rnote
+            - give_up:
+                switch:
+                  - condition: '${r.exit_code == 2 or attempt >= attempts}'
+                    raise:
+                      pipeline_stage: '${stage}'
+                      error_class: '${"exit " + string(r.exit_code)}'
+                      message: '${"job " + job + " failed (" + r.message + ")" + rnote}'
+                      attempt: '${attempt}'
+                      attempts: '${attempts}'
+                      execution: '${r.execution}'
+                      exit_code: '${r.exit_code}'
+            - backoff:
+                call: sys.sleep
+                args:
+                  seconds: 60
+    - unreachable:
+        raise:
+          pipeline_stage: '${stage}'
+          error_class: "no_attempts"
+          message: "attempts must be >= 1"
+          attempt: 0
+          attempts: '${attempts}'
+
+result_note:
+  params: [res]
+  steps:
+    - none:
+        switch:
+          - condition: '${res == null}'
+            return: "; no result file"
+    - some:
+        return: '${"; result status " + default(map.get(res, "status"), "?") + ": " + json.encode_to_string(default(map.get(res, "error"), default(map.get(res, "metrics"), {})))}'
+
+stage_collect:
+  # Teacher collection; a teacher build change mid-run re-resolves the images
+  # and restarts collection once from scratch (rows across builds are never
+  # mixed); a second change fails the stage. Returns the images in force.
+  params: [cfg, ctx]
+  steps:
+    - init:
+        assign:
+          - restarts: 0
+          - imgs: '${ctx.imgs}'
+          - cargs: '${["collect", "--run-id", ctx.run_id, "--bucket", "gs://" + cfg.bucket, "--mode", ctx.mode]}'
+    - run:
+        call: stage_job
+        args:
+          cfg: '${cfg}'
+          ctx: '${ctx}'
+          stage: "collect"
+          job: '${cfg.jobs.collect}'
+          args: '${cargs}'
+          timeout_s: 86400
+          attempts: 3
+        result: out
+    - changed:
+        switch:
+          - condition: '${default(map.get(default(out.res, {}), "status"), "") != "teacher_changed"}'
+            return: '${imgs}'
+          - condition: '${restarts >= 1}'
+            raise:
+              pipeline_stage: "collect"
+              error_class: "teacher_changed"
+              message: '${"teacher build changed twice during collection (" + json.encode_to_string(default(map.get(out.res, "metrics"), {})) + "); collection stopped"}'
+              attempt: 2
+              attempts: 2
+    - re_resolve:
+        call: require_images
+        args:
+          cfg: '${cfg}'
+        result: imgs
+    - repoint:
+        call: point_jobs
+        args:
+          cfg: '${cfg}'
+          imgs: '${imgs}'
+    - again:
+        assign:
+          - restarts: '${restarts + 1}'
+          - ctx.imgs: '${imgs}'
+          # a new attempt = new site ids and logs; rows across teacher builds never mix
+          - cargs: '${list.concat(list.concat(cargs, "--attempt"), string(restarts + 1))}'
+        next: run
+
+# ---- training on Vertex AI (DESIGN §3.5) ----------------------------------------------------
+
+stage_train:
+  params: [cfg, ctx]
+  steps:
+    - done_before:
+        call: gcs_meta
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "train/DONE"}'
+        result: done
+    - skip:
+        switch:
+          - condition: '${done != null}'
+            return: "already trained"
+    - init:
+        assign:
+          - attempts_log: []
+          - preemptions: 0
+          - unknown: 0
+          - started: '${sys.now()}'
+          - outcome: null
+    - ladder:
+        for:
+          value: rung
+          in: '${cfg.trainer.ladder}'
+          steps:
+            - rung_init:
+                assign:
+                  # unknown failures are counted per rung: two on one machine
+                  # type move to the next rung; four in all fail the stage
+                  - unknown_rung: 0
+            - rung_try:
+                for:
+                  value: try_n
+                  range: '${[1, rung.attempts]}'
+                  steps:
+                    - attempt:
+                        call: vertex_attempt
+                        args:
+                          cfg: '${cfg}'
+                          ctx: '${ctx}'
+                          rung: '${rung}'
+                          try_n: '${try_n}'
+                        result: out
+                    - logged:
+                        assign:
+                          - attempts_log: '${list.concat(attempts_log, out)}'
+                    - won:
+                        switch:
+                          - condition: '${out.state == "succeeded"}'
+                            assign:
+                              - outcome: '${out}'
+                    - fatal_now:
+                        switch:
+                          - condition: '${out.state == "fatal"}'
+                            raise:
+                              pipeline_stage: "train"
+                              error_class: "train_failed"
+                              message: '${"training failed: " + json.encode_to_string(attempts_log)}'
+                              attempt: '${len(attempts_log)}'
+                              attempts: '${len(attempts_log)}'
+                    - counts:
+                        switch:
+                          - condition: '${out.state == "preempted"}'
+                            assign:
+                              - preemptions: '${preemptions + 1}'
+                          - condition: '${out.state == "unknown"}'
+                            assign:
+                              - unknown: '${unknown + 1}'
+                              - unknown_rung: '${unknown_rung + 1}'
+                    - too_many_unknown:
+                        switch:
+                          - condition: '${unknown >= 4}'
+                            raise:
+                              pipeline_stage: "train"
+                              error_class: "train_failed"
+                              message: '${"four training attempts failed for no known reason (not capacity, not preemption, not the trainer): " + json.encode_to_string(attempts_log)}'
+                              attempt: '${len(attempts_log)}'
+                              attempts: '${len(attempts_log)}'
+                    - next_rung:
+                        # succeeded, refused, no capacity, or two unknown
+                        # failures here: leave this rung
+                        switch:
+                          - condition: '${out.state == "succeeded" or out.state == "refused" or out.state == "capacity" or unknown_rung >= 2}'
+                            next: break
+            - leave_ladder:
+                switch:
+                  - condition: '${outcome != null}'
+                    next: break
+    - result:
+        switch:
+          - condition: '${outcome == null}'
+            raise:
+              pipeline_stage: "train"
+              error_class: "ladder_exhausted"
+              message: '${"every rung of the training ladder failed: " + json.encode_to_string(attempts_log)}'
+              attempt: '${len(attempts_log)}'
+              attempts: '${len(attempts_log)}'
+    - record:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "train/vertex.json"}'
+          data:
+            machine: '${outcome.machine_type}'
+            accelerator: '${outcome.accelerator_type}'
+            scheduling: '${outcome.strategy}'
+            region: '${outcome.region}'
+            rung: '${outcome.rung}'
+            job: '${outcome.job}'
+            preemptions: '${preemptions}'
+            wall_h: '${(sys.now() - started) / 3600}'
+            attempts: '${attempts_log}'
+    - done:
+        return: '${outcome}'
+
+vertex_attempt:
+  # One Vertex CustomJob. {state: succeeded | preempted | capacity | refused
+  # | unknown | fatal, rung, region, job, message, ...}
+  params: [cfg, ctx, rung, try_n]
+  steps:
+    - init:
+        assign:
+          - base: '${"https://" + rung.region + "-aiplatform.googleapis.com/v1/"}'
+          - started: '${sys.now()}'
+          - entry:
+              rung: '${rung.name}'
+              region: '${rung.region}'
+              machine_type: '${rung.machine_type}'
+              accelerator_type: '${rung.accelerator_type}'
+              strategy: '${rung.strategy}'
+              attempt: '${try_n}'
+              started_at: '${time.format(sys.now())}'
+              job: null
+          - scheduling:
+              timeout: '${string(cfg.trainer.timeout_s) + "s"}'
+              strategy: '${rung.strategy}'
+    - smoke_wait:
+        # SMOKE proves the edges, not the queue: 30 min of Flex-start at most,
+        # then the ladder moves on to Spot
+        assign:
+          - wait_s: '${default(map.get(rung, "max_wait_s"), 0)}'
+    - smoke_cap:
+        switch:
+          - condition: '${ctx.smoke and wait_s > 1800}'
+            assign:
+              - wait_s: 1800
+              - rung.max_wait_s: 1800
+    - flex:
+        switch:
+          - condition: '${rung.strategy == "FLEX_START" and wait_s > 0}'
+            assign:
+              - scheduling.maxWaitDuration: '${string(wait_s) + "s"}'
+    - body:
+        assign:
+          - job:
+              displayName: '${"souschef-train-" + ctx.run_id + "-" + rung.name + "-" + string(try_n)}'
+              labels:
+                purpose: sous-chef-pipeline
+                run: '${ctx.run_id}'
+                rung: '${rung.name}'
+              jobSpec:
+                workerPoolSpecs:
+                  - machineSpec:
+                      machineType: '${rung.machine_type}'
+                      acceleratorType: '${rung.accelerator_type}'
+                      acceleratorCount: 1
+                    replicaCount: 1
+                    diskSpec:
+                      bootDiskType: pd-ssd
+                      bootDiskSizeGb: '${cfg.trainer.disk_gb}'
+                    containerSpec:
+                      imageUri: '${ctx.imgs.trainer}'
+                      args: '${[ctx.run_id, ctx.mode]}'
+                      env:
+                        - name: PIPELINE_BUCKET
+                          value: '${"gs://" + cfg.bucket}'
+                        - name: GOOGLE_CLOUD_PROJECT
+                          value: '${cfg.project}'
+                        - name: TRAIN_RUNG
+                          value: '${rung.name}'
+                        - name: TRAIN_ATTEMPT
+                          value: '${string(try_n)}'
+                scheduling: '${scheduling}'
+                serviceAccount: '${cfg.trainer.service_account}'
+                baseOutputDirectory:
+                  outputUriPrefix: '${"gs://" + cfg.bucket + "/" + ctx.prefix + "train/vertex/"}'
+    - before:
+        # the trainer's progress before this attempt (a preemption shows as
+        # progress made since)
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "train/progress.json"}'
+        result: prog0
+    - create:
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${base + "projects/" + cfg.project + "/locations/" + rung.region + "/customJobs"}'
+            body: '${job}'
+          result: created
+        except:
+          as: e
+          steps:
+            - why:
+                call: err_text
+                args:
+                  e: '${e}'
+                result: msg
+            - code:
+                assign:
+                  - code: '${default(map.get(e, "code"), 0)}'
+                  - entry.message: '${msg}'
+            - classify:
+                switch:
+                  - condition: '${code == 429 or text.match_regex(msg, "(?i)quota|resource.?exhausted|stockout|capacity|unavailable")}'
+                    steps:
+                      - cap:
+                          assign:
+                            - entry.state: capacity
+                      - cap_out:
+                          return: '${entry}'
+                  - condition: '${code == 400 or code == 404 or code == 403}'
+                    steps:
+                      - ref:
+                          assign:
+                            - entry.state: refused
+                      - ref_out:
+                          return: '${entry}'
+            - other:
+                raise: '${e}'
+    - named:
+        assign:
+          - entry.job: '${created.name}'
+          - deadline: '${sys.now() + cfg.trainer.timeout_s + default(map.get(rung, "max_wait_s"), 0) + 7200}'
+          # a job that never starts (no Spot / on-demand capacity: Vertex
+          # queues it silently) is given up as `capacity` after max_pending_s
+          # (Flex-start: its own maxWaitDuration + 30 min), so the ladder
+          # moves on instead of waiting for the 14 h deadline
+          - pending_until: '${sys.now() + default(map.get(rung, "max_pending_s"), 3600)}'
+    - flex_pending:
+        switch:
+          - condition: '${rung.strategy == "FLEX_START"}'
+            assign:
+              - pending_until: '${sys.now() + default(map.get(rung, "max_wait_s"), 14400) + 1800}'
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: 300
+    - poll:
+        call: api_get
+        args:
+          url: '${base + created.name}'
+        result: cj
+    - state:
+        switch:
+          - condition: '${cj.state == "JOB_STATE_SUCCEEDED"}'
+            next: succeeded
+          - condition: '${cj.state == "JOB_STATE_FAILED" or cj.state == "JOB_STATE_CANCELLED" or cj.state == "JOB_STATE_EXPIRED"}'
+            next: failed
+          - condition: '${sys.now() > deadline}'
+            next: overdue
+          - condition: '${(cj.state == "JOB_STATE_QUEUED" or cj.state == "JOB_STATE_PENDING") and not("startTime" in cj) and sys.now() > pending_until}'
+            next: never_started
+    - keep_lock:
+        call: lock_refresh
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/retrain.json"
+          run_id: '${ctx.run_id}'
+          ttl_s: 259200
+        next: wait
+    - overdue:
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${base + created.name + ":cancel"}'
+        except:
+          as: e
+          steps:
+            - ignore:
+                assign:
+                  - entry.cancel_error: true
+    - overdue_out:
+        assign:
+          - entry.state: unknown
+          - entry.message: '${"no end after the deadline (state " + cj.state + "); cancelled"}'
+        next: finish
+    - never_started:
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${base + created.name + ":cancel"}'
+        except:
+          as: e
+          steps:
+            - ignore_pending:
+                assign:
+                  - entry.cancel_error: true
+    - never_started_out:
+        assign:
+          - entry.state: capacity
+          - entry.message: '${"never started (still " + cj.state + " after " + string(int((pending_until - started) / 60)) + " min): no capacity; cancelled"}'
+        next: finish
+    - succeeded:
+        call: gcs_meta
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "train/DONE"}'
+        result: done
+    - check_done:
+        # every condition names its next: what a matched condition without one
+        # does when the step has a next is not documented
+        switch:
+          - condition: '${done == null}'
+            assign:
+              - entry.state: fatal
+              - entry.message: "the job succeeded without writing train/DONE"
+            next: finish
+          - condition: true
+            assign:
+              - entry.state: succeeded
+            next: finish
+    - failed:
+        assign:
+          - msg: '${default(map.get(cj, ["error", "message"]), cj.state)}'
+          - entry.message: '${msg}'
+    - progress:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "train/progress.json"}'
+        result: prog
+    - prog_fields:
+        assign:
+          - pst: '${default(map.get(default(prog, {}), "status"), "")}'
+          - pat: '${map.get(default(prog, {}), "updated_at")}'
+          - pnew: false
+          - step0: '${default(map.get(default(prog0, {}), "last_step"), 0)}'
+          - step1: '${default(map.get(default(prog, {}), "last_step"), 0)}'
+    - prog_new:
+        # written during this attempt (time.parse only on a string; a minute
+        # of slack for a stamp at whole seconds or a skewed clock — the
+        # previous attempt's last write is at least one 5-minute poll older)
+        switch:
+          - condition: '${get_type(pat) == "string"}'
+            assign:
+              - pnew: '${time.parse(pat) >= started - 60}'
+    - classify_failed:
+        switch:
+          # the trainer's SIGTERM trap (pipeline-train.sh): a preemption or a
+          # restart, checkpoints pushed — resume, never fatal
+          - condition: '${pnew and pst == "interrupted"}'
+            assign:
+              - entry.state: preempted
+              - entry.message: '${msg + " | trainer: interrupted at " + default(map.get(prog, "step"), "?")}'
+          - condition: '${text.match_regex(msg, "(?i)preempt")}'
+            assign:
+              - entry.state: preempted
+          - condition: '${text.match_regex(msg, "(?i)stockout|resource.?exhausted|zone_resource_pool|insufficient|not enough resources|capacity|quota|max.?wait|unavailable|could not be scheduled")}'
+            assign:
+              - entry.state: capacity
+          - condition: '${pnew and pst == "failed"}'
+            assign:
+              - entry.state: fatal
+              - entry.message: '${msg + " | trainer: " + json.encode_to_string(default(map.get(prog, "error"), prog))}'
+          # killed without the trap (SIGKILL) but the SFT moved on since the
+          # attempt began: a preemption in all but name
+          - condition: '${pnew and pst == "running" and get_type(step1) == "integer" and get_type(step0) == "integer" and step1 > step0}'
+            assign:
+              - entry.state: preempted
+              - entry.message: '${msg + " | trainer progressed " + string(step0) + " -> " + string(step1) + " before it stopped"}'
+          - condition: true
+            assign:
+              - entry.state: unknown
+    - finish:
+        assign:
+          - entry.ended_at: '${time.format(sys.now())}'
+          - entry.vertex_state: '${default(map.get(default(cj, {}), "state"), null)}'
+    - out:
+        return: '${entry}'
+
+# ---- model image, candidate, paired eval -------------------------------------------------
+
+stage_build:
+  params: [cfg, ctx]
+  steps:
+    - names:
+        assign:
+          - image: '${cfg.model_repo.image + ":" + ctx.candidate_id}'
+          - attempt: 0
+    - existing:
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.model_repo.location}'
+          repository: '${cfg.model_repo.repository}'
+          package: "model"
+          tag: '${ctx.candidate_id}'
+        result: had
+    - reuse:
+        switch:
+          - condition: '${had != null}'
+            steps:
+              - rec_reuse:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${ctx.prefix + "model/image.json"}'
+                    data:
+                      image: '${image}'
+                      tag: '${ctx.candidate_id}'
+                      digest: '${had}'
+                      build_id: null
+                      at: '${time.format(sys.now())}'
+                      note: "tag already in the repository (an earlier attempt pushed it)"
+              - reused:
+                  return: '${had}'
+    - spec:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${cfg.build.spec}'
+        result: spec
+    - body:
+        assign:
+          - build: '${spec}'
+          - build.source:
+              storageSource:
+                bucket: '${cfg.bucket}'
+                object: '${ctx.prefix + "model/context.tgz"}'
+          - build.substitutions:
+              _BUCKET: '${cfg.bucket}'
+              _RUN_ID: '${ctx.run_id}'
+              _IMAGE: '${image}'
+          - build.serviceAccount: '${"projects/" + cfg.project + "/serviceAccounts/" + cfg.build.service_account}'
+          - build.tags: ["souschef-pipeline", "model-image"]
+    - submit:
+        assign:
+          - attempt: '${attempt + 1}'
+    - create:
+        call: api_send
+        args:
+          method: POST
+          url: '${"https://cloudbuild.googleapis.com/v1/projects/" + cfg.project + "/locations/" + cfg.build.region + "/builds"}'
+          body: '${build}'
+        result: op
+    - bid:
+        assign:
+          - build_id: '${op.metadata.build.id}'
+          - burl: '${"https://cloudbuild.googleapis.com/v1/projects/" + cfg.project + "/locations/" + cfg.build.region + "/builds/" + op.metadata.build.id}'
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: 60
+    - poll:
+        call: api_get
+        args:
+          url: '${burl}'
+        result: b
+    - status:
+        switch:
+          - condition: '${b.status == "SUCCESS"}'
+            next: pushed
+          - condition: '${b.status == "QUEUED" or b.status == "PENDING" or b.status == "WORKING" or b.status == "STATUS_UNKNOWN"}'
+            next: wait
+    - failed:
+        switch:
+          - condition: '${attempt < 2 and (b.status == "INTERNAL_ERROR" or b.status == "TIMEOUT" or b.status == "EXPIRED")}'
+            next: submit
+    - give_up:
+        raise:
+          pipeline_stage: "build"
+          error_class: '${"build " + b.status}'
+          message: '${"model image build " + build_id + " ended " + b.status + ": " + default(map.get(b, "statusDetail"), "") + " | log " + default(map.get(b, "logUrl"), "")}'
+          attempt: '${attempt}'
+          attempts: 2
+    - pushed:
+        assign:
+          - digest: '${b.results.images[0].digest}'
+    - rec:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "model/image.json"}'
+          data:
+            image: '${image}'
+            tag: '${ctx.candidate_id}'
+            digest: '${digest}'
+            build_id: '${build_id}'
+            log_url: '${default(map.get(b, "logUrl"), null)}'
+            at: '${time.format(sys.now())}'
+    - done:
+        return: '${digest}'
+
+stage_candidate:
+  params: [cfg, ctx]
+  steps:
+    - img:
+        call: built_image
+        args:
+          cfg: '${cfg}'
+          ctx: '${ctx}'
+          stage: "candidate"
+        result: img
+    - point:
+        call: service_set_image
+        args:
+          cfg: '${cfg}'
+          svc: '${cfg.cand_model}'
+          image: '${cfg.model_repo.image + "@" + img.digest}'
+          note: '${ctx.candidate_id}'
+    - warm:
+        call: warm
+        args:
+          cfg: '${cfg}'
+          url: '${cfg.cand_model.url}'
+          minutes: '${default(map.get(cfg, "l4_wait_minutes"), 360)}'
+        result: ok
+    - check:
+        switch:
+          - condition: '${not(ok)}'
+            raise:
+              pipeline_stage: "candidate"
+              error_class: "no_l4"
+              message: '${"the candidate GPU service did not answer within " + string(default(map.get(cfg, "l4_wait_minutes"), 360)) + " min (no L4 in us-east4?). Resume with resume_from candidate."}'
+              attempt: 1
+              attempts: 1
+    - done:
+        return: true
+
+stage_eval:
+  # The paired eval on two GPU services, under gpu-eval.
+  params: [cfg, ctx]
+  steps:
+    - lock:
+        call: lock_wait
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/gpu-eval.json"
+          run_id: '${ctx.run_id}'
+          ttl_s: 86400
+          wait_s: 28800
+          breakable: true
+        result: got
+    - held:
+        switch:
+          - condition: '${not(got.acquired)}'
+            raise:
+              pipeline_stage: "eval"
+              error_class: "gpu_eval_locked"
+              message: '${"state/locks/gpu-eval.json held for 8 h by " + json.encode_to_string(got.holder)}'
+              attempt: 1
+              attempts: 1
+    - on_gpu:
+        try:
+          steps:
+            - prod:
+                call: prod_model
+                args:
+                  cfg: '${cfg}'
+                result: prod
+            - img:
+                call: built_image
+                args:
+                  cfg: '${cfg}'
+                  ctx: '${ctx}'
+                  stage: "eval"
+                result: img
+            - point:
+                call: service_set_image
+                args:
+                  cfg: '${cfg}'
+                  svc: '${cfg.eval_model}'
+                  image: '${prod.digest_image}'
+                  note: '${"current " + prod.digest}'
+            - warm_cur:
+                call: warm
+                args:
+                  cfg: '${cfg}'
+                  url: '${cfg.eval_model.url}'
+                  minutes: '${default(map.get(cfg, "l4_wait_minutes"), 360)}'
+                result: ok_cur
+            - warm_cand:
+                call: warm
+                args:
+                  cfg: '${cfg}'
+                  url: '${cfg.cand_model.url}'
+                  minutes: '${default(map.get(cfg, "l4_wait_minutes"), 360)}'
+                result: ok_cand
+            - both:
+                switch:
+                  - condition: '${not(ok_cur and ok_cand)}'
+                    raise:
+                      pipeline_stage: "eval"
+                      error_class: "no_l4"
+                      message: '${"GPU services not answering (current " + string(ok_cur) + ", candidate " + string(ok_cand) + "): no L4 in us-east4? Resume with resume_from eval."}'
+                      attempt: 1
+                      attempts: 1
+            - exam:
+                call: stage_job
+                args:
+                  cfg: '${cfg}'
+                  ctx: '${ctx}'
+                  stage: "eval"
+                  job: '${cfg.jobs.eval}'
+                  args: '${["eval", "--run-id", ctx.run_id, "--current-url", cfg.eval_model.url, "--candidate-url", cfg.cand_model.url, "--mode", ctx.mode]}'
+                  timeout_s: 64800
+                  attempts: 2
+                  env:
+                    PROD_MODEL_IMAGE: '${prod.image}'
+                    PROD_MODEL_DIGEST: '${prod.digest}'
+                    CAND_MODEL_IMAGE: '${img.image}'
+                    CAND_MODEL_DIGEST: '${img.digest}'
+            - finished:
+                call: gcs_write
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: '${ctx.prefix + "eval/finished.json"}'
+                  data:
+                    at: '${time.format(sys.now())}'
+                    current: '${prod}'
+                    candidate: '${img}'
+        except:
+          as: e
+          steps:
+            - unlock_err:
+                call: lock_release
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: "state/locks/gpu-eval.json"
+                  run_id: '${ctx.run_id}'
+            - again:
+                raise: '${e}'
+    - unlock:
+        call: lock_release
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/gpu-eval.json"
+          run_id: '${ctx.run_id}'
+    - decision:
+        call: gcs_meta
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "decision.json"}'
+        result: dec
+    - need:
+        switch:
+          - condition: '${dec == null}'
+            raise:
+              pipeline_stage: "eval"
+              error_class: "no_decision_payload"
+              message: '${"the eval finished without " + ctx.prefix + "decision.json"}'
+              attempt: 1
+              attempts: 1
+    - done:
+        return: true
+
+# ---- the decision (DESIGN §3.9, §4.4) -------------------------------------------------------
+
+thermometer_decision:
+  # {found: bool, d: decision | null, error: null | text}
+  params: [cfg, candidate_id]
+  steps:
+    - get:
+        try:
+          steps:
+            - key:
+                call: therm_key
+                args:
+                  cfg: '${cfg}'
+                result: key
+            - call_api:
+                try:
+                  call: http.get
+                  args:
+                    url: '${cfg.thermometer_url + "/api/ingest/souschef/decisions/" + text.url_encode(candidate_id)}'
+                    headers:
+                      X-API-Key: '${key}'
+                    timeout: 60
+                  result: r
+                retry: '${http.default_retry}'
+        except:
+          as: e
+          steps:
+            - absent:
+                switch:
+                  # the route's own JSON NOT_FOUND only: a plain 404 is the
+                  # thermometer with SOUSCHEF_PIPELINE off (no such route),
+                  # which says nothing about the candidate
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404 and get_type(map.get(e, "body")) == "map" and map.get(e, ["body", "code"]) == "NOT_FOUND"}'
+                    return:
+                      found: false
+                      d: null
+                      error: null
+            - why:
+                call: err_text
+                args:
+                  e: '${e}'
+                result: msg
+            - errored:
+                return:
+                  found: false
+                  d: null
+                  error: '${msg}'
+    - ok:
+        return:
+          found: true
+          d: '${r.body}'
+          error: null
+
+stage_decide:
+  params: [cfg, ctx]
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "decision.json"}'
+        result: dec
+    - need:
+        switch:
+          - condition: '${dec == null}'
+            raise:
+              pipeline_stage: "decide"
+              error_class: "no_decision_payload"
+              message: '${"no " + ctx.prefix + "decision.json"}'
+              attempt: 1
+              attempts: 1
+    - res_eval:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "result-eval.json"}'
+        result: rev
+    - text:
+        assign:
+          - note: '${default(map.get(default(rev, {}), "notification"), {})}'
+          - bar_pass: '${default(map.get(dec, "bar_pass"), false)}'
+          - ttl_days: '${cfg.decision_ttl_days}'
+    - smoke_ttl:
+        switch:
+          - condition: '${ctx.smoke}'
+            assign:
+              - ttl_days: '${cfg.smoke_ttl_days}'
+    - prior:
+        call: thermometer_decision
+        args:
+          cfg: '${cfg}'
+          candidate_id: '${ctx.candidate_id}'
+        result: prior
+    - expiry:
+        assign:
+          - expires_at: '${time.format(sys.now() + ttl_days * 86400)}'
+    - keep_expiry:
+        switch:
+          - condition: '${prior.found and prior.d != null and "expires_at" in prior.d}'
+            assign:
+              - expires_at: '${prior.d.expires_at}'
+    - payload:
+        assign:
+          - bar_word: "FAIL"
+    - bar_ok:
+        switch:
+          - condition: '${bar_pass}'
+            assign:
+              - bar_word: "PASS"
+    - smoke_word:
+        assign:
+          - smoke_label: ""
+    - smoke_word_set:
+        switch:
+          - condition: '${ctx.smoke}'
+            assign:
+              - smoke_label: " (SMOKE)"
+    - message:
+        assign:
+          - ready_msg:
+              id: '${ctx.run_id + "/candidate_ready/1"}'
+              kind: candidate_ready
+              severity: info
+              run_id: '${ctx.run_id}'
+              candidate_id: '${ctx.candidate_id}'
+              title: '${default(map.get(note, "title"), "Sous Chef candidate ready: decide or skip" + smoke_label)}'
+              summary: '${default(map.get(note, "summary"), ctx.candidate_id + " vs the live model; bar " + bar_word + ". Approve rolls it out to int now. Skip parks it and batches its cases into the next big drift.")}'
+              details: '${default(map.get(note, "details"), {})}'
+              dedup_key: null
+              decision:
+                expires_at: '${expires_at}'
+                smoke: '${ctx.smoke}'
+                bar_pass: '${bar_pass}'
+                results: '${default(map.get(dec, "results"), dec)}'
+    - ask_nonce:
+        # this execution's id in the message: a retried first POST whose
+        # first response was lost answers 200 with this same nonce (ours);
+        # a row someone else posted first cannot carry it
+        assign:
+          - nonce: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+    - ask_nonce_set:
+        switch:
+          - condition: '${get_type(ready_msg.details) == "map"}'
+            assign:
+              - ready_msg.details.ask: '${nonce}'
+          - condition: true
+            assign:
+              - ready_msg.details:
+                  ask: '${nonce}'
+    - asked_before:
+        # wf/runs/<id>/decide.json: this round has asked before (a resume).
+        # Under wf/, which only this account writes: a job account cannot
+        # plant it to skip the first-ask check below.
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"wf/" + ctx.prefix + "decide.json"}'
+        result: posted
+    - send:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload: '${ready_msg}'
+        result: sent
+    - conflict:
+        # 409: the candidate's decision row belongs to another notification
+        switch:
+          - condition: '${not(sent.ok) and default(map.get(sent, "code"), 0) == 409}'
+            raise:
+              pipeline_stage: "decide"
+              error_class: "decision_mismatch"
+              message: '${"the thermometer refused " + ready_msg.id + " (409): " + ctx.candidate_id + " already has a decision row from another notification. Nothing was rolled out or parked; look at the decision page and the thermometer''s API keys."}'
+              attempt: 1
+              attempts: 1
+    - first_ask:
+        switch:
+          - condition: '${posted == null}'
+            steps:
+              # the round's first ask answered as a duplicate (200, not 201):
+              # someone holding the pipeline key posted this candidate first —
+              # whatever that row says is not this round's to act on
+              - dup_nonce:
+                  assign:
+                    - dup_ask: null
+              - dup_nonce_read:
+                  try:
+                    steps:
+                      - dup_read:
+                          assign:
+                            - dup_ask: '${map.get(sent, ["body", "notification", "details", "ask"])}'
+                  except:
+                    as: e
+                    steps:
+                      - dup_none:
+                          assign:
+                            - dup_ask: null
+              - planted:
+                  switch:
+                    - condition: '${sent.ok and default(map.get(sent, "code"), 0) == 200 and dup_ask != nonce}'
+                      raise:
+                        pipeline_stage: "decide"
+                        error_class: "decision_mismatch"
+                        message: '${"the thermometer already held " + ready_msg.id + " before this round first asked for a decision on " + ctx.candidate_id + ": not this round''s. Nothing was rolled out or parked; look at the decision page and the thermometer''s API keys, then resume_from decide."}'
+                        attempt: 1
+                        attempts: 1
+              - record:
+                  assign:
+                    - posted:
+                        notification_id: '${ready_msg.id}'
+                        candidate_id: '${ctx.candidate_id}'
+                        posted_at: '${time.format(sys.now())}'
+                        first_code: '${default(map.get(sent, "code"), null)}'
+              - write_posted:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${"wf/" + ctx.prefix + "decide.json"}'
+                    data: '${posted}'
+    - w_init:
+        assign:
+          - deadline: '${time.parse(expires_at) + 86400}'
+          - err_since: 0
+          - err_told: 0
+    - w_poll:
+        call: thermometer_decision
+        args:
+          cfg: '${cfg}'
+          candidate_id: '${ctx.candidate_id}'
+        result: got
+    - w_judge:
+        switch:
+          - condition: '${got.error != null}'
+            next: w_error
+          - condition: '${not(got.found)}'
+            next: w_repost
+          # a row that is not this round's: refuse now, not at the expiry
+          - condition: '${default(map.get(got.d, "notification_id"), "") != ready_msg.id or default(map.get(got.d, "run_id"), "") != ctx.run_id}'
+            next: w_decided
+          - condition: '${got.d.state == "approved" or got.d.state == "skipped" or got.d.state == "expired"}'
+            next: w_decided
+        next: w_ok
+    - w_ok:
+        assign:
+          - err_since: 0
+        next: w_wait
+    - w_repost:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload: '${ready_msg}'
+        next: w_wait
+    - w_error:
+        switch:
+          - condition: '${err_since == 0}'
+            assign:
+              - err_since: '${sys.now()}'
+    - w_error_old:
+        switch:
+          - condition: '${sys.now() - err_since > 21600 and sys.now() - err_told > 21600}'
+            steps:
+              - w_tell:
+                  call: notify_failure
+                  args:
+                    cfg: '${cfg}'
+                    run_id: '${ctx.run_id}'
+                    wf: "souschef-retrain"
+                    candidate_id: '${ctx.candidate_id}'
+                    e:
+                      pipeline_stage: "decision-api"
+                      error_class: "thermometer_unreachable"
+                      message: '${"the decision API has failed for " + string(int((sys.now() - err_since) / 3600)) + " h (" + got.error + "); still waiting"}'
+                      attempt: 1
+                      attempts: 1
+              - w_told:
+                  assign:
+                    - err_told: '${sys.now()}'
+    - w_wait:
+        switch:
+          - condition: '${sys.now() > deadline}'
+            return:
+              state: expired
+              decided_by: null
+              decided_at: null
+              note: "no decision read before the expiry (+1 day)"
+              override_bar: false
+    - w_refresh:
+        call: lock_refresh
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/retrain.json"
+          run_id: '${ctx.run_id}'
+          ttl_s: 259200
+    - w_sleep:
+        call: sys.sleep
+        args:
+          seconds: 600
+        next: w_poll
+    - w_decided:
+        call: decision_is_ours
+        args:
+          d: '${got.d}'
+          ctx: '${ctx}'
+          notification_id: '${ready_msg.id}'
+          bar_pass: '${bar_pass}'
+    - w_ours:
+        return: '${got.d}'
+
+decision_is_ours:
+  # Act only on the decision this round asked for: the thermometer row must
+  # name this round's notification, run and SMOKE flag and carry the bar
+  # verdict sent; an approval must come after the row's creation (both the
+  # thermometer's clock), and an approval of a failing bar must carry the
+  # override. (A row someone created before the round first asked is caught
+  # at the ask: a 200 duplicate.) Anything else is a stage failure (with the
+  # mention) and nothing is rolled out.
+  params: [d, ctx, notification_id, bar_pass]
+  steps:
+    - fields:
+        assign:
+          - why: ""
+          - created: '${map.get(d, "created_at")}'
+          - decided: '${map.get(d, "decided_at")}'
+    - check:
+        switch:
+          - condition: '${map.get(d, "notification_id") != notification_id}'
+            assign:
+              - why: '${"its notification is " + default(map.get(d, "notification_id"), "none") + ", not " + notification_id}'
+          - condition: '${map.get(d, "run_id") != ctx.run_id}'
+            assign:
+              - why: '${"its run is " + default(map.get(d, "run_id"), "none") + ", not " + ctx.run_id}'
+          - condition: '${default(map.get(d, "smoke"), false) != ctx.smoke}'
+            assign:
+              - why: '${"its SMOKE flag is " + string(default(map.get(d, "smoke"), false)) + ", the round is " + string(ctx.smoke)}'
+          - condition: '${default(map.get(d, "bar_pass"), false) != bar_pass}'
+            assign:
+              - why: '${"its bar verdict is " + string(default(map.get(d, "bar_pass"), false)) + ", the eval said " + string(bar_pass)}'
+          - condition: '${created == null}'
+            assign:
+              - why: "it has no creation time"
+    - approval:
+        switch:
+          - condition: '${why != "" or d.state != "approved"}'
+            next: judge
+          - condition: '${decided == null}'
+            assign:
+              - why: "an approval with no approval time"
+            next: judge
+          - condition: '${not(bar_pass) and default(map.get(d, "override_bar"), false) != true}'
+            assign:
+              - why: "an approval of a failing bar without the override"
+            next: judge
+    - approved_after:
+        switch:
+          - condition: '${time.parse(decided) < time.parse(created)}'
+            assign:
+              - why: '${"its approval time " + decided + " is before its creation"}'
+    - judge:
+        switch:
+          - condition: '${why != ""}'
+            raise:
+              pipeline_stage: "decide"
+              error_class: "decision_mismatch"
+              message: '${"the thermometer decision on " + ctx.candidate_id + " (" + d.state + ") is not this round''s: " + why + ". Nothing was rolled out or parked; look at the decision page and the thermometer''s API keys before resuming."}'
+              attempt: 1
+              attempts: 1
+    - ok:
+        return: true
+
+# ---- approve: the rollout (DESIGN §3.10) --------------------------------------------------
+
+stage_rollout:
+  params: [cfg, ctx, d]
+  steps:
+    - who:
+        assign:
+          - by: '${default(map.get(d, "decided_by"), "an approver")}'
+          - dry: '${ctx.smoke or ctx.dry_req or not(cfg.rollout_enabled)}'
+    - img:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "model/image.json"}'
+        result: img
+    - verify:
+        # roll out by digest, and only the digest the approver saw: the
+        # candidate tag in the model repository (immutable; only the builder
+        # and this workflow write there), the build record and the decision
+        # payload's results.candidate.digest must all name the same image
+        call: approved_digest
+        args:
+          cfg: '${cfg}'
+          ctx: '${ctx}'
+          img: '${img}'
+        result: digest
+    - by_digest:
+        assign:
+          - tag_image: '${cfg.model_repo.image + "@" + digest}'
+    - mode:
+        switch:
+          - condition: '${dry}'
+            next: dry_run
+        next: real
+    # --- dry: permissions and a read, production untouched
+    - dry_run:
+        call: api_send
+        args:
+          method: POST
+          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.prod_model.region + "/services/" + cfg.prod_model.name + ":testIamPermissions"}'
+          body:
+            permissions: ["run.services.update", "run.services.get"]
+        result: perms
+    - dry_read:
+        call: service_ready_image
+        args:
+          cfg: '${cfg}'
+          svc: '${cfg.prod_model}'
+        result: live
+    - dry_rec:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"wf/" + ctx.prefix + "rollout.json"}'
+          data:
+            dry_run: true
+            at: '${time.format(sys.now())}'
+            approved_by: '${by}'
+            permissions: '${default(map.get(perms, "permissions"), [])}'
+            live_image: '${live.image}'
+            live_revision: '${live.revision}'
+            would_roll: '${tag_image}'
+    - dry_why:
+        call: dry_reason
+        args:
+          ctx: '${ctx}'
+          cfg: '${cfg}'
+        result: why
+    - dry_tell:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload:
+            id: '${ctx.run_id + "/rolled_out"}'
+            kind: rolled_out
+            severity: info
+            run_id: '${ctx.run_id}'
+            candidate_id: '${ctx.candidate_id}'
+            title: '${"Sous Chef: dry rollout of " + ctx.candidate_id + " (approved by " + by + ")"}'
+            summary: '${"Production untouched (" + why + "). The pipeline may update " + cfg.prod_model.name + ": " + json.encode_to_string(default(map.get(perms, "permissions"), [])) + ". Live: " + live.image + "."}'
+            dedup_key: null
+            details:
+              dry_run: true
+              approved_by: '${by}'
+              live_image: '${live.image}'
+              would_roll: '${tag_image}'
+    - dry_done:
+        return:
+          dry_run: true
+    # --- real: patch production
+    - real:
+        # a resume at decide after this round's rollout finished (the cleanup
+        # failed, or a person rolled back since): never patch production again
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"wf/" + ctx.prefix + "rollout.json"}'
+        result: prior_ro
+    - real_once:
+        switch:
+          - condition: '${prior_ro != null and map.get(prior_ro, "dry_run") == false and map.get(prior_ro, "state") == "done"}'
+            steps:
+              - real_again:
+                  call: log
+                  args:
+                    text: '${ctx.candidate_id + " was already rolled out by this round at " + default(map.get(prior_ro, "at"), "?") + " (revision " + default(map.get(prior_ro, "revision"), "?") + "): production not patched again; roll out by hand with make model-rollout if that is wanted"}'
+                    severity: WARNING
+              - real_done:
+                  return:
+                    dry_run: false
+                    revision: '${map.get(prior_ro, "revision")}'
+                    repeated: true
+    - real_lock:
+        call: lock_wait
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/gpu-eval.json"
+          run_id: '${ctx.run_id}'
+          ttl_s: 10800
+          wait_s: 28800
+          breakable: true
+        result: got
+    - real_held:
+        switch:
+          - condition: '${not(got.acquired)}'
+            raise:
+              pipeline_stage: "rollout"
+              error_class: "gpu_eval_locked"
+              message: '${"state/locks/gpu-eval.json held for 8 h by " + json.encode_to_string(got.holder) + "; the approval stands: resume with resume_from decide"}'
+              attempt: 1
+              attempts: 1
+    - on_prod:
+        try:
+          steps:
+            - headroom:
+                # L4 quota 3 = production + eval + candidate: a revision swap
+                # briefly needs a 4th. Wait for the eval and candidate
+                # services to idle (~15 min after their last request).
+                switch:
+                  - condition: '${not(cfg.l4_headroom)}'
+                    steps:
+                      - fin:
+                          call: gcs_read
+                          args:
+                            bucket: '${cfg.bucket}'
+                            name: '${ctx.prefix + "eval/finished.json"}'
+                          result: fin
+                      - idle_at:
+                          assign:
+                            - idle_at: '${sys.now() + 1200}'
+                      - from_fin:
+                          switch:
+                            - condition: '${fin != null}'
+                              assign:
+                                - idle_at: '${time.parse(fin.at) + 1200}'
+                      - idle_wait:
+                          switch:
+                            - condition: '${idle_at > sys.now()}'
+                              steps:
+                                - nap:
+                                    call: sys.sleep
+                                    args:
+                                      seconds: '${int(idle_at - sys.now()) + 1}'
+            - before:
+                call: service_ready_image
+                args:
+                  cfg: '${cfg}'
+                  svc: '${cfg.prod_model}'
+                result: before
+            - old_tag:
+                call: last_segment
+                args:
+                  s: '${before.image}'
+                result: old_tag
+            - save:
+                call: gcs_write
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: '${"wf/" + ctx.prefix + "rollout.json"}'
+                  data:
+                    dry_run: false
+                    state: patching
+                    at: '${time.format(sys.now())}'
+                    approved_by: '${by}'
+                    old_image: '${before.image}'
+                    old_revision: '${before.revision}'
+                    new_image: '${tag_image}'
+                    new_digest: '${img.digest}'
+                    rollback: '${"make model-rollout TAG=" + old_tag}'
+            - patch:
+                call: service_set_image
+                args:
+                  cfg: '${cfg}'
+                  svc: '${cfg.prod_model}'
+                  image: '${tag_image}'
+                  note: '${ctx.candidate_id}'
+                result: patched
+            - warm:
+                call: warm
+                args:
+                  cfg: '${cfg}'
+                  url: '${cfg.prod_model.url}'
+                  minutes: 20
+                result: warmed
+        except:
+          as: e
+          steps:
+            - unlock_err:
+                call: lock_release
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: "state/locks/gpu-eval.json"
+                  run_id: '${ctx.run_id}'
+            - again:
+                raise: '${e}'
+    - unlock:
+        call: lock_release
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/gpu-eval.json"
+          run_id: '${ctx.run_id}'
+    - live_tag:
+        # keep rule of the model repository's cleanup policy (best effort)
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${"https://artifactregistry.googleapis.com/v1/projects/" + cfg.project + "/locations/" + cfg.model_repo.location + "/repositories/" + cfg.model_repo.repository + "/packages/model/tags"}'
+            query:
+              tagId: '${"live-" + ctx.run_id}'
+            body:
+              name: '${"projects/" + cfg.project + "/locations/" + cfg.model_repo.location + "/repositories/" + cfg.model_repo.repository + "/packages/model/tags/live-" + ctx.run_id}'
+              version: '${"projects/" + cfg.project + "/locations/" + cfg.model_repo.location + "/repositories/" + cfg.model_repo.repository + "/packages/model/versions/" + img.digest}'
+        except:
+          as: e
+          steps:
+            - tag_note:
+                call: log
+                args:
+                  text: '${"could not add tag live-" + ctx.run_id + " (the cleanup policy may later delete " + ctx.candidate_id + ")"}'
+                  severity: WARNING
+    - route:
+        call: route_check
+        args:
+          cfg: '${cfg}'
+        result: route
+    - state:
+        # the candidate becomes the model: its baseline, state/model.json,
+        # its rounds marked trained, no ack (retrain/decide.py)
+        call: decision_job
+        args:
+          cfg: '${cfg}'
+          ctx: '${ctx}'
+          outcome: approved
+          by: '${by}'
+          digest: '${img.digest}'
+        result: baseline_note
+    - done_rec:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"wf/" + ctx.prefix + "rollout.json"}'
+          data:
+            dry_run: false
+            state: done
+            at: '${time.format(sys.now())}'
+            approved_by: '${by}'
+            old_image: '${before.image}'
+            old_revision: '${before.revision}'
+            new_image: '${tag_image}'
+            new_digest: '${img.digest}'
+            revision: '${patched.revision}'
+            warmed: '${warmed}'
+            route: '${route}'
+            baseline: '${baseline_note}'
+            rollback: '${"make model-rollout TAG=" + old_tag}'
+    - rev_short:
+        call: last_segment_slash
+        args:
+          s: '${patched.revision}'
+        result: rev_short
+    - tell:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload:
+            id: '${ctx.run_id + "/rolled_out"}'
+            kind: rolled_out
+            severity: info
+            run_id: '${ctx.run_id}'
+            candidate_id: '${ctx.candidate_id}'
+            title: '${"Sous Chef: " + ctx.candidate_id + " is live on int (approved by " + by + ")"}'
+            summary: '${cfg.prod_model.name + " -> model:" + ctx.candidate_id + " (revision " + rev_short + "); drift baseline reset. " + route.note + " Rollback: make model-rollout TAG=" + old_tag}'
+            dedup_key: null
+            details:
+              dry_run: false
+              approved_by: '${by}'
+              old_image: '${before.image}'
+              new_image: '${tag_image}'
+              digest: '${img.digest}'
+              revision: '${patched.revision}'
+              warmed: '${warmed}'
+              baseline: '${baseline_note}'
+    - done:
+        return:
+          dry_run: false
+          revision: '${patched.revision}'
+
+built_image:
+  # runs/<id>/model/image.json, checked against the registry: its digest must
+  # be what model:c-<run> (immutable; only the builder and this workflow push
+  # there) names. A job account can write runs/, so the file alone is not
+  # trusted to pick the image the candidate and eval services serve.
+  params: [cfg, ctx, stage]
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "model/image.json"}'
+        result: img
+    - tag:
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.model_repo.location}'
+          repository: '${cfg.model_repo.repository}'
+          package: "model"
+          tag: '${ctx.candidate_id}'
+        result: from_tag
+    - seen:
+        assign:
+          - built: '${map.get(default(img, {}), "digest")}'
+    - same:
+        switch:
+          - condition: '${from_tag == null or built == null or from_tag != built}'
+            raise:
+              pipeline_stage: '${stage}'
+              error_class: "digest_mismatch"
+              message: '${"model/image.json names " + default(built, "no digest") + " but model:" + ctx.candidate_id + " is " + default(from_tag, "absent") + ": not served. Rebuild with resume_from build."}'
+              attempt: 1
+              attempts: 1
+    - done:
+        return: '${img}'
+
+approved_digest:
+  params: [cfg, ctx, img]
+  steps:
+    - tag:
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.model_repo.location}'
+          repository: '${cfg.model_repo.repository}'
+          package: "model"
+          tag: '${ctx.candidate_id}'
+        result: from_tag
+    - dec:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "decision.json"}'
+        result: dec
+    - seen:
+        assign:
+          - built: '${map.get(default(img, {}), "digest")}'
+          - shown: '${map.get(default(dec, {}), ["results", "candidate", "digest"])}'
+    - same:
+        switch:
+          - condition: '${from_tag == null or built == null or shown == null or from_tag != built or shown != built}'
+            raise:
+              pipeline_stage: "rollout"
+              error_class: "digest_mismatch"
+              message: '${"not rolled out: the candidate image digests disagree (model:" + ctx.candidate_id + " -> " + default(from_tag, "none") + ", model/image.json " + default(built, "none") + ", decision results " + default(shown, "none") + "). Production is untouched."}'
+              attempt: 1
+              attempts: 1
+    - done:
+        return: '${built}'
+
+dry_reason:
+  params: [ctx, cfg]
+  steps:
+    - pick:
+        switch:
+          - condition: '${ctx.smoke}'
+            return: "SMOKE"
+          - condition: '${not(cfg.rollout_enabled)}'
+            return: "pipeline_rollout is off"
+    - asked:
+        return: "dry_rollout was requested"
+
+last_segment:
+  # the tag of an image reference (or its digest)
+  params: [s]
+  steps:
+    - by_digest:
+        switch:
+          - condition: '${len(text.find_all(s, "@")) > 0}'
+            return: '${text.split(s, "@")[1]}'
+    - parts:
+        assign:
+          - p: '${text.split(s, ":")}'
+    - done:
+        return: '${p[len(p) - 1]}'
+
+last_segment_slash:
+  params: [s]
+  steps:
+    - parts:
+        assign:
+          - p: '${text.split(s, "/")}'
+    - done:
+        return: '${p[len(p) - 1]}'
+
+route_check:
+  # int's /version: the in-house route must still point at the production
+  # model service (nothing to change there; reported, never fatal).
+  params: [cfg]
+  steps:
+    - get:
+        try:
+          call: http.get
+          args:
+            url: '${cfg.int_service.url + "/version"}'
+            timeout: 30
+          result: r
+        except:
+          as: e
+          steps:
+            - unknown:
+                return:
+                  ok: null
+                  note: "Route check skipped (int /version unreachable)."
+    - info:
+        assign:
+          - ri: '${map.get(default(r.body, {}), ["route_info", cfg.route_name])}'
+          - url: '${map.get(default(ri, {}), "url")}'
+    - judge:
+        switch:
+          - condition: '${ri == null}'
+            return:
+              ok: false
+              note: '${"int /version lists no route " + cfg.route_name + "!"}'
+          - condition: '${url != null and url != cfg.prod_model.url}'
+            return:
+              ok: false
+              note: '${cfg.route_name + " points at " + url + ", not " + cfg.prod_model.url + "!"}'
+    - fine:
+        return:
+          ok: true
+          note: '${cfg.route_name + " still points at " + cfg.prod_model.name + "."}'
+
+
+# ---- skip / expiry ---------------------------------------------------------------------------
+
+stage_skip:
+  params: [cfg, ctx, d]
+  steps:
+    - who:
+        assign:
+          - state: '${default(map.get(d, "state"), "expired")}'
+          - by: '${default(map.get(d, "decided_by"), "expiry")}'
+    - expired_by:
+        switch:
+          - condition: '${state == "expired"}'
+            assign:
+              - by: "expiry"
+    - dec:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "decision.json"}'
+        result: dec
+    - img:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "model/image.json"}'
+        result: img
+    - park:
+        switch:
+          - condition: '${ctx.smoke}'
+            steps:
+              # A SMOKE round never touches the drift state: parked only
+              - park_smoke:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${"state/parked/" + ctx.candidate_id + ".json"}'
+                    data:
+                      candidate_id: '${ctx.candidate_id}'
+                      run_id: '${ctx.run_id}'
+                      smoke: true
+                      image: '${map.get(default(img, {}), "image")}'
+                      digest: '${map.get(default(img, {}), "digest")}'
+                      state: '${state}'
+                      decided_by: '${by}'
+                      decided_at: '${default(map.get(d, "decided_at"), time.format(sys.now()))}'
+                      note: '${map.get(d, "note")}'
+                      report: '${"gs://" + cfg.bucket + "/" + ctx.prefix + "report.json"}'
+          - condition: true
+            steps:
+              # state/ack.json from the trigger's drift run (rules fire only
+              # on drift beyond it) + state/parked/<candidate>.json
+              - bucket_side:
+                  call: decision_job
+                  args:
+                    cfg: '${cfg}'
+                    ctx: '${ctx}'
+                    outcome: '${state}'
+                    by: '${by}'
+                    digest: null
+    - count:
+        assign:
+          - authored: '${map.get(default(dec, {}), ["results", "cases", "authored_accumulated"])}'
+          - words: "Its authored cases stay in the pool"
+    - count_words:
+        switch:
+          - condition: '${authored != null}'
+            assign:
+              - words: '${"Its " + string(authored) + " authored cases stay in the pool"}'
+    - by_words:
+        call: skip_by
+        args:
+          state: '${state}'
+          by: '${by}'
+        result: by_words
+    - tell:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload:
+            id: '${ctx.run_id + "/skipped"}'
+            kind: skipped
+            severity: info
+            run_id: '${ctx.run_id}'
+            candidate_id: '${ctx.candidate_id}'
+            title: '${"Sous Chef: " + ctx.candidate_id + " skipped (" + by_words + ")"}'
+            summary: '${words + "; the next big drift batches them."}'
+            dedup_key: null
+            details:
+              state: '${state}'
+              decided_by: '${by}'
+              smoke: '${ctx.smoke}'
+    - done:
+        return: '${state}'
+
+skip_by:
+  params: [state, by]
+  steps:
+    - pick:
+        switch:
+          - condition: '${state == "expired"}'
+            return: "expired"
+    - person:
+        return: '${"by " + by}'
+
+
+# ---- the bucket's side of a decision (lab/souschef_lab/retrain/decide.py) -----------------
+
+decision_job:
+  # pipeline decision --outcome approved|skipped|expired on the eval job
+  # (the lab image, the drift account: the pipeline bucket only). Returns
+  # what it did, as text for the report.
+  params: [cfg, ctx, outcome, by, digest]
+  steps:
+    - args:
+        assign:
+          - dargs: '${["decision", "--run-id", ctx.run_id, "--bucket", "gs://" + cfg.bucket, "--outcome", outcome, "--by", by]}'
+    - with_digest:
+        switch:
+          - condition: '${digest != null}'
+            assign:
+              - dargs: '${list.concat(list.concat(dargs, "--digest"), digest)}'
+    - run:
+        call: stage_job
+        args:
+          cfg: '${cfg}'
+          ctx: '${ctx}'
+          stage: "decision"
+          job: '${cfg.jobs.eval}'
+          args: '${dargs}'
+          timeout_s: 1800
+          attempts: 2
+        result: out
+    - note:
+        assign:
+          - m: '${default(map.get(default(out.res, {}), "metrics"), {})}'
+    - done:
+        return: '${outcome + ": " + default(map.get(m, "baseline"), default(map.get(m, "ack"), "done")) + " " + default(map.get(m, "parked"), "")}'
+
+# ---- cleanup -----------------------------------------------------------------------------------
+
+stage_cleanup:
+  params: [cfg, ctx, outcome]
+  steps:
+    - checkpoints:
+        try:
+          call: gcs_delete_prefix
+          args:
+            bucket: '${cfg.bucket}'
+            prefix: '${ctx.prefix + "train/checkpoints/"}'
+          result: deleted
+        except:
+          as: e
+          steps:
+            - keep:
+                assign:
+                  - deleted: -1
+    - rec:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "run.json"}'
+        result: rec
+    - finish:
+        switch:
+          - condition: '${rec != null}'
+            steps:
+              - set:
+                  assign:
+                    - rec.status: '${"done:" + outcome}'
+                    - rec.finished_at: '${time.format(sys.now())}'
+                    - rec.checkpoints_deleted: '${deleted}'
+              - write:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${ctx.prefix + "run.json"}'
+                    data: '${rec}'
+    - unlock:
+        call: lock_release
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/retrain.json"
+          run_id: '${ctx.run_id}'
+    - done:
+        return: '${deleted}'

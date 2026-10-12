@@ -31,7 +31,13 @@ lab/
     train.py dpo.py export.py      # copied recipe; --dry-run never imports torch
     trainkit.py    # shared stdlib helpers for the three (config files, row shape, masking, plan)
     cli.py         # `python -m souschef_lab.cli <sub>` / `souschef-lab <sub>` ([project.scripts]); every module exposes main(argv)
-  tools/           # run-r4.sh (the r4 SFT chain on the training VM), vm-solo.sh (the student alone on the VM: Ollama + Postgres + the deployed service binary) — §5b
+    pipeline.py    # the GCP pipeline's one entry (§5c): `python -m souschef_lab.pipeline drift …|prepare|collect|dataset|eval|decision|selftest|retrain-dry`
+    drift.py harness.py examrebase.py baseline.py   # drift: static diff + risk classes, the local-service harness, exam rebase, baselines and noise (docs/DRIFT.md)
+    enginebundle.py gcsio.py pipeline_common.py     # the vendored engine snapshot, GCS I/O and locks, the deployed-manifest client
+    retrain/       # prepare (rebase, author), collect_stage, dataset_stage (+ parity_gate.py, the tests/r4_parity.py pattern), eval_stage, bar, report, decide (docs/RETRAIN.md)
+  tools/           # run-r4.sh (the r4 SFT chain on the training VM), vm-solo.sh (the student alone on the VM: Ollama + Postgres + the deployed service binary) — §5b;
+                   # pipeline-train.sh (the same chain on Vertex, reading and writing the pipeline bucket), engine-vendor.sh (the engine snapshot for GCP) — §5c
+  pipeline/        # thresholds.json: the drift verdict rules (docs/DRIFT.md §3.2)
   tests/           # pytest; fake_service.py (scripted Sous Chef API, per-sample Rotation), fake_model.py (scripted /v1/messages for the real binary), capture_real.py (runs the real binary + fake model and stores the captures below)
   parity/          # Go module of its own pinning github.com/ollama/ollama v0.34.4: Ollama's own /v1/messages → qwen3.5 prompt for a captured body, offline, no model (`make parity-write` → fixtures/parity/served.json; §5 "Serving parity")
   fixtures/        # manifest.snapshot.json (symlink to service/testdata), assets.json, context.json, layouts.json, states/, traces/ (scripted turns + recorded engine output), prompt/ (system[0], system[1], tools captured from the real binary; real/<capture>/ = the real binary's POST /v1/messages bodies + the collector row of that turn for the ok, error, warnings+sectionId and pick_asset shapes, for the parity tests — recipe in real/README.md), parity/served.json (Ollama 0.34.4's own prompt for every request of prompt/real — the serving-parity fixture, §5)
@@ -221,6 +227,19 @@ The r4 cases were authored by workflow agents (families F1–F6: paraphrases, fo
 - **Exam additions** (`exam.py`, `eval.py`): `exam run --rederive-contexts` (r4 PLAN L7: every row's — and history turn's — context rebuilt from the exam's vintage state with today's browser mirror; the selected section open as `focus`), `--persistent-engine` on `exam run` and `eval`; Makefile `REDERIVE=1 PENGINE=1`. Oracle dry run with re-derived contexts: all 252 rows pass.
 - `fields.py`: `SOUS_CHEF_SERVICE_DIR` points the CLI builds and the recorded source identity at another service tree (e.g. `git archive <deployed commit> service` — the working tree may carry another workflow's edits); `Fields.block(context, text, previous)`.
 - Not a bug (reported by an F1 author): `verify.ctx_of`'s `{"templateId": tid, **GOLDEN_CTX}` — `verify.GOLDEN_CTX` has no `templateId` (that is `engine.GOLDEN_CTX`), so the case's template is used.
+
+## 5c. The GCP pipeline (drift check and automated retraining; 2026-10-11)
+
+The r4 tools above, run by Cloud Workflows on int instead of by hand. The runbooks are [`PIPELINE.md`](PIPELINE.md) (turning it on, switches, Slack), [`DRIFT.md`](DRIFT.md) and [`RETRAIN.md`](RETRAIN.md) (each stage automated and by hand); this section is the lab's part of the contract.
+
+- **One entry**, `python -m souschef_lab.pipeline <cmd>`, the lab runtime image's entrypoint: `drift poll|static|check [--confirm]|weekly|calibrate [--replicates 3]` (`--run-id --bucket --eval-url --smoke`), `prepare|collect|dataset` (`--run-id --bucket --mode full|smoke`), `eval` (`--run-id --current-url --candidate-url --mode`), `selftest`. Env: `SOUS_CHEF_URL`, `SOUS_CHEF_KEY`, `ANTHROPIC_API_KEY` (prepare only), `PIPELINE_BUCKET`, `GOOGLE_CLOUD_PROJECT`. Exit 0 = the stage finished (outcome in `result-<stage>.json` / `drift/<run>/result.json`), 1 = failure (retried), 2 = configuration or precondition (no retry); exit 3 stays inside chunk loops.
+- **The lab core stays stdlib-only.** The Anthropic SDK is the optional extra `[author]`, used by `retrain/author.py` alone; tests fake it (zero API spend).
+- **Rebase every family** (`retrain/rebase.py`), the generalisation of `r4cases.rebase_f0` + `remeasure`: renames from the static diff, drops by reason, F0 relabel, contexts re-derived, re-measured by score mode, the hold-out filter again; a family losing > 20 % stops the stage.
+- **Exam on another manifest** (`examrebase.py`, `exam.py --manifest-rebase`): `exam.load_set` still refuses a foreign manifest; rebased rows carry the new `manifest_hash` and `meta.rebased_from`.
+- **The harness** (`harness.py`) = `vm-solo.sh serve` inside a job: Postgres 16 from `initdb`, the deployed service binary, one messages-compatible route per arm, no fallback, no Anthropic key, ID tokens from the metadata server.
+- **The engine in GCP** (`enginebundle.py`, `tools/engine-vendor.sh`): a `git archive` + `npm ci` snapshot per cookie-cutter commit in the bucket, fetched and verified at job start; `browser_defaults.py` honours `SOUS_CHEF_BROWSER_DEFAULTS` so the defaults are dumped from that snapshot, not read from `fixtures/browser-defaults.json`.
+- **Lab traffic stays lab traffic.** `collect` keeps the build id `lab` by default, `r4collect --build-id lab-<run>`, site ids `lab-…`: the service's deployed-manifest endpoint ignores exactly those (README §1).
+- Make targets: `pipeline-selftest`, `engine-vendor SHA= CC=`, `engine-index`, `drift-dry`, `retrain-dry` (the last two run end to end on the fake service with the oracle, no network).
 
 ## 6. Eval and pass@k
 

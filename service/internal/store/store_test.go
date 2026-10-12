@@ -49,8 +49,8 @@ func TestMigrateIdempotentAndDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
-	if v != 5 {
-		t.Fatalf("schema version = %d, want 5", v)
+	if v != 6 {
+		t.Fatalf("schema version = %d, want 6", v)
 	}
 	if err := store.MigrateDown(dsn); err != nil {
 		t.Fatalf("MigrateDown: %v", err)

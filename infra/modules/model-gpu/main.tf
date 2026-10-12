@@ -41,6 +41,51 @@ resource "google_artifact_registry_repository" "model" {
   docker_config {
     immutable_tags = true
   }
+
+  # Candidate images (modules/pipeline: model:c-<run id>, ~5.4 GB each)
+  # accumulate one per retrain round. With cleanup_candidates on: a c-*
+  # version older than candidate_retention_days is deleted UNLESS a keep
+  # rule matches it (keep rules win): the newest keep_recent versions, every
+  # hand-built tag (r1, r4, ...: prefix "r") and every image that was ever
+  # rolled out (the rollout adds a live-<run id> tag beside c-<run id>, so a
+  # live or rolled-back-to candidate is never deleted).
+  cleanup_policy_dry_run = var.cleanup_candidates ? false : null
+
+  dynamic "cleanup_policies" {
+    for_each = var.cleanup_candidates ? [1] : []
+    content {
+      id     = "delete-old-candidates"
+      action = "DELETE"
+      condition {
+        tag_state    = "TAGGED"
+        tag_prefixes = ["c-"]
+        older_than   = "${var.candidate_retention_days * 86400}s"
+      }
+    }
+  }
+
+  dynamic "cleanup_policies" {
+    for_each = var.cleanup_candidates ? [1] : []
+    content {
+      id     = "keep-recent"
+      action = "KEEP"
+      most_recent_versions {
+        keep_count = var.keep_recent
+      }
+    }
+  }
+
+  dynamic "cleanup_policies" {
+    for_each = var.cleanup_candidates ? [1] : []
+    content {
+      id     = "keep-hand-built-and-live"
+      action = "KEEP"
+      condition {
+        tag_state    = "TAGGED"
+        tag_prefixes = ["r", "live-"]
+      }
+    }
+  }
 }
 
 # The identity the model runs as, with no roles: it calls nothing and reads
@@ -108,14 +153,34 @@ resource "google_cloud_run_v2_service" "model" {
   }
 
   lifecycle {
-    # The API fills in a top-level scaling block the template never sets;
-    # provider 6.x reports that as a change on every plan (thermometer note).
-    ignore_changes = [scaling]
+    # - scaling: the API fills in a top-level scaling block the template
+    #   never sets; provider 6.x reports that as a change on every plan
+    #   (thermometer note).
+    # - the image: from the first apply on, the pipeline (modules/pipeline,
+    #   the souschef-retrain workflow's rollout on an Approve) and
+    #   `make model-rollout TAG=<tag>` (rollbacks, manual rollouts) own it,
+    #   so image_tag only sets the image the service is CREATED with; a
+    #   later image_tag change plans nothing. Without this, the next apply
+    #   would revert an approved candidate to the tfvar's tag.
+    # - template annotations / labels, client, client_version: the rollout
+    #   stamps souschef/candidate=<id>, gcloud stamps its client name and a
+    #   nonce; Terraform sets none of its own.
+    ignore_changes = [
+      scaling,
+      template[0].containers[0].image,
+      template[0].annotations,
+      template[0].labels,
+      client,
+      client_version,
+    ]
   }
 }
 
-# Authoritative run.invoker: sous-chef's runtime SA alone. Any other invoker
-# added by hand is removed on the next apply.
+# Authoritative run.invoker: sous-chef's runtime SA plus extra_invokers (the
+# Sous Chef pipeline's drift runner and workflow accounts, when the pipeline
+# is on: the night-window drift check and the post-rollout warm-up call the
+# production model). Any other invoker added by hand is removed on the next
+# apply.
 resource "google_cloud_run_v2_service_iam_binding" "invoker" {
   count = var.serve ? 1 : 0
 
@@ -123,5 +188,5 @@ resource "google_cloud_run_v2_service_iam_binding" "invoker" {
   name     = google_cloud_run_v2_service.model[0].name
   location = google_cloud_run_v2_service.model[0].location
   role     = "roles/run.invoker"
-  members  = ["serviceAccount:${var.invoker_service_account}"]
+  members  = concat(["serviceAccount:${var.invoker_service_account}"], [for e in var.extra_invokers : "serviceAccount:${e}"])
 }

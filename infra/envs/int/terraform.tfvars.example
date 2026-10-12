@@ -56,3 +56,16 @@ gpu_model_region        = "us-east4"
 gpu_model_image_tag     = "r1"
 gpu_model_min_instances = 0
 gpu_model_default       = false
+
+# Sous Chef drift check and automated retraining (modules/pipeline; the
+# order is docs/RETRAIN.md R0): build the lab and trainer images for the
+# serving tag, a targeted apply of the two secrets + their values (no-echo),
+# then pipeline_enabled; the SMOKE run; `drift calibrate`; then
+# pipeline_schedule; then pipeline_retrain_auto; then pipeline_rollout.
+# Needs gpu_model_enabled and gpu_model_serve.
+pipeline_enabled      = false
+pipeline_schedule     = false
+pipeline_retrain_auto = false
+pipeline_rollout      = false
+pipeline_l4_headroom  = false # true once the Cloud Run L4 quota in us-east4 is 5
+pipeline_alert_emails = ["gary.tong@breadstack.com"] # required while pipeline_enabled

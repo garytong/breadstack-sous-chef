@@ -17,22 +17,44 @@ import (
 // rotated: an open conversation whose `updated` is older than the cutoff
 // is ended by the job and then pruned in the same run, so merchant text
 // cannot outlive the window just because the site stopped using Sous Chef.
+//
+// RegistrationDays prunes manifest_registrations rows whose last_at is
+// older than the cutoff, except the newest launcher row of each build line
+// (GET /v1/manifests/deployed must always have a registration to rank by
+// once one was recorded). 0 means DefaultRegistrationDays, so policies
+// built before the field existed keep working.
 type RetentionPolicy struct {
 	TraceDays        int
 	ConversationDays int
 	ShippedUsageDays int
 	InactivityDays   int
+	RegistrationDays int
 }
 
+// DefaultRegistrationDays is the manifest_registrations window.
+const DefaultRegistrationDays = 180
+
 // DefaultRetention is the production policy.
-var DefaultRetention = RetentionPolicy{TraceDays: 90, ConversationDays: 90, ShippedUsageDays: 30, InactivityDays: 90}
+var DefaultRetention = RetentionPolicy{TraceDays: 90, ConversationDays: 90, ShippedUsageDays: 30, InactivityDays: 90, RegistrationDays: DefaultRegistrationDays}
 
 // Validate rejects a policy that would delete everything or nothing sensible.
 func (p RetentionPolicy) Validate() error {
 	if p.TraceDays < 1 || p.ConversationDays < 1 || p.ShippedUsageDays < 1 || p.InactivityDays < 1 {
 		return errors.New("store: retention days must all be >= 1")
 	}
+	if p.RegistrationDays < 0 {
+		return errors.New("store: retention registration days must be >= 0 (0 = default)")
+	}
 	return nil
+}
+
+// RegistrationCutoff is the manifest_registrations threshold from now.
+func (p RetentionPolicy) RegistrationCutoff(now time.Time) time.Time {
+	d := p.RegistrationDays
+	if d == 0 {
+		d = DefaultRegistrationDays
+	}
+	return now.Add(-time.Duration(d) * 24 * time.Hour)
 }
 
 // Cutoffs computes the deletion thresholds from now: a row created (or, for
@@ -51,6 +73,7 @@ type RetentionResult struct {
 	Ended         int64 // open conversations ended for inactivity (also counted in Conversations once pruned)
 	Conversations int64 // messages and turns cascade and are not counted separately
 	UsageRows     int64
+	Registrations int64 // manifest_registrations rows pruned
 	RanAt         time.Time
 }
 
@@ -95,5 +118,21 @@ func (s *Store) Retention(ctx context.Context, p RetentionPolicy) (RetentionResu
 		return res, fmt.Errorf("store: retention usage_rows: %w", err)
 	}
 	res.UsageRows = tag.RowsAffected()
+
+	// Registrations: idle rows go, but the newest launcher row of each
+	// build line always stays.
+	tag, err = s.pool.Exec(ctx, `
+		DELETE FROM manifest_registrations r
+		WHERE r.last_at < $1
+		  AND (r.hash, r.launcher_build) NOT IN (
+			SELECT DISTINCT ON (line) hash, launcher_build FROM (
+				SELECT hash, launcher_build, last_at, `+sqlBuildLine("launcher_build")+` AS line
+				FROM manifest_registrations WHERE source = 'launcher'
+			) x
+			ORDER BY line, last_at DESC, hash, launcher_build)`, p.RegistrationCutoff(now))
+	if err != nil {
+		return res, fmt.Errorf("store: retention manifest_registrations: %w", err)
+	}
+	res.Registrations = tag.RowsAffected()
 	return res, nil
 }

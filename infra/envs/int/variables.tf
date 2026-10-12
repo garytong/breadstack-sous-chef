@@ -176,3 +176,53 @@ variable "gpu_model_route" {
     error_message = "gpu_model_route: name is lowercase [a-z0-9-], max_tokens >= 1, temperature 0..2, call_timeout a Go duration such as \"180s\"."
   }
 }
+
+# --- Sous Chef pipeline (modules/pipeline; docs/RETRAIN.md R0 for the order) ---
+variable "pipeline_enabled" {
+  type        = bool
+  default     = false
+  description = "Create the drift check and retraining pipeline: APIs, the pipeline bucket, seven service accounts, two secrets (no values), five Cloud Run jobs, two workflows, the eval and candidate GPU services (min 0), the monitoring backstop. Schedules nothing. Needs gpu_model_enabled, gpu_model_serve and pipeline_alert_emails."
+}
+variable "pipeline_schedule" {
+  type        = bool
+  default     = false
+  description = "Cloud Scheduler triggers for souschef-drift: poll every 15 min, weekly Monday 05:00 UTC, the 09:00 UTC night window. Turn on after the SMOKE run and the first calibration."
+}
+variable "pipeline_retrain_auto" {
+  type        = bool
+  default     = false
+  description = "A `retrain` drift verdict starts souschef-retrain (only with a calibrated baseline and no round in progress). false = notify only."
+}
+variable "pipeline_rollout" {
+  type        = bool
+  default     = false
+  description = "An Approve on the thermometer rolls the candidate onto sous-chef-model. false = every Approve is a dry rollout (production untouched)."
+}
+variable "pipeline_l4_headroom" {
+  type        = bool
+  default     = false
+  description = "true once the Cloud Run L4 quota in gpu_model_region is 5 (3 today): the rollout no longer waits ~20 min for the eval and candidate services to idle."
+}
+variable "pipeline_cleanup_candidates" {
+  type        = bool
+  default     = true
+  description = "With the pipeline on: the model repository's cleanup policy deletes c-* candidate images older than 30 days, keeping the newest 10, every hand-built r* tag and every image ever rolled out (live-*)."
+}
+variable "pipeline_alert_emails" {
+  type        = list(string)
+  default     = []
+  description = "Emails for the Cloud Monitoring backstop: a failed workflow execution, and a notification the thermometer did not take. Required (at least one) while pipeline_enabled: it is the only alert path that does not go through the thermometer."
+  validation {
+    condition     = !var.pipeline_enabled || length(var.pipeline_alert_emails) > 0
+    error_message = "pipeline_alert_emails: at least one address while pipeline_enabled (the backstop when the thermometer or Slack is down)."
+  }
+  validation {
+    condition     = alltrue([for e in var.pipeline_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
+    error_message = "pipeline_alert_emails: email addresses."
+  }
+}
+variable "pipeline_thermometer_url" {
+  type        = string
+  default     = "https://thermometer.breadstackcrm.com"
+  description = "Where the pipeline posts notifications and reads decisions (the prod thermometer; Slack goes to its weekly digest channel)."
+}

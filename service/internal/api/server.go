@@ -109,6 +109,8 @@ func (s *Server) Handler() http.Handler {
 	v1 := http.NewServeMux()
 	v1.HandleFunc("POST /v1/manifests", s.postManifest)
 	v1.HandleFunc("PUT /v1/manifests/{hash}", s.putManifest)
+	// The literal segment wins over {hash} (ServeMux precedence).
+	v1.HandleFunc("GET /v1/manifests/deployed", s.getDeployedManifest)
 	v1.HandleFunc("GET /v1/manifests/{hash}", s.getManifest)
 	v1.HandleFunc("POST /v1/turns", s.postTurn)
 	v1.HandleFunc("POST /v1/turns/{turnId}/tool-results", s.postToolResults)

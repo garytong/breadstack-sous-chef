@@ -18,6 +18,10 @@ infra/**/*.tfvars
 !infra/**/*.auto.tfvars.example
 infra/**/crash.log
 
+# Python
+__pycache__/
+*.pyc
+
 # Lab (Phase 5) data
 lab/data/
 lab/runs/

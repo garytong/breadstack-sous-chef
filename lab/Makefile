@@ -334,6 +334,34 @@ r4-collect-dry: ## the r4 collector against the in-process fake service with ora
 r4-dataset: ## build DATA=data/r4 from LOGS=<r4 collect logs> on R4/cases-all.jsonl (WHY=<study dir> for the final hold-out check)
 	$(LABPY) -m souschef_lab.r4dataset --cases $(R4)/cases-all.jsonl $(foreach f,$(LOGS),--log $(f)) --manifest $(R4_MANIFEST) --out $(DATA) $(if $(WHY),--why $(WHY),)
 
+# ── the GCP pipeline: drift check + automated retrain (docs/DRIFT.md, docs/RETRAIN.md) ──
+# Every stage is `python -m souschef_lab.pipeline <cmd>` in the lab runtime image; these targets run the same code
+# on a workstation. PIPELINE_BUCKET = gs://breadstack-sous-chef-int-pipeline (or a local folder for DRY runs).
+# drift-dry: a local bucket under runs/, the fake service in process, MODE = poll | static | calibrate | check |
+# weekly (default: calibrate then check), DEPLOYED = the manifest that stands in for the launcher's (default: the
+# exam's own; tests/test_examrebase.py drifted() builds a drifted one), FULL=1 the whole exam (default 10 rows a set),
+# FAKE_ENGINE=1 without node, DRY_MODEL=oracle for a model that knows every key (default stale: trained on the old one).
+PIPELINE_BUCKET ?=
+DRIFT_DRY_BUCKET ?= runs/drift-dry/bucket
+DEPLOYED ?= fixtures/exam/manifest-real.json
+.PHONY: pipeline-selftest engine-vendor engine-index drift-dry retrain-dry
+pipeline-selftest: ## the lab runtime image's self-check: node, pg_ctl, the service binaries, gcloud, anthropic (souschef_lab.pipeline selftest)
+	$(LABPY) -m souschef_lab.pipeline selftest
+engine-vendor: ## vendor the launcher engine of SHA from the cookie-cutter checkout CC (default COOKIE_CUTTER_DIR) into a bundle; UPLOAD=1 publishes it to $(PIPELINE_BUCKET)/engine/ (tools/engine-vendor.sh)
+	@test -n "$(SHA)" || { echo "engine-vendor: pass SHA=<cookie-cutter commit> [CC=<checkout>] [UPLOAD=1 PIPELINE_BUCKET=gs://…]"; exit 2; }
+	PY=$(abspath $(LABPY)) PIPELINE_BUCKET=$(PIPELINE_BUCKET) bash tools/engine-vendor.sh $(or $(CC),$(COOKIE_CUTTER_DIR)) $(SHA) $(if $(UPLOAD),--upload,)
+engine-index: ## print the vendored engine snapshots of PIPELINE_BUCKET (engine/index.json)
+	$(LABPY) -m souschef_lab.enginebundle index --bucket $(PIPELINE_BUCKET)
+drift-dry: ## the drift check end to end with no GCP and no model: MODE=…, DEPLOYED=<manifest>, FULL=1, FAKE_ENGINE=1, DRY_MODEL=oracle (header above)
+	mkdir -p $(DRIFT_DRY_BUCKET)/state
+	test -f $(DRIFT_DRY_BUCKET)/state/model.json || $(LABPY) -c 'import json, sys; from souschef_lab.manifest import hash_file; json.dump({"tag": "r4", "digest": "sha256:dry", "training_manifest": hash_file("fixtures/exam/manifest-real.json"), "trained_at": "2026-10-10T00:00:00Z"}, open(sys.argv[1], "w"))' $(DRIFT_DRY_BUCKET)/state/model.json
+	set -e; for m in $(or $(MODE),calibrate check); do \
+	  $(LABPY) -m souschef_lab.drift $$m --dry --bucket $(DRIFT_DRY_BUCKET) --deployed-file $(DEPLOYED) \
+	    $(if $(FULL),,--smoke) $(if $(FAKE_ENGINE),--fake-engine,) $(if $(DRY_MODEL),--dry-model $(DRY_MODEL),) --no-lock; \
+	done
+retrain-dry: ## the retrain stages end to end on the fake service with the oracle and a fake author (souschef_lab.pipeline retrain-dry)
+	$(LABPY) -m souschef_lab.pipeline retrain-dry
+
 fake-service: ## run the tests' fake Sous Chef service on 127.0.0.1:8089 (SCRIPTS=dir of <case id>.json)
 	$(LABPY) -m tests.fake_service --port 8089 --manifest $(MANIFEST) --key '$(SOUS_CHEF_KEY)' $(if $(SCRIPTS),--scripts $(SCRIPTS),)
 fake-model: ## run the tests' fake /v1/messages model on 127.0.0.1:8091 (STEPS=steps.json; for the real service binary)

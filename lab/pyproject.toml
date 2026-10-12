@@ -5,6 +5,9 @@
 # headless.mjs) and the case generator run on any Python >= 3.12 with no
 # third-party package. Extras:
 #   [dev]    pytest — `make -C lab test`
+#   [author] anthropic — the retrain pipeline's case authoring
+#            (souschef_lab/retrain/author.py, the prep job only; imported
+#            inside anthropic_ask(), never at module import).
 #   [train]  torch / unsloth / trl / peft / datasets — train.py, dpo.py,
 #            export.py import them inside run() only; `--dry-run` never does.
 #            Versions follow the thermometer kit's measured set
@@ -29,6 +32,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.4"]
+author = ["anthropic>=0.69"]
 train = [
     "unsloth==2026.9.11",
     "unsloth-zoo==2026.9.7",
@@ -51,7 +55,7 @@ train = [
 souschef-lab = "souschef_lab.cli:main"
 
 [tool.setuptools]
-packages = ["souschef_lab"]
+packages = ["souschef_lab", "souschef_lab.retrain"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -21,6 +21,51 @@ type memStore struct {
 	rows map[string]store.Manifest
 	seq  int
 	gets int
+
+	// RegistrationRecorder / DeployedLister fakes.
+	regs      []recordedReg
+	regErr    error
+	deployed  []store.DeployedCandidate
+	deployedQ []deployedQuery
+	deployErr error
+}
+
+type recordedReg struct {
+	hash, build, source string
+	at                  time.Time
+}
+
+type deployedQuery struct {
+	line  string
+	since time.Time
+	limit int
+}
+
+func (s *memStore) RecordRegistration(_ context.Context, hash, build, source string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.regErr != nil {
+		return s.regErr
+	}
+	if _, ok := s.rows[hash]; !ok {
+		return errors.New("fk: unknown manifest")
+	}
+	s.regs = append(s.regs, recordedReg{hash, build, source, at})
+	return nil
+}
+
+func (s *memStore) DeployedManifest(_ context.Context, line string, since time.Time, limit int) ([]store.DeployedCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deployedQ = append(s.deployedQ, deployedQuery{line, since, limit})
+	if s.deployErr != nil {
+		return nil, s.deployErr
+	}
+	out := s.deployed
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func newMemStore() *memStore { return &memStore{rows: map[string]store.Manifest{}} }
@@ -369,5 +414,134 @@ func TestRegisterComputed_DiffAndBadBody(t *testing.T) {
 	}
 	if st.seq != 2 {
 		t.Errorf("stored rows = %d, want 2", st.seq)
+	}
+}
+
+// plainStore is a Store with neither optional extension.
+type plainStore struct{ Store }
+
+func TestRegister_RecordsEveryRegistration(t *testing.T) {
+	st := newMemStore()
+	r := New(st)
+	fixed := time.Date(2026, 10, 10, 1, 2, 3, 0, time.UTC)
+	r.now = func() time.Time { return fixed }
+	ctx := context.Background()
+	a := smallManifest(t, "")
+	ha := hashOf(t, a)
+	if _, created, err := r.Register(ctx, ha, a, "1a2b3c4"); err != nil || !created {
+		t.Fatal(created, err)
+	}
+	if _, created, err := r.Register(ctx, ha, a, "1a2b3c4"); err != nil || created {
+		t.Fatal(created, err) // the 200 path records too
+	}
+	if _, _, err := r.ComputeAndRegister(ctx, a, "lab-r4"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.RegisterComputed(ctx, a, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []recordedReg{
+		{ha, "1a2b3c4", "launcher", fixed}, {ha, "1a2b3c4", "launcher", fixed},
+		{ha, "lab-r4", "lab", fixed}, {ha, "", "lab", fixed},
+	}
+	if len(st.regs) != len(want) {
+		t.Fatalf("recorded %+v", st.regs)
+	}
+	for i := range want {
+		if st.regs[i] != want[i] {
+			t.Errorf("reg %d = %+v, want %+v", i, st.regs[i], want[i])
+		}
+	}
+	// A failed registration (hash mismatch) records nothing.
+	_, _, _ = r.Register(ctx, strings.Repeat("0", 64), a, "1a2b3c4")
+	if len(st.regs) != len(want) {
+		t.Errorf("mismatch recorded a registration: %+v", st.regs[len(want):])
+	}
+}
+
+func TestRegister_RecordFailureIsBestEffort(t *testing.T) {
+	st := newMemStore()
+	st.regErr = errors.New("db down")
+	r := New(st)
+	var logged []string
+	r.logf = func(f string, a ...any) { logged = append(logged, f) }
+	a := smallManifest(t, "")
+	res, created, err := r.Register(context.Background(), hashOf(t, a), a, "1a2b3c4")
+	if err != nil || !created || res.Hash != hashOf(t, a) {
+		t.Fatalf("register must succeed when recording fails: %v %v", created, err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "record registration") {
+		t.Errorf("logged %q", logged)
+	}
+	// And a store without the extension registers as before.
+	r2 := New(plainStore{newMemStore()})
+	if _, created, err := r2.Register(context.Background(), hashOf(t, a), a, "x"); err != nil || !created {
+		t.Fatalf("plain store: %v %v", created, err)
+	}
+}
+
+func TestDeployed(t *testing.T) {
+	st := newMemStore()
+	r := New(st)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	r.now = func() time.Time { return now }
+	ctx := context.Background()
+	a, b := smallManifest(t, ""), smallManifest(t, "subtitle")
+	ha, hb := hashOf(t, a), hashOf(t, b)
+	for _, body := range [][]byte{a, b} {
+		if _, _, err := r.ComputeAndRegister(ctx, body, "1a2b3c4"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// No candidates: 404 no_launcher_manifest.
+	_, err := r.Deployed(ctx, api.DeployedQuery{Line: "int", Days: 30})
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 404 || apiErr.Code != "no_launcher_manifest" || apiErr.Extra["line"] != "int" {
+		t.Fatalf("empty = %v", err)
+	}
+	if q := st.deployedQ[0]; q.line != "int" || !q.since.Equal(now.AddDate(0, 0, -30)) || q.limit != DeployedCandidates {
+		t.Errorf("query = %+v", q)
+	}
+
+	// Registered top candidate, turns-only second.
+	t1, t2, t3 := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour).In(time.FixedZone("PT", -7*3600))
+	st.deployed = []store.DeployedCandidate{
+		{Hash: hb, LauncherBuild: "bbbb222", FirstRegisteredAt: &t1, LastRegisteredAt: &t2, Registrations: 4, LastRealTurnAt: &t3, RealTurns7d: 9},
+		{Hash: ha, LauncherBuild: "aaaa111", LastRealTurnAt: &t1, RealTurns7d: 2},
+	}
+	info, err := r.Deployed(ctx, api.DeployedQuery{Line: "int", Days: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Hash != hb || info.Basis != api.DeployedBasisRegistration || info.Source != "launcher" || info.BuildLine != "int" ||
+		info.LauncherBuild != "bbbb222" || info.Registrations != 4 || info.RealTurns7d != 9 || info.WindowDays != 7 {
+		t.Errorf("info = %+v", info)
+	}
+	if info.LastRealTurnAt.Location() != time.UTC || !info.LastRealTurnAt.Equal(t3) {
+		t.Errorf("timestamps must be UTC: %v", info.LastRealTurnAt)
+	}
+	if info.Counts["fields"] != 2 || !strings.Contains(string(info.GeneratedFrom), `"sha":"abc"`) || info.Body != nil {
+		t.Errorf("counts %v generated_from %s body %d", info.Counts, info.GeneratedFrom, len(info.Body))
+	}
+	if len(info.Candidates) != 2 || info.Candidates[0].Hash != hb || info.Candidates[1].Hash != ha || info.Candidates[1].LastRegisteredAt != nil {
+		t.Errorf("candidates = %+v", info.Candidates)
+	}
+
+	// body=1 carries the raw manifest; a turns-only top is basis "turns".
+	st.deployed = st.deployed[1:]
+	info, err = r.Deployed(ctx, api.DeployedQuery{Line: "int", Days: 30, Body: true})
+	if err != nil || info.Hash != ha || info.Basis != api.DeployedBasisTurns || string(info.Body) != string(a) {
+		t.Errorf("body/turns = %+v %v", info.Basis, err)
+	}
+
+	// Store errors pass through; a store without the extension is 501.
+	st.deployErr = errors.New("db down")
+	if _, err := r.Deployed(ctx, api.DeployedQuery{Line: "int", Days: 30}); err == nil || errors.As(err, &apiErr) {
+		t.Errorf("store error = %v, want a plain (500) error", err)
+	}
+	_, err = New(plainStore{newMemStore()}).Deployed(ctx, api.DeployedQuery{Line: "int", Days: 30})
+	if !errors.As(err, &apiErr) || apiErr.Status != 501 {
+		t.Errorf("plain store = %v, want 501", err)
 	}
 }

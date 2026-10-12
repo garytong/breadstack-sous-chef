@@ -14,6 +14,13 @@ Nothing here touches the lab Ollama on `:11435`, the local service on
 inside the build stage. Nothing here pushes or applies either —
 `make model-push` prints the commands.
 
+The drift pipeline builds the same image without a workstation: Cloud Build
+in the int project runs `model-context.sh` and this `Dockerfile` on a round's
+staged GGUF (`infra/modules/pipeline/cloudbuild-model.yaml`, tag
+`c-<run_id>`; docs/RETRAIN.md §R5). The build context it uses is the lab
+image's copy of this directory, so a change here reaches the pipeline with
+the next service build.
+
 ## Files
 
 | File | Role |

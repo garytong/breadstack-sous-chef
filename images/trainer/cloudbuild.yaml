@@ -1,0 +1,68 @@
+# Manual build of the trainer image (CI does the same in the root
+# cloudbuild.yaml). Submit from the repository root, in the project CI
+# builds in:
+#
+#   make trainer-image TAG=<service tag>
+#   # = gcloud builds submit --project prod-devops-core-project \
+#   #     --config images/trainer/cloudbuild.yaml --substitutions=_TAG=<tag> .
+#
+# The content tag t-<hash12> (images/trainer/tag.sh) is built only when it
+# is absent; either way <tag> (the service tag the retrain workflow resolves)
+# is added to it, and `latest` follows the newest build (the next build's
+# layer cache).
+substitutions:
+  _TAG: ""
+  _PROJECT_ID: breadstack-sous-chef-int
+  _REGION: northamerica-northeast2
+  _AR_REPO: sous-chef
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: trainer-check
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REPO="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sous-chef-trainer"
+        T=$$(bash images/trainer/tag.sh)
+        NEED=true
+        if gcloud artifacts docker images describe "$$REPO:$$T" --project "$_PROJECT_ID" >/dev/null 2>&1; then NEED=false; fi
+        printf 'REPO=%s\nT=%s\nNEED=%s\n' "$$REPO" "$$T" "$$NEED" | tee /workspace/trainer.env
+
+  - name: gcr.io/cloud-builders/docker
+    id: trainer-build
+    waitFor: ['trainer-check']
+    env: ['DOCKER_BUILDKIT=1']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        source /workspace/trainer.env
+        if [ "$$NEED" != true ]; then echo "$$REPO:$$T exists: not building"; exit 0; fi
+        docker pull "$$REPO:latest" >/dev/null 2>&1 && CACHE=(--cache-from "$$REPO:latest") || CACHE=()
+        docker build --platform linux/amd64 -f images/trainer/Dockerfile --build-arg BUILDKIT_INLINE_CACHE=1 "$${CACHE[@]}" \
+          -t "$$REPO:$$T" -t "$$REPO:latest" .
+        docker push "$$REPO:$$T"
+        docker push "$$REPO:latest"
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: trainer-tag
+    waitFor: ['trainer-build']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        source /workspace/trainer.env
+        if [ -n "$_TAG" ]; then
+          gcloud artifacts docker tags add "$$REPO:$$T" "$$REPO:$_TAG" --project "$_PROJECT_ID" --quiet
+          echo "$$REPO:$_TAG -> $$T"
+        fi
+
+timeout: 10800s
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 300
+  logging: CLOUD_LOGGING_ONLY

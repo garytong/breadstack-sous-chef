@@ -26,3 +26,18 @@ output "gpu_model_url" {
 output "gpu_model_repo" {
   value = var.gpu_model_enabled ? module.model_gpu[0].repo : null
 }
+
+output "pipeline" {
+  description = "The Sous Chef pipeline (null while pipeline_enabled is off): bucket, GPU service URLs, jobs, workflows, accounts, secrets to populate."
+  value = local.pipeline_on ? {
+    bucket              = module.pipeline[0].bucket
+    eval_url            = module.pipeline[0].eval_url
+    cand_url            = module.pipeline[0].cand_url
+    jobs                = module.pipeline[0].job_names
+    workflows           = module.pipeline[0].workflow_names
+    workflows_region    = module.pipeline[0].workflows_region
+    service_accounts    = module.pipeline[0].service_accounts
+    secrets_to_populate = module.pipeline[0].secrets_to_populate
+    config_object       = module.pipeline[0].config_object
+  } : null
+}

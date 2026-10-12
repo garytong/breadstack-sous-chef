@@ -1,0 +1,18 @@
+# The trainer image's build context is the repository root: the lab without
+# tests, data, runs, venvs or caches, and images/trainer. tag.sh hashes
+# exactly this set; keep the two in step.
+*
+!lab
+!images/trainer
+lab/data
+lab/runs
+lab/tests
+lab/.venv
+lab/.venv-train
+lab/.cache
+lab/unsloth_compiled_cache
+lab/.pytest_cache
+lab/*.egg-info
+**/__pycache__
+**/.env
+**/.env.*

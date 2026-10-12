@@ -51,6 +51,53 @@ module "model_gpu" {
   image_tag               = var.gpu_model_image_tag
   min_instances           = var.gpu_model_min_instances
   invoker_service_account = module.sous_chef.run_service_account
+
+  # The pipeline's drift runner and workflow accounts also call production
+  # (the night-window drift check, the post-rollout warm-up).
+  extra_invokers     = local.pipeline_on ? module.pipeline[0].pipeline_invokers : []
+  cleanup_candidates = local.pipeline_on && var.pipeline_cleanup_candidates
+}
+
+# The Sous Chef drift check and automated retraining (modules/pipeline;
+# docs/DRIFT.md, docs/RETRAIN.md). Needs the production model service
+# (gpu_model_enabled + gpu_model_serve): the pipeline evaluates and replaces
+# its image. Every switch defaults off; pipeline_enabled alone creates the
+# bucket, accounts, secrets (no values), jobs, workflows and the two idle
+# GPU services, and schedules nothing.
+locals {
+  pipeline_on = var.pipeline_enabled && var.gpu_model_enabled && var.gpu_model_serve
+}
+
+check "pipeline_needs_the_model_service" {
+  assert {
+    condition     = !var.pipeline_enabled || (var.gpu_model_enabled && var.gpu_model_serve)
+    error_message = "pipeline_enabled needs gpu_model_enabled and gpu_model_serve: the pipeline evaluates and rolls out the production model service's image. Nothing of the pipeline is planned until both are on."
+  }
+}
+
+module "pipeline" {
+  count  = local.pipeline_on ? 1 : 0
+  source = "../../modules/pipeline"
+
+  project_id = var.project_id
+  region     = var.region
+
+  int_service_url       = module.sous_chef.run_url
+  prod_model_url        = module.model_gpu[0].url
+  prod_model_image      = module.model_gpu[0].image
+  model_service_account = module.model_gpu[0].service_account
+  gpu_region            = var.gpu_model_region
+  model_repo_location   = module.model_gpu[0].repo_location
+  model_repository_id   = module.model_gpu[0].repository_id
+  inhouse_route_name    = var.gpu_model_route.name
+  ollama_model          = var.gpu_model_route.model
+
+  thermometer_url = var.pipeline_thermometer_url
+  schedule        = var.pipeline_schedule
+  retrain_auto    = var.pipeline_retrain_auto
+  rollout_enabled = var.pipeline_rollout
+  l4_headroom     = var.pipeline_l4_headroom
+  alert_emails    = var.pipeline_alert_emails
 }
 
 # The in-house route exists only while the model service does: its URL is

@@ -1,0 +1,87 @@
+# The candidate model image build (DESIGN §3.7): Ollama 0.34.4 + the round's
+# staged GGUF, exactly what `make -C lab model-stage model-build` makes on a
+# workstation, built in the int project with no repository access.
+#
+# Source: gs://<bucket>/runs/<run id>/model/context.tgz, written by the
+# dataset stage: a tar of the lab image's lab/model-image/ with model-image/
+# at its top (Dockerfile, entrypoint.sh, model-context.sh, .dockerignore).
+# The staged model (Modelfile + one q4_k_m GGUF) is the trainer's
+# runs/<run id>/train/stage/.
+#
+# The retrain workflow submits the JSON form of this file (Terraform writes
+# it to gs://<bucket>/infra/cloudbuild-model.json) with the run's source,
+# substitutions and service account. By hand (docs/RETRAIN.md R5):
+#
+#   gcloud builds submit gs://<bucket>/runs/<run id>/model/context.tgz \
+#     --project breadstack-sous-chef-int --region us-east4 \
+#     --config infra/modules/pipeline/cloudbuild-model.yaml \
+#     --service-account projects/breadstack-sous-chef-int/serviceAccounts/souschef-builder@breadstack-sous-chef-int.iam.gserviceaccount.com \
+#     --substitutions=_BUCKET=<bucket>,_RUN_ID=<run id>,_IMAGE=us-east4-docker.pkg.dev/breadstack-sous-chef-int/sous-chef-model/model:c-<run id>
+#
+# The tag is immutable (the repository has immutable_tags): a rebuild of the
+# same run needs the tag absent, which the workflow checks first.
+#
+# The context is written by a job (runs/ is job-writable), so the build does
+# not trust it: Terraform writes the sha256 of the four files the build runs
+# or ships (Dockerfile, .dockerignore, entrypoint.sh, model-context.sh, from
+# this checkout's lab/model-image) into the JSON form in place of PINS' token
+# below, and the stage step refuses a context that differs. Submitted by hand
+# from this YAML, the token is still there and the check is skipped (said in
+# the log). A change to lab/model-image needs a Terraform apply before the
+# next round's build.
+#
+# Escaping: $_X is a Cloud Build substitution, $$x a shell variable. No ${...}
+# anywhere: the workflow's expression syntax would read it.
+substitutions:
+  _BUCKET: ""
+  _RUN_ID: ""
+  _IMAGE: ""
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: stage
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        [ -n "$_BUCKET" ] && [ -n "$_RUN_ID" ] && [ -n "$_IMAGE" ] || { echo "substitutions _BUCKET, _RUN_ID and _IMAGE are required"; exit 2; }
+        [ -f model-image/Dockerfile ] && [ -f model-image/model-context.sh ] || { echo "the source is not a model-image context (model-image/Dockerfile, model-image/model-context.sh)"; ls -la; exit 2; }
+        PINS='__MODEL_IMAGE_SHA256SUMS__'
+        if [ "$$PINS" = "__MODEL_IMAGE_""SHA256SUMS__" ]; then
+          echo "no pinned model-image hashes in this build spec (submitted by hand): the context is not checked"
+        else
+          printf '%s\n' "$$PINS" | tr ';' '\n' | sha256sum -c - || { echo "the model-image context differs from the files Terraform pinned (infra/cloudbuild-model.json): refusing to build"; exit 2; }
+        fi
+        mkdir -p /workspace/stage
+        gcloud storage cp "gs://$_BUCKET/runs/$_RUN_ID/train/stage/*" /workspace/stage/
+        sh model-image/model-context.sh /workspace/stage
+
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --platform
+      - linux/amd64
+      - --build-context
+      - model=/workspace/stage
+      - -f
+      - model-image/Dockerfile
+      - -t
+      - $_IMAGE
+      - model-image
+
+# Pushed by Cloud Build after the steps; the build's results carry the digest
+# (results.images[0].digest), which the workflow records in
+# runs/<run id>/model/image.json and keys the candidate's baseline on.
+images:
+  - $_IMAGE
+
+timeout: 3600s
+
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 200
+  logging: CLOUD_LOGGING_ONLY

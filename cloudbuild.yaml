@@ -6,7 +6,15 @@
 #
 # Steps: test -> build + push to Artifact Registry -> re-point and execute the
 # sous-chef-migrate job -> roll the sous-chef service and the retention job to
-# the image. Terraform owns everything about the service and jobs EXCEPT the
+# the image. Beside them, on branch builds only (int; _PIPELINE_IMAGES), the
+# Sous Chef pipeline's images for the same tag (infra/modules/pipeline):
+#   lab-image      sous-chef-lab:<tag> (images/lab-runtime) after the tests;
+#                  the retrain workflow refuses to run without it
+#   trainer-*      sous-chef-trainer:t-<content hash> built only when that tag
+#                  is absent (images/trainer, ~15 GB, the slow one), then the
+#                  alias sous-chef-trainer:<tag>
+# Neither blocks the deploy: they wait for the tests, not the other way round,
+# and a failure posts to Slack like any step. Terraform owns everything about the service and jobs EXCEPT the
 # image (lifecycle ignore_changes in infra/modules/sous-chef/{run,job}.tf), so
 # CI rolling images never shows up as drift.
 #
@@ -38,6 +46,7 @@ substitutions:
   _VERSION: manual # image tag when neither TAG_NAME nor SHORT_SHA is set (gcloud builds submit)
   _SLACK_PROJECT: prod-devops-core-project
   _SLACK_SECRET: pantry-cloudbuild-slack-bot-token
+  _PIPELINE_IMAGES: "true" # "false" = skip the Sous Chef pipeline's lab and trainer images
 
 steps:
   # ---- 1. prepare: build.env + the Slack helper ------------------------------
@@ -143,6 +152,85 @@ steps:
         docker build --platform linux/amd64 -f service/Dockerfile --build-arg BUILD_ID="$$VERSION" -t "$$IMAGE" service
         docker push "$$IMAGE"
 
+  # ---- 3b. the pipeline's lab runtime image, same tag (branch builds only) ---
+  - name: 'gcr.io/cloud-builders/docker'
+    id: lab-image
+    waitFor: ['test']
+    env: ['DOCKER_BUILDKIT=1']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/lab-image.log) 2>&1
+        trap 'slack_fail "lab-image" /workspace/lab-image.log' ERR
+        set -euo pipefail
+        source /workspace/build.env
+        if [ -n "$TAG_NAME" ] || [ "$_PIPELINE_IMAGES" != "true" ]; then echo "lab image: not for this build"; exit 0; fi
+        LAB="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sous-chef-lab:$$VERSION"
+        echo "building $$LAB"
+        docker build --platform linux/amd64 -f images/lab-runtime/Dockerfile --build-arg BUILD_ID="$$VERSION" -t "$$LAB" .
+        docker run --rm --entrypoint /opt/lab/.venv/bin/python "$$LAB" -c 'import souschef_lab; print("lab image ok")'
+        docker push "$$LAB"
+
+  # ---- 3c. the pipeline's trainer image: built when its content tag is new --
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: trainer-check
+    waitFor: ['prepare']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/trainer-check.log) 2>&1
+        trap 'slack_fail "trainer-check" /workspace/trainer-check.log' ERR
+        set -euo pipefail
+        source /workspace/build.env
+        REPO="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sous-chef-trainer"
+        T=$$(bash images/trainer/tag.sh)
+        SKIP=false; NEED=true
+        if [ -n "$TAG_NAME" ] || [ "$_PIPELINE_IMAGES" != "true" ]; then SKIP=true; NEED=false; fi
+        if [ "$$SKIP" = false ] && gcloud artifacts docker images describe "$$REPO:$$T" --project "$_PROJECT_ID" >/dev/null 2>&1; then NEED=false; fi
+        printf 'REPO=%s\nT=%s\nSKIP=%s\nNEED=%s\n' "$$REPO" "$$T" "$$SKIP" "$$NEED" | tee /workspace/trainer.env
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: trainer-build
+    waitFor: ['trainer-check']
+    env: ['DOCKER_BUILDKIT=1']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/trainer-build.log) 2>&1
+        trap 'slack_fail "trainer-build" /workspace/trainer-build.log' ERR
+        set -euo pipefail
+        source /workspace/trainer.env
+        if [ "$$NEED" != true ]; then echo "trainer: $$REPO:$$T exists or not for this build; no build"; exit 0; fi
+        CACHE=()
+        if docker pull "$$REPO:latest" >/dev/null 2>&1; then CACHE=(--cache-from "$$REPO:latest"); fi
+        docker build --platform linux/amd64 -f images/trainer/Dockerfile --build-arg BUILDKIT_INLINE_CACHE=1 "$${CACHE[@]}" \
+          -t "$$REPO:$$T" -t "$$REPO:latest" .
+        docker push "$$REPO:$$T"
+        docker push "$$REPO:latest"
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: trainer-tag
+    waitFor: ['trainer-build']
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        source /workspace/slack.sh
+        exec > >(tee /workspace/trainer-tag.log) 2>&1
+        trap 'slack_fail "trainer-tag" /workspace/trainer-tag.log' ERR
+        set -euo pipefail
+        source /workspace/build.env
+        source /workspace/trainer.env
+        if [ "$$SKIP" = true ]; then echo "trainer: not for this build"; exit 0; fi
+        gcloud artifacts docker tags add "$$REPO:$$T" "$$REPO:$$VERSION" --project "$_PROJECT_ID" --quiet
+        echo "trainer: $$REPO:$$VERSION -> $$T"
+
   # ---- 4. migrate: re-point the job to the image and run it -----------------
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     id: migrate
@@ -222,7 +310,11 @@ steps:
           echo "branch/int or non-deploy build — silent success"
         fi
 
-timeout: 1200s
+# The trainer image (~15 GB, built only when its content changes) needs the
+# time, the cores and the disk; the deploy itself still finishes in minutes.
+timeout: 7200s
 
 options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 200
   logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,1490 @@
+# Shared subworkflows of souschef-drift and souschef-retrain (workflows.tf
+# appends this file to each definition; Workflows has no imports).
+#
+# Conventions:
+#   - every Google API call goes through api_get / api_send with OAuth2 (the
+#     workflow's own account, souschef-workflow) and Workflows' retry
+#     policies; GPU services are called with an OIDC token whose audience is
+#     the service URL
+#   - GCS JSON objects through gcs_* (data between steps travels as GCS paths:
+#     Workflows variables are limited to 512 KB)
+#   - a stage error is raised as a map {pipeline_stage, message, error_class,
+#     attempt, attempts, execution?, exit_code?}; err_text scrubs keys and
+#     tokens out of every message that leaves the workflow
+#   - the thermometer key is read by `notify` / `thermometer_decision`
+#     themselves, used in one header and never returned or logged
+
+# ---- configuration ---------------------------------------------------------------
+
+load_config:
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${sys.get_env("PIPELINE_BUCKET")}'
+          name: '${sys.get_env("PIPELINE_CONFIG")}'
+        result: cfg
+    - check:
+        switch:
+          - condition: '${cfg == null}'
+            raise:
+              pipeline_stage: "config"
+              error_class: "config_missing"
+              message: "infra/config.json is missing from the pipeline bucket (terraform apply of infra/envs/int writes it)"
+              attempt: 1
+              attempts: 1
+    - done:
+        return: '${cfg}'
+
+# ---- small helpers -----------------------------------------------------------------
+
+log:
+  params: [text, severity: "INFO"]
+  steps:
+    - write:
+        call: sys.log
+        args:
+          text: '${text}'
+          severity: '${severity}'
+
+now_compact:
+  # 2026-10-12T03:10:05Z -> 20261012-0310
+  steps:
+    - fmt:
+        assign:
+          - t: '${text.substring(time.format(sys.now()), 0, 16)}'
+          - t: '${text.replace_all(text.replace_all(text.replace_all(t, "-", ""), ":", ""), "T", "-")}'
+    - done:
+        return: '${t}'
+
+err_text:
+  # A safe, short string for an exception or a message: keys, tokens and
+  # signed-URL parameters are replaced, the rest truncated to 1500 chars.
+  params: [e]
+  steps:
+    - base:
+        assign:
+          - msg: ""
+    - pick:
+        switch:
+          - condition: '${get_type(e) == "string"}'
+            assign:
+              - msg: '${e}'
+          - condition: '${get_type(e) == "map" and "message" in e and get_type(e.message) == "string"}'
+            assign:
+              - msg: '${e.message}'
+          - condition: true
+            assign:
+              - msg: '${json.encode_to_string(e)}'
+    - body:
+        switch:
+          - condition: '${get_type(e) == "map" and "body" in e and e.body != null}'
+            assign:
+              - msg: '${msg + " | " + json.encode_to_string(e.body)}'
+    - scrub:
+        assign:
+          - msg: '${text.replace_all_regex(msg, "tm_[A-Za-z0-9_\\-]+", "tm_<redacted>")}'
+          - msg: '${text.replace_all_regex(msg, "sk-ant-[A-Za-z0-9_\\-]+", "<redacted>")}'
+          - msg: '${text.replace_all_regex(msg, "ya29\\.[A-Za-z0-9._\\-]+", "<redacted>")}'
+          - msg: '${text.replace_all_regex(msg, "(?i)bearer\\s+[A-Za-z0-9._~+/=\\-]+", "Bearer <redacted>")}'
+          - msg: '${text.replace_all_regex(msg, "(?i)(x-api-key|api[_-]?key|service[_-]?key|access_token|token|secret|signature|sig)([\"'':= ]+)[^\\s\"'',}&]+", "<redacted>")}'
+          - msg: '${text.replace_all_regex(msg, "https://hooks\\.slack\\.com/[^\\s\"'']+", "<webhook>")}'
+    - cut:
+        switch:
+          - condition: '${len(msg) > 1500}'
+            assign:
+              - msg: '${text.substring(msg, 0, 1500) + "…"}'
+    - done:
+        return: '${msg}'
+
+err_class:
+  params: [e]
+  steps:
+    - pick:
+        switch:
+          - condition: '${get_type(e) == "map" and "error_class" in e}'
+            return: '${e.error_class}'
+          - condition: '${get_type(e) == "map" and "tags" in e and len(e.tags) > 0}'
+            return: '${e.tags[0]}'
+          - condition: '${get_type(e) == "map" and "code" in e}'
+            return: '${"code " + string(e.code)}'
+    - other:
+        return: "error"
+
+stage_error:
+  # Raise e as a stage error unless it already is one (an inner stage's
+  # error keeps its stage).
+  params: [stage, e, attempt: 1, attempts: 1]
+  steps:
+    - already:
+        switch:
+          - condition: '${get_type(e) == "map" and "pipeline_stage" in e}'
+            raise: '${e}'
+    - text:
+        call: err_text
+        args:
+          e: '${e}'
+        result: msg
+    - cls:
+        call: err_class
+        args:
+          e: '${e}'
+        result: cls
+    - throw:
+        raise:
+          pipeline_stage: '${stage}'
+          error_class: '${cls}'
+          message: '${msg}'
+          attempt: '${attempt}'
+          attempts: '${attempts}'
+
+# ---- Google APIs (OAuth2 as the workflow's account) --------------------------------
+
+api_get:
+  params: [url, query: {}]
+  steps:
+    - get:
+        try:
+          call: http.get
+          args:
+            url: '${url}'
+            query: '${query}'
+            auth:
+              type: OAuth2
+            timeout: 120
+          result: r
+        retry: '${http.default_retry}'
+    - done:
+        return: '${r.body}'
+
+api_get_or_null:
+  # 404 -> null
+  params: [url, query: {}]
+  steps:
+    - get:
+        try:
+          call: api_get
+          args:
+            url: '${url}'
+            query: '${query}'
+          result: body
+        except:
+          as: e
+          steps:
+            - missing:
+                switch:
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404}'
+                    return: null
+            - again:
+                raise: '${e}'
+    - done:
+        return: '${body}'
+
+api_send:
+  # POST / PATCH with a JSON body. Retried only where the request cannot have
+  # been applied (Workflows' non-idempotent policy: 429, 503).
+  params: [method, url, body: {}, query: {}]
+  steps:
+    - pick:
+        switch:
+          - condition: '${method == "PATCH"}'
+            next: send_patch
+          - condition: '${method != "POST"}'
+            raise:
+              error_class: "bad_method"
+              message: '${"api_send: POST or PATCH, not " + method}'
+    - send_post:
+        try:
+          call: http.post
+          args:
+            url: '${url}'
+            body: '${body}'
+            query: '${query}'
+            headers:
+              Content-Type: application/json
+            auth:
+              type: OAuth2
+            timeout: 300
+          result: r
+        retry: '${http.default_retry_non_idempotent}'
+        next: done
+    - send_patch:
+        try:
+          call: http.patch
+          args:
+            url: '${url}'
+            body: '${body}'
+            query: '${query}'
+            headers:
+              Content-Type: application/json
+            auth:
+              type: OAuth2
+            timeout: 300
+          result: r
+        retry: '${http.default_retry_non_idempotent}'
+    - done:
+        return: '${r.body}'
+
+# ---- Cloud Storage (JSON objects) -----------------------------------------------------
+
+gcs_read:
+  # The object's JSON, or null when it does not exist.
+  params: [bucket, name]
+  steps:
+    - get:
+        try:
+          call: http.get
+          args:
+            url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + text.url_encode(name)}'
+            query:
+              alt: media
+            auth:
+              type: OAuth2
+            timeout: 120
+          result: r
+        retry: '${http.default_retry}'
+        except:
+          as: e
+          steps:
+            - missing:
+                switch:
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404}'
+                    return: null
+            - again:
+                raise: '${e}'
+    - parse:
+        switch:
+          - condition: '${get_type(r.body) == "bytes" or get_type(r.body) == "string"}'
+            return: '${json.decode(r.body)}'
+    - done:
+        return: '${r.body}'
+
+gcs_meta:
+  # The object's metadata (generation, updated, size), or null.
+  params: [bucket, name]
+  steps:
+    - get:
+        call: api_get_or_null
+        args:
+          url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + text.url_encode(name)}'
+        result: m
+    - done:
+        return: '${m}'
+
+gcs_write:
+  # Write `data` as JSON. if_generation_match: 0 = only when absent (locks);
+  # a generation = only when unchanged since that read. A precondition
+  # failure raises the HttpError (code 412).
+  params: [bucket, name, data, if_generation_match: null]
+  steps:
+    - q:
+        assign:
+          - query:
+              uploadType: media
+              name: '${name}'
+    - pre:
+        switch:
+          - condition: '${if_generation_match != null}'
+            assign:
+              - query.ifGenerationMatch: '${string(if_generation_match)}'
+    - put:
+        try:
+          call: http.post
+          args:
+            url: '${"https://storage.googleapis.com/upload/storage/v1/b/" + bucket + "/o"}'
+            query: '${query}'
+            headers:
+              Content-Type: application/json
+            body: '${data}'
+            auth:
+              type: OAuth2
+            timeout: 120
+          result: r
+        retry: '${http.default_retry_non_idempotent}'
+    - done:
+        return: '${r.body}'
+
+gcs_delete:
+  # Delete; absent is fine. generation: only that generation.
+  params: [bucket, name, generation: null]
+  steps:
+    - q:
+        assign:
+          - query: {}
+    - pre:
+        switch:
+          - condition: '${generation != null}'
+            assign:
+              - query.ifGenerationMatch: '${string(generation)}'
+    - del:
+        try:
+          call: http.delete
+          args:
+            url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + text.url_encode(name)}'
+            query: '${query}'
+            auth:
+              type: OAuth2
+            timeout: 120
+        retry: '${http.default_retry}'
+        except:
+          as: e
+          steps:
+            - gone:
+                switch:
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404}'
+                    return: false
+            - again:
+                raise: '${e}'
+    - done:
+        return: true
+
+gcs_copy:
+  # Server-side copy of a small object (JSON baselines).
+  params: [bucket, src, dst]
+  steps:
+    - copy:
+        call: api_send
+        args:
+          method: POST
+          url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + text.url_encode(src) + "/copyTo/b/" + bucket + "/o/" + text.url_encode(dst)}'
+        result: r
+    - done:
+        return: '${r}'
+
+gcs_list:
+  # Object names under a prefix (every page).
+  params: [bucket, prefix]
+  steps:
+    - init:
+        assign:
+          - names: []
+          - token: null
+    - page:
+        assign:
+          - query:
+              prefix: '${prefix}'
+              fields: "items(name),nextPageToken"
+              maxResults: 1000
+    - tok:
+        switch:
+          - condition: '${token != null}'
+            assign:
+              - query.pageToken: '${token}'
+    - get:
+        call: api_get
+        args:
+          url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o"}'
+          query: '${query}'
+        result: body
+    - collect:
+        for:
+          value: item
+          in: '${default(map.get(body, "items"), [])}'
+          steps:
+            - add:
+                assign:
+                  - names: '${list.concat(names, item.name)}'
+    - more:
+        switch:
+          - condition: '${"nextPageToken" in body and body.nextPageToken != null and body.nextPageToken != ""}'
+            next: next_tok
+        next: done
+    - next_tok:
+        assign:
+          - token: '${body.nextPageToken}'
+        next: page
+    - done:
+        return: '${names}'
+
+gcs_delete_prefix:
+  params: [bucket, prefix]
+  steps:
+    - list:
+        call: gcs_list
+        args:
+          bucket: '${bucket}'
+          prefix: '${prefix}'
+        result: names
+    - each:
+        for:
+          value: obj
+          in: '${names}'
+          steps:
+            - del:
+                call: gcs_delete
+                args:
+                  bucket: '${bucket}'
+                  name: '${obj}'
+    - done:
+        return: '${len(names)}'
+
+# ---- locks (state/locks/<name>.json, DESIGN §2.2) --------------------------------------
+
+lock_acquire:
+  # {acquired: bool, holder}. An object insert with ifGenerationMatch=0; a
+  # lock past expires_at is broken only when breakable (gpu-eval yes,
+  # retrain never: a stale retrain lock is for a person, RETRAIN.md R8).
+  params: [bucket, name, run_id, ttl_s, breakable: true]
+  steps:
+    - init:
+        assign:
+          - exec_id: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+          - tries: 0
+    - attempt:
+        assign:
+          - now: '${sys.now()}'
+          - tries: '${tries + 1}'
+          - body:
+              holder: '${exec_id}'
+              run_id: '${run_id}'
+              expires_at: '${time.format(now + ttl_s)}'
+              updated_at: '${time.format(now)}'
+    - insert:
+        try:
+          call: gcs_write
+          args:
+            bucket: '${bucket}'
+            name: '${name}'
+            data: '${body}'
+            if_generation_match: 0
+        except:
+          as: e
+          steps:
+            - other:
+                switch:
+                  - condition: '${not(get_type(e) == "map" and default(map.get(e, "code"), 0) == 412)}'
+                    raise: '${e}'
+            - held:
+                next: inspect
+    - got:
+        return:
+          acquired: true
+          holder: '${body}'
+    - inspect:
+        call: gcs_meta
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+        result: meta
+    - vanished:
+        switch:
+          - condition: '${meta == null and tries < 4}'
+            next: attempt
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+        result: cur
+    - ours:
+        # our own insert, retried after a lost response
+        switch:
+          - condition: '${cur != null and default(map.get(cur, "holder"), "") == exec_id and default(map.get(cur, "run_id"), "") == run_id}'
+            return:
+              acquired: true
+              holder: '${cur}'
+    - expired:
+        switch:
+          - condition: '${breakable and meta != null and cur != null and "expires_at" in cur and time.parse(cur.expires_at) < sys.now() and tries < 4}'
+            next: log_break
+        next: busy
+    - log_break:
+        call: log
+        args:
+          text: '${"breaking expired lock " + name + " held by " + json.encode_to_string(cur)}'
+          severity: WARNING
+    - break_it:
+        call: gcs_delete
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+          generation: '${meta.generation}'
+        next: attempt
+    - busy:
+        return:
+          acquired: false
+          holder: '${cur}'
+
+lock_wait:
+  # lock_acquire, retried every 5 min for up to wait_s.
+  params: [bucket, name, run_id, ttl_s, wait_s, breakable: true]
+  steps:
+    - init:
+        assign:
+          - deadline: '${sys.now() + wait_s}'
+    - try_lock:
+        call: lock_acquire
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+          run_id: '${run_id}'
+          ttl_s: '${ttl_s}'
+          breakable: '${breakable}'
+        result: got
+    - done_or_wait:
+        switch:
+          - condition: '${got.acquired or sys.now() + 300 > deadline}'
+            return: '${got}'
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 300
+        next: try_lock
+
+lock_release:
+  # Delete the lock only when this run holds it.
+  params: [bucket, name, run_id]
+  steps:
+    - meta:
+        call: gcs_meta
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+        result: meta
+    - none:
+        switch:
+          - condition: '${meta == null}'
+            return: false
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+        result: cur
+    - mine:
+        switch:
+          - condition: '${cur != null and default(map.get(cur, "run_id"), "") == run_id}'
+            steps:
+              - del:
+                  call: gcs_delete
+                  args:
+                    bucket: '${bucket}'
+                    name: '${name}'
+                    generation: '${meta.generation}'
+              - ok:
+                  return: true
+    - not_mine:
+        return: false
+
+lock_refresh:
+  # Push expires_at / updated_at forward while this run holds the lock.
+  params: [bucket, name, run_id, ttl_s]
+  steps:
+    - meta:
+        call: gcs_meta
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+        result: meta
+    - read:
+        switch:
+          - condition: '${meta == null}'
+            return: false
+    - cur:
+        call: gcs_read
+        args:
+          bucket: '${bucket}'
+          name: '${name}'
+        result: cur
+    - mine:
+        switch:
+          - condition: '${cur == null or default(map.get(cur, "run_id"), "") != run_id}'
+            return: false
+    - write:
+        try:
+          call: gcs_write
+          args:
+            bucket: '${bucket}'
+            name: '${name}'
+            data:
+              holder: '${default(map.get(cur, "holder"), "")}'
+              run_id: '${run_id}'
+              expires_at: '${time.format(sys.now() + ttl_s)}'
+              updated_at: '${time.format(sys.now())}'
+            if_generation_match: '${meta.generation}'
+        except:
+          as: e
+          steps:
+            - lost:
+                return: false
+    - done:
+        return: true
+
+# ---- Cloud Run (v2 REST) ------------------------------------------------------------------
+
+run_op_wait:
+  # Wait for a Run v2 long-running operation; raise its error.
+  params: [op, timeout_s: 1800]
+  steps:
+    - init:
+        assign:
+          - deadline: '${sys.now() + timeout_s}'
+          - cur: '${op}'
+    - check:
+        switch:
+          - condition: '${default(map.get(cur, "done"), false)}'
+            next: result
+          - condition: '${sys.now() > deadline}'
+            raise:
+              error_class: "operation_timeout"
+              message: '${"Cloud Run operation " + cur.name + " not done after " + string(timeout_s) + " s"}'
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 10
+    - poll:
+        call: api_get
+        args:
+          url: '${"https://run.googleapis.com/v2/" + cur.name}'
+        result: cur
+        next: check
+    - result:
+        switch:
+          - condition: '${"error" in cur and cur.error != null}'
+            raise:
+              error_class: "operation_failed"
+              message: '${json.encode_to_string(cur.error)}'
+    - done:
+        return: '${cur}'
+
+job_set_image:
+  # Re-point a job at `image` unless it already runs it.
+  params: [cfg, job, image]
+  steps:
+    - get:
+        call: api_get
+        args:
+          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
+        result: j
+    - same:
+        switch:
+          - condition: '${j.template.template.containers[0].image == image}'
+            return: false
+    - set:
+        assign:
+          - j.template.template.containers[0].image: '${image}'
+    - patch:
+        call: api_send
+        args:
+          method: PATCH
+          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
+          body: '${j}'
+        result: op
+    - wait:
+        call: run_op_wait
+        args:
+          op: '${op}'
+          timeout_s: 600
+    - done:
+        return: true
+
+run_job:
+  # Run a job with per-stage args and env; wait for its execution.
+  # {ok, execution, exit_code, message}. Never raises for a failed task:
+  # the caller decides about retries.
+  params: [cfg, job, args, env, timeout_s]
+  steps:
+    - init:
+        assign:
+          - url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
+          - envlist: []
+          - started: '${sys.now()}'
+    - mkenv:
+        for:
+          value: k
+          in: '${keys(env)}'
+          steps:
+            - add:
+                assign:
+                  - envlist: '${list.concat(envlist, {"name": k, "value": string(env[k])})}'
+    - start:
+        call: api_send
+        args:
+          method: POST
+          url: '${url + ":run"}'
+          body:
+            overrides:
+              containerOverrides:
+                - args: '${args}'
+                  env: '${envlist}'
+              taskCount: 1
+              timeout: '${string(timeout_s) + "s"}'
+        result: op
+    - exec_name:
+        assign:
+          - execution: '${op.metadata.name}'
+          - deadline: '${started + timeout_s + 3600}'
+    - announce:
+        call: log
+        args:
+          text: '${"started " + execution + " args " + json.encode_to_string(args)}'
+    - interval:
+        assign:
+          - pause: 120
+    - short:
+        switch:
+          - condition: '${sys.now() - started < 300}'
+            assign:
+              - pause: 20
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: '${pause}'
+    - poll:
+        call: api_get
+        args:
+          url: '${"https://run.googleapis.com/v2/" + execution}'
+        result: ex
+    - finished:
+        switch:
+          - condition: '${"completionTime" in ex and ex.completionTime != null}'
+            next: outcome
+          - condition: '${sys.now() > deadline}'
+            next: cancel
+        next: interval
+    - cancel:
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${"https://run.googleapis.com/v2/" + execution + ":cancel"}'
+        except:
+          as: e
+          steps:
+            - ignore:
+                assign:
+                  - cancel_error: '${e}'
+    - late:
+        return:
+          ok: false
+          execution: '${execution}'
+          exit_code: -1
+          message: '${"no completion after " + string(timeout_s + 3600) + " s; cancelled"}'
+    - outcome:
+        switch:
+          - condition: '${default(map.get(ex, "succeededCount"), 0) >= 1}'
+            return:
+              ok: true
+              execution: '${execution}'
+              exit_code: 0
+              message: ""
+    - tasks:
+        try:
+          call: api_get
+          args:
+            url: '${"https://run.googleapis.com/v2/" + execution + "/tasks"}'
+          result: tl
+        except:
+          as: e
+          steps:
+            - no_tasks:
+                assign:
+                  - tl: {}
+    - code:
+        assign:
+          - t0: '${default(map.get(tl, "tasks"), [{}])[0]}'
+          - exit_code: '${default(map.get(t0, ["lastAttemptResult", "exitCode"]), -1)}'
+          - msg: '${default(map.get(t0, ["lastAttemptResult", "status", "message"]), "")}'
+          - cond: '${default(map.get(ex, "conditions"), [])}'
+    - failed:
+        return:
+          ok: false
+          execution: '${execution}'
+          exit_code: '${exit_code}'
+          message: '${msg + " " + json.encode_to_string(cond)}'
+
+service_get:
+  params: [cfg, svc]
+  steps:
+    - get:
+        call: api_get
+        args:
+          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + svc.region + "/services/" + svc.name}'
+        result: s
+    - done:
+        return: '${s}'
+
+service_ready_image:
+  # The image the service's newest READY revision runs (what is serving),
+  # and the revision.
+  params: [cfg, svc]
+  steps:
+    - get:
+        call: service_get
+        args:
+          cfg: '${cfg}'
+          svc: '${svc}'
+        result: s
+    - rev:
+        call: api_get
+        args:
+          url: '${"https://run.googleapis.com/v2/" + s.latestReadyRevision}'
+        result: r
+    - done:
+        return:
+          image: '${r.containers[0].image}'
+          revision: '${s.latestReadyRevision}'
+          created: '${r.createTime}'
+          service: '${s}'
+
+service_set_image:
+  # Patch a GPU service's image (+ the souschef/candidate annotation) and
+  # wait until the new revision is the ready one. Nothing else in the
+  # service changes: the body is the service as read, with two fields set.
+  params: [cfg, svc, image, note]
+  steps:
+    - get:
+        call: service_get
+        args:
+          cfg: '${cfg}'
+          svc: '${svc}'
+        result: s
+    - same:
+        switch:
+          - condition: '${s.template.containers[0].image == image and s.latestReadyRevision == s.latestCreatedRevision}'
+            return:
+              changed: false
+              revision: '${s.latestReadyRevision}'
+    - set:
+        assign:
+          - s.template.containers[0].image: '${image}'
+    - ann:
+        switch:
+          - condition: '${not("annotations" in s.template) or s.template.annotations == null}'
+            assign:
+              - s.template.annotations: {}
+    - ann_set:
+        assign:
+          - s.template.annotations["souschef/candidate"]: '${note}'
+    - patch:
+        call: api_send
+        args:
+          method: PATCH
+          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + svc.region + "/services/" + svc.name}'
+          body: '${s}'
+        result: op
+    - wait:
+        call: run_op_wait
+        args:
+          op: '${op}'
+          timeout_s: 2700
+    - check:
+        call: service_get
+        args:
+          cfg: '${cfg}'
+          svc: '${svc}'
+        result: after
+    - ready:
+        switch:
+          - condition: '${after.latestReadyRevision != after.latestCreatedRevision}'
+            raise:
+              error_class: "revision_not_ready"
+              message: '${svc.name + ": revision " + after.latestCreatedRevision + " did not become ready; " + after.latestReadyRevision + " still serves. " + json.encode_to_string(default(map.get(after, "terminalCondition"), {}))}'
+    - done:
+        return:
+          changed: true
+          revision: '${after.latestReadyRevision}'
+
+warm:
+  # Load the model on a GPU service (an empty /api/generate with keep_alive
+  # -1), retried until minutes pass. true = it answered.
+  params: [cfg, url, minutes]
+  steps:
+    - init:
+        assign:
+          - deadline: '${sys.now() + minutes * 60}'
+    - load:
+        try:
+          call: http.post
+          args:
+            url: '${url + "/api/generate"}'
+            body:
+              model: '${cfg.ollama_model}'
+              prompt: ""
+              keep_alive: -1
+              stream: false
+            auth:
+              type: OIDC
+              audience: '${url}'
+            timeout: 900
+          result: r
+        except:
+          as: e
+          steps:
+            - give_up:
+                switch:
+                  - condition: '${sys.now() + 30 > deadline}'
+                    steps:
+                      - why:
+                          call: err_text
+                          args:
+                            e: '${e}'
+                          result: msg
+                      - note:
+                          call: log
+                          args:
+                            text: '${"warm " + url + " gave up: " + msg}'
+                            severity: WARNING
+                      - gave_up:
+                          return: false
+            - pause:
+                call: sys.sleep
+                args:
+                  seconds: 30
+                next: load
+    - ok:
+        return: true
+
+# ---- Artifact Registry -----------------------------------------------------------------------
+
+ar_tag_digest:
+  # sha256:... of <repository>/<package>:<tag>, or null when the tag is absent.
+  params: [cfg, location, repository, package, tag]
+  steps:
+    - get:
+        call: api_get_or_null
+        args:
+          url: '${"https://artifactregistry.googleapis.com/v1/projects/" + cfg.project + "/locations/" + location + "/repositories/" + repository + "/packages/" + text.url_encode(package) + "/tags/" + text.url_encode(tag)}'
+        result: t
+    - none:
+        switch:
+          - condition: '${t == null}'
+            return: null
+    - digest:
+        assign:
+          - parts: '${text.split(t.version, "/")}'
+    - done:
+        return: '${parts[len(parts) - 1]}'
+
+image_digest:
+  # sha256:... for an image reference (by digest already, or by tag in the
+  # model repository).
+  params: [cfg, image]
+  steps:
+    - by_digest:
+        switch:
+          - condition: '${len(text.find_all(image, "@sha256:")) > 0}'
+            return: '${text.split(image, "@")[1]}'
+    - tag:
+        assign:
+          - parts: '${text.split(image, ":")}'
+          - tag: '${parts[len(parts) - 1]}'
+    - lookup:
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.model_repo.location}'
+          repository: '${cfg.model_repo.repository}'
+          package: "model"
+          tag: '${tag}'
+        result: d
+    - missing:
+        switch:
+          - condition: '${d == null}'
+            raise:
+              error_class: "image_missing"
+              message: '${"no tag " + tag + " in the model repository for " + image}'
+    - done:
+        return: '${d}'
+
+prod_model:
+  # What merchants are served: the production model service's ready image,
+  # its digest and the digest reference the eval service is pointed at.
+  params: [cfg]
+  steps:
+    - ready:
+        call: service_ready_image
+        args:
+          cfg: '${cfg}'
+          svc: '${cfg.prod_model}'
+        result: r
+    - digest:
+        call: image_digest
+        args:
+          cfg: '${cfg}'
+          image: '${r.image}'
+        result: d
+    - done:
+        return:
+          image: '${r.image}'
+          digest: '${d}'
+          digest_image: '${cfg.model_repo.image + "@" + d}'
+          revision: '${r.revision}'
+
+resolve_images:
+  # DESIGN §6.3: the int service's serving tag T -> sous-chef-lab:T and
+  # sous-chef-trainer:T (CI pushes both beside sous-chef:T; a manual service
+  # build needs `make lab-image trainer-image TAG=T`).
+  params: [cfg]
+  steps:
+    - ready:
+        call: service_ready_image
+        args:
+          cfg: '${cfg}'
+          svc: '${cfg.int_service}'
+        result: r
+    - tag:
+        assign:
+          - parts: '${text.split(r.image, ":")}'
+          - tag: '${parts[len(parts) - 1]}'
+    - bad_ref:
+        switch:
+          - condition: '${len(text.find_all(r.image, "@")) > 0 or len(parts) < 2}'
+            raise:
+              pipeline_stage: "images"
+              error_class: "untagged_service_image"
+              message: '${"the int service runs " + r.image + ", not <repo>/sous-chef:<tag>: the lab image cannot be resolved"}'
+              attempt: 1
+              attempts: 1
+    - lab:
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.lab_repo.location}'
+          repository: '${cfg.lab_repo.repository}'
+          package: "sous-chef-lab"
+          tag: '${tag}'
+        result: lab_d
+    - trainer:
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.lab_repo.location}'
+          repository: '${cfg.lab_repo.repository}'
+          package: "sous-chef-trainer"
+          tag: '${tag}'
+        result: trainer_d
+    - done:
+        return:
+          tag: '${tag}'
+          service_image: '${r.image}'
+          service_revision: '${r.revision}'
+          rolled_at: '${r.created}'
+          lab: '${cfg.lab_repo.image + ":" + tag}'
+          lab_ok: '${lab_d != null}'
+          trainer: '${cfg.lab_repo.trainer + ":" + tag}'
+          trainer_ok: '${trainer_d != null}'
+
+# ---- the thermometer (notifications, decisions; DESIGN §4) ---------------------------------
+
+therm_key:
+  params: [cfg]
+  steps:
+    - read:
+        call: googleapis.secretmanager.v1.projects.secrets.versions.accessString
+        args:
+          project_id: '${cfg.project}'
+          secret_id: '${cfg.thermometer_secret}'
+          version: latest
+        result: k
+    - done:
+        return: '${k}'
+
+notify:
+  # POST one notification (idempotent by its id). Never raises: a
+  # notification that cannot be delivered is logged ("not delivered": the
+  # log-based alert of monitoring.tf) and parked in the bucket's outbox
+  # (wf/outbox/: only this account writes wf/, so a job account cannot plant
+  # a message the next flush would post with the pipeline key), which every
+  # drift poll flushes — a thermometer outage or a key/config mistake (401,
+  # 403, 404) delays a message, never drops it. {ok, code?, body?, queued?}
+  params: [cfg, payload]
+  steps:
+    - fill:
+        switch:
+          - condition: '${not("created_at" in payload)}'
+            assign:
+              - payload.created_at: '${time.format(sys.now())}'
+    - send:
+        call: notify_send
+        args:
+          cfg: '${cfg}'
+          payload: '${payload}'
+        result: sent
+    - delivered:
+        switch:
+          - condition: '${sent.ok}'
+            return: '${sent}'
+          # refused for good (400, 409, 413, 422: the message itself is wrong): re-sending cannot help; the log line is the trace
+          - condition: '${default(map.get(sent, "permanent"), false)}'
+            return: '${sent}'
+    - park:
+        try:
+          call: gcs_write
+          args:
+            bucket: '${cfg.bucket}'
+            name: '${"wf/outbox/" + text.replace_all(payload.id, "/", "~") + ".json"}'
+            data: '${payload}'
+        except:
+          as: e
+          steps:
+            - lost:
+                call: log
+                args:
+                  text: '${"notification " + payload.id + " (" + payload.kind + ") not delivered and not parked in the outbox"}'
+                  severity: ERROR
+            - lost_out:
+                return:
+                  ok: false
+                  queued: false
+                  error: '${sent.error}'
+    - parked:
+        return:
+          ok: false
+          queued: true
+          error: '${sent.error}'
+
+flush_outbox:
+  # Re-send what notify parked (oldest first, up to `limit`); a delivered one
+  # leaves the outbox. Only a file whose name is its own payload's id is
+  # re-sent (notify's naming); anything else is deleted unsent. Never raises.
+  # Returns the count delivered.
+  params: [cfg, limit: 50]
+  steps:
+    - init:
+        assign:
+          - delivered: 0
+          - names: []
+          - stop: false
+    - list:
+        try:
+          call: gcs_list
+          args:
+            bucket: '${cfg.bucket}'
+            prefix: "wf/outbox/"
+          result: names
+        except:
+          as: e
+          steps:
+            - none:
+                return: 0
+    - each:
+        for:
+          value: name
+          index: i
+          in: '${names}'
+          steps:
+            - enough:
+                switch:
+                  - condition: '${stop or i >= limit}'
+                    next: continue
+            - one:
+                try:
+                  steps:
+                    - read:
+                        call: gcs_read
+                        args:
+                          bucket: '${cfg.bucket}'
+                          name: '${name}'
+                        result: payload
+                    - named:
+                        assign:
+                          - own: false
+                    - named_map:
+                        switch:
+                          - condition: '${get_type(payload) == "map"}'
+                            steps:
+                              - named_id:
+                                  switch:
+                                    - condition: '${get_type(map.get(payload, "id")) == "string"}'
+                                      assign:
+                                        - own: '${name == "wf/outbox/" + text.replace_all(payload.id, "/", "~") + ".json"}'
+                    - foreign_check:
+                        # a file notify did not write (its name is not its id): never posted
+                        switch:
+                          - condition: '${payload != null and not(own)}'
+                            steps:
+                              - foreign:
+                                  call: log
+                                  args:
+                                    text: '${"outbox: " + name + " is not a parked notification (its name is not its id); deleted unsent"}'
+                                    severity: WARNING
+                              - drop_foreign:
+                                  call: gcs_delete
+                                  args:
+                                    bucket: '${cfg.bucket}'
+                                    name: '${name}'
+                              - unread:
+                                  assign:
+                                    - payload: null
+                    - resend:
+                        switch:
+                          - condition: '${payload != null}'
+                            steps:
+                              - post:
+                                  call: notify_send
+                                  args:
+                                    cfg: '${cfg}'
+                                    payload: '${payload}'
+                                  result: sent
+                              - judge:
+                                  switch:
+                                    # delivered, or refused for good (400/409/413/422: re-sending cannot help) — out of the outbox
+                                    - condition: '${sent.ok or default(map.get(sent, "permanent"), false)}'
+                                      steps:
+                                        - drop:
+                                            call: gcs_delete
+                                            args:
+                                              bucket: '${cfg.bucket}'
+                                              name: '${name}'
+                                        - count:
+                                            assign:
+                                              - delivered: '${delivered + 1}'
+                                    # the thermometer is still down: try again at the next poll
+                                    - condition: true
+                                      assign:
+                                        - stop: true
+                except:
+                  as: e
+                  steps:
+                    - skip_one:
+                        assign:
+                          - e: null
+    - done:
+        return: '${delivered}'
+
+notify_send:
+  # One POST to the thermometer. Never raises. {ok, code?, error?}
+  params: [cfg, payload]
+  steps:
+    - post:
+        try:
+          steps:
+            - key:
+                call: therm_key
+                args:
+                  cfg: '${cfg}'
+                result: key
+            - send:
+                try:
+                  call: http.post
+                  args:
+                    url: '${cfg.thermometer_url + "/api/ingest/souschef/notifications"}'
+                    headers:
+                      X-API-Key: '${key}'
+                      Content-Type: application/json
+                    body: '${payload}'
+                    timeout: 60
+                  result: r
+                retry: '${http.default_retry}'
+        except:
+          as: e
+          steps:
+            - why:
+                call: err_text
+                args:
+                  e: '${e}'
+                result: msg
+            - code:
+                assign:
+                  - code: 0
+                  - permanent: false
+            - code_of:
+                switch:
+                  - condition: '${get_type(e) == "map"}'
+                    assign:
+                      - code: '${default(map.get(e, "code"), 0)}'
+            - refused:
+                switch:
+                  # only a refusal of the message itself; 401/403/404 (a key,
+                  # SOUSCHEF_INGEST_KEY_IDS or the pipeline switch) are parked
+                  # until the configuration is fixed
+                  - condition: '${get_type(code) == "integer" and (code == 400 or code == 409 or code == 413 or code == 422)}'
+                    assign:
+                      - permanent: true
+            - note:
+                call: log
+                args:
+                  text: '${"notification " + payload.id + " (" + payload.kind + ") not delivered: " + msg}'
+                  severity: ERROR
+            - failed:
+                return:
+                  ok: false
+                  permanent: '${permanent}'
+                  code: '${code}'
+                  error: '${msg}'
+    - done:
+        return:
+          ok: true
+          code: '${r.code}'
+          body: '${default(map.get(r, "body"), null)}'
+
+notify_result:
+  # Post every notification a job put in its result (notifications[], else
+  # notification) with the workflow's ids, <prefix>/<kind>/<i>. Kinds in
+  # skip are not posted: heartbeat (the drift workflow posts its own, once a
+  # day) and, for the eval stage, candidate_ready (the decide stage sends it
+  # with the decision). The result's deployed / model / verdict go into each
+  # message's details for the thermometer's state tiles. Returns the count
+  # posted.
+  params: [cfg, res, run_id, candidate_id: null, id_prefix: null, skip: ["heartbeat"]]
+  steps:
+    - none:
+        switch:
+          - condition: '${res == null}'
+            return: 0
+    - pick:
+        assign:
+          - notes: '${default(map.get(res, "notifications"), [])}'
+          - posted: 0
+          - tiles: {}
+    - single:
+        switch:
+          - condition: '${len(notes) == 0 and map.get(res, "notification") != null}'
+            assign:
+              - notes: '${[res.notification]}'
+    - tile_deployed:
+        switch:
+          - condition: '${get_type(map.get(res, "deployed")) == "map"}'
+            assign:
+              - tiles.deployed:
+                  hash: '${map.get(res.deployed, "hash")}'
+                  launcher_build: '${map.get(res.deployed, "launcher_build")}'
+    - tile_model:
+        switch:
+          - condition: '${get_type(map.get(res, "model")) == "map"}'
+            assign:
+              - tiles.model:
+                  tag: '${map.get(res.model, "tag")}'
+                  digest: '${map.get(res.model, "digest")}'
+                  training_manifest: '${map.get(res.model, "training_manifest")}'
+    - tile_verdict:
+        switch:
+          - condition: '${map.get(res, "verdict") != null}'
+            assign:
+              - tiles.verdict: '${res.verdict}'
+    - each:
+        for:
+          value: msg
+          index: i
+          in: '${notes}'
+          steps:
+            - skipped:
+                switch:
+                  - condition: '${msg == null or default(map.get(msg, "kind"), "") in skip}'
+                    next: continue
+            - build:
+                assign:
+                  - msg.id: '${default(id_prefix, run_id) + "/" + msg.kind + "/" + string(i)}'
+                  - msg.run_id: '${run_id}'
+                  - msg.candidate_id: '${candidate_id}'
+            - sev:
+                switch:
+                  - condition: '${not("severity" in msg) or msg.severity == null}'
+                    assign:
+                      - msg.severity: info
+            - det:
+                switch:
+                  - condition: '${get_type(map.get(msg, "details")) != "map"}'
+                    assign:
+                      - msg.details: {}
+            - with_tiles:
+                assign:
+                  - msg.details: '${map.merge(tiles, msg.details)}'
+            - send:
+                call: notify
+                args:
+                  cfg: '${cfg}'
+                  payload: '${msg}'
+                result: sent
+            - count:
+                switch:
+                  - condition: '${sent.ok}'
+                    assign:
+                      - posted: '${posted + 1}'
+    - done:
+        return: '${posted}'
+
+notify_failure:
+  # stage_failed (the thermometer @-mentions the approver). Dedup on
+  # <run>:<stage> (or `dedup`) for 6 h on the thermometer's side; the drift
+  # workflow passes drift:<stage>:<class> and does its own suppression
+  # (drift_failed: consecutive failures, once a day).
+  params: [cfg, run_id, wf, e, candidate_id: null, dedup: null, id_suffix: null]
+  steps:
+    - shape:
+        assign:
+          - exec_id: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+          - stage: "workflow"
+          - attempt: 1
+          - attempts: 1
+          - extra: {}
+    - from_map:
+        switch:
+          - condition: '${get_type(e) == "map" and "pipeline_stage" in e}'
+            assign:
+              - stage: '${e.pipeline_stage}'
+              - attempt: '${default(map.get(e, "attempt"), 1)}'
+              - attempts: '${default(map.get(e, "attempts"), 1)}'
+              - extra:
+                  execution: '${default(map.get(e, "execution"), null)}'
+                  exit_code: '${default(map.get(e, "exit_code"), null)}'
+    - text:
+        call: err_text
+        args:
+          e: '${e}'
+        result: msg
+    - cls:
+        call: err_class
+        args:
+          e: '${e}'
+        result: cls
+    - urls:
+        assign:
+          - console: '${"https://console.cloud.google.com/workflows/workflow/" + cfg.workflows_region + "/" + wf + "/execution/" + exec_id + "?project=" + cfg.project}'
+    - book:
+        call: playbook_anchor
+        args:
+          wf: '${wf}'
+          stage: '${stage}'
+        result: playbook
+    - post:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload:
+            id: '${run_id + "/stage_failed/" + text.replace_all(stage, " ", "-") + "/" + default(id_suffix, text.substring(exec_id, 0, 8))}'
+            kind: stage_failed
+            severity: error
+            run_id: '${run_id}'
+            candidate_id: '${candidate_id}'
+            title: '${"Sous Chef pipeline failed: " + stage + " (" + run_id + ", attempt " + string(attempt) + "/" + string(attempts) + ")"}'
+            summary: '${msg + "\nArtifacts kept. Playbook: " + playbook}'
+            dedup_key: '${default(dedup, run_id + ":" + stage)}'
+            details:
+              stage: '${stage}'
+              attempt: '${attempt}'
+              attempts: '${attempts}'
+              error_class: '${cls}'
+              workflow: '${wf}'
+              execution: '${exec_id}'
+              console_url: '${console}'
+              playbook: '${playbook}'
+              job: '${extra}'
+        result: sent
+    - done:
+        return: '${sent}'
+
+playbook_anchor:
+  params: [wf, stage]
+  steps:
+    - pick:
+        switch:
+          - condition: '${wf == "souschef-drift"}'
+            return: "docs/DRIFT.md"
+          - condition: '${stage == "prepare"}'
+            return: "docs/RETRAIN.md#r1-prepare"
+          - condition: '${stage == "collect"}'
+            return: "docs/RETRAIN.md#r2-collection"
+          - condition: '${stage == "dataset"}'
+            return: "docs/RETRAIN.md#r3-dataset-and-the-parity-gate"
+          - condition: '${stage == "train"}'
+            return: "docs/RETRAIN.md#r4-training"
+          - condition: '${stage == "build"}'
+            return: "docs/RETRAIN.md#r5-export-stage-image-build"
+          - condition: '${stage == "candidate" or stage == "eval"}'
+            return: "docs/RETRAIN.md#r6-candidate-service-and-the-paired-eval"
+          - condition: '${stage == "decide" or stage == "rollout" or stage == "skip"}'
+            return: "docs/RETRAIN.md#r7-decide-rollout-rollback-skip"
+    - other:
+        return: "docs/RETRAIN.md#r8-debugging-a-failed-execution"

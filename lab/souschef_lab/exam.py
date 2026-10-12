@@ -1341,6 +1341,25 @@ def cmd_run(args) -> int:
     except ExamError as e:
         print(f"exam run: {e}", file=sys.stderr)
         return 1
+    rebase_home = None
+    if args.manifest_rebase:
+        # The drift check's arm D (docs/DRIFT.md): the same rows on another manifest. Keys renamed by the static
+        # diff follow; rows whose keys are gone are left out (stale); contexts are re-derived on that manifest.
+        from .drift import home_context, static_diff
+        from .examrebase import rebase_exam
+        old_doc = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+        new_path = Path(args.manifest_rebase)
+        new_doc = json.loads(new_path.read_text(encoding="utf-8"))
+        rebase_home = home_context(cases) or home_context(load_set("paraphrase", exam_dir=Path(args.exam_dir),
+                                                                    manifest=Path(args.manifest)))
+        sd = static_diff(old_doc, new_doc)
+        cases, stale, rep = rebase_exam(cases, new_doc, sd["renames"], old_manifest=old_doc)
+        print(f"rebased onto {new_path.name} ({rep['to'][:12]}…): {rep['kept']} rows kept, {rep['stale']} stale (not asked"
+              f"{': ' + ', '.join(rep['stale_ids'][:5]) if rep['stale_ids'] else ''}), {rep['renamed_rows']} with renamed keys")
+        args.manifest = str(new_path)
+        if not cases:
+            print("exam run: every row is stale on that manifest", file=sys.stderr)
+            return 1
     if args.only:
         keep = {x.strip() for x in args.only.split(",") if x.strip()}
         cases = [c for c in cases if c["id"] in keep or (c.get("meta") or {}).get("class") in keep]
@@ -1360,7 +1379,11 @@ def cmd_run(args) -> int:
     if not args.site_prefix.startswith("lab-"):
         print("exam run: --site-prefix must start with lab- (the lab's own site ids)", file=sys.stderr)
         return 2
-    if args.rederive_contexts:
+    if args.rederive_contexts and rebase_home is not None:
+        from .drift import rederive
+        n = rederive(cases, Path(args.manifest), rebase_home)
+        print(f"contexts re-derived on the rebased manifest for {n} turns of {len(cases)} rows")
+    elif args.rederive_contexts:
         n = rederive_contexts(cases, Path(args.manifest))
         print(f"contexts re-derived with today's browser mirror (state.context_of: focus, shopMenu, outline) "
               f"for {n} turns of {len(cases)} rows")
@@ -1528,6 +1551,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--rederive-contexts", action="store_true",
                    help="r4 L7: re-derive every row's context with today's browser mirror (focus, shopMenu, outline; "
                         "the selected section open) instead of the recorded 10-06 contexts")
+    e.add_argument("--manifest-rebase", metavar="MANIFEST",
+                   help="drift arm D: ask the set's rows on this OTHER manifest (renamed keys followed, rows whose keys "
+                        "are gone left out; with --rederive-contexts the contexts are derived on it)")
     e.add_argument("--persistent-engine", action="store_true",
                    help="boot the engine once (js/engine_server.mjs) instead of once per call (~10 s each)")
     e.add_argument("--fake", action="store_true", help="dry run: the lab's fake service in process (no model)")

@@ -74,6 +74,60 @@ type ComputeRegistrar interface {
 	ComputeAndRegister(ctx context.Context, body []byte, launcherBuild string) (res RegisterResult, created bool, err error)
 }
 
+// DeployedFinder is the optional registry extension behind GET
+// /v1/manifests/deployed: which manifest the deployed launcher of a build
+// line serves, judged from launcher registrations and real (non-lab)
+// turns. No launcher registration and no real turn in the window →
+// *Error{Code: "no_launcher_manifest", Status: 404}. A registry without it
+// makes the route answer 501.
+type DeployedFinder interface {
+	Deployed(ctx context.Context, q DeployedQuery) (DeployedInfo, error)
+}
+
+// DeployedQuery is the parsed GET /v1/manifests/deployed query.
+type DeployedQuery struct {
+	Line string // "int" | "prod"
+	Days int    // real-turn window, 1..365
+	Body bool   // include the raw manifest
+}
+
+// Deployed-manifest bases: what decided DeployedInfo.Hash.
+const (
+	DeployedBasisRegistration = "registration" // newest launcher registration of the line
+	DeployedBasisTurns        = "turns"        // no launcher registration recorded: newest real turn
+)
+
+// DeployedInfo is the GET /v1/manifests/deployed response body. Timestamps
+// are null when the signal is absent.
+type DeployedInfo struct {
+	Hash              string              `json:"hash"`
+	BuildLine         string              `json:"build_line"`
+	Source            string              `json:"source"` // always "launcher"
+	Basis             string              `json:"basis"`
+	LauncherBuild     string              `json:"launcher_build"`
+	GeneratedFrom     json.RawMessage     `json:"generated_from"`
+	FirstSeen         time.Time           `json:"first_seen"`
+	FirstRegisteredAt *time.Time          `json:"first_registered_at"`
+	LastRegisteredAt  *time.Time          `json:"last_registered_at"`
+	Registrations     int64               `json:"registrations"`
+	LastRealTurnAt    *time.Time          `json:"last_real_turn_at"`
+	RealTurns7d       int64               `json:"real_turns_7d"`
+	WindowDays        int                 `json:"window_days"`
+	Counts            map[string]int      `json:"counts"`
+	Candidates        []DeployedCandidate `json:"candidates"`
+	Body              json.RawMessage     `json:"body,omitempty"`
+}
+
+// DeployedCandidate is one entry of DeployedInfo.Candidates (newest first,
+// at most 5, the deployed hash first).
+type DeployedCandidate struct {
+	Hash             string     `json:"hash"`
+	LauncherBuild    string     `json:"launcher_build"`
+	LastRegisteredAt *time.Time `json:"last_registered_at"`
+	LastRealTurnAt   *time.Time `json:"last_real_turn_at"`
+	RealTurns7d      int64      `json:"real_turns_7d"`
+}
+
 // ManifestHasher computes the manifest hash of a raw body (the canonical
 // recipe in internal/manifest: HashBytes). Deps.HashManifest is the fallback
 // for POST /v1/manifests when the registry is not a ComputeRegistrar.

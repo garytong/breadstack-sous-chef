@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -26,6 +27,20 @@ type Store interface {
 	UpsertManifest(ctx context.Context, m store.Manifest) (created bool, err error)
 	GetManifest(ctx context.Context, hash string, body bool) (*store.Manifest, error)
 	PreviousManifest(ctx context.Context, buildLine, excludeHash string) (*store.Manifest, error)
+}
+
+// RegistrationRecorder is the optional Store extension that records every
+// registration with its X-Launcher-Build (*store.Store implements it).
+// Without it Register behaves as before and GET /v1/manifests/deployed can
+// rank by real turns only.
+type RegistrationRecorder interface {
+	RecordRegistration(ctx context.Context, hash, build, source string, at time.Time) error
+}
+
+// DeployedLister is the optional Store extension behind
+// GET /v1/manifests/deployed (*store.Store implements it).
+type DeployedLister interface {
+	DeployedManifest(ctx context.Context, line string, since time.Time, limit int) ([]store.DeployedCandidate, error)
 }
 
 // Compiled is everything a turn needs for one manifest hash.
@@ -48,11 +63,14 @@ type Registry struct {
 	cacheSize int
 	mu        sync.Mutex
 	cache     map[string]*Compiled
+	now       func() time.Time
+	logf      func(format string, a ...any)
 }
 
 // New builds a registry over st.
 func New(st Store) *Registry {
-	return &Registry{st: st, cacheSize: DefaultCacheSize, cache: map[string]*Compiled{}}
+	return &Registry{st: st, cacheSize: DefaultCacheSize, cache: map[string]*Compiled{},
+		now: func() time.Time { return time.Now().UTC() }, logf: log.Printf}
 }
 
 // indexDoc is the manifests.index column: the rendered system[1] text and
@@ -92,6 +110,7 @@ func (r *Registry) Register(ctx context.Context, hash string, body []byte, launc
 		return api.RegisterResult{}, false, err
 	}
 	r.put(c)
+	r.recordRegistration(ctx, hash, launcherBuild)
 
 	res := api.RegisterResult{
 		Hash: hash, Fields: counts.Fields, Lists: counts.Lists, Sections: counts.Sections,
@@ -118,6 +137,33 @@ func (r *Registry) Register(ctx context.Context, hash string, body []byte, launc
 		}
 	}
 	return res, created, nil
+}
+
+// recordRegistration notes the registration for GET /v1/manifests/deployed.
+// Best effort: a failure is logged and never fails the registration (the
+// launcher's boot loop must not retry over bookkeeping).
+func (r *Registry) recordRegistration(ctx context.Context, hash, launcherBuild string) {
+	rec, ok := r.st.(RegistrationRecorder)
+	if !ok {
+		return
+	}
+	if err := rec.RecordRegistration(ctx, hash, launcherBuild, store.RegistrationSource(launcherBuild), r.now()); err != nil {
+		r.logf("registry: record registration of %s (build %q): %v", short(hash), truncate(launcherBuild, 40), err)
+	}
+}
+
+func short(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}
+
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 // RegisterComputed is Register for POST /v1/manifests: the caller sends
@@ -164,6 +210,66 @@ func (r *Registry) Get(ctx context.Context, hash string, withBody bool) (api.Man
 		info.Body = m.Body
 	}
 	return info, nil
+}
+
+// DeployedCandidates is how many candidates GET /v1/manifests/deployed
+// lists.
+const DeployedCandidates = 5
+
+// Deployed implements api.DeployedFinder: the manifest the deployed
+// launcher of q.Line serves (store.DeployedManifest ranks), with its
+// metadata and, when q.Body, the raw body.
+func (r *Registry) Deployed(ctx context.Context, q api.DeployedQuery) (api.DeployedInfo, error) {
+	lister, ok := r.st.(DeployedLister)
+	if !ok {
+		return api.DeployedInfo{}, api.ErrNotImplemented("deployed manifest")
+	}
+	since := r.now().Add(-time.Duration(q.Days) * 24 * time.Hour)
+	cands, err := lister.DeployedManifest(ctx, q.Line, since, DeployedCandidates)
+	if err != nil {
+		return api.DeployedInfo{}, err
+	}
+	if len(cands) == 0 {
+		return api.DeployedInfo{}, api.ErrNoLauncherManifest(q.Line, q.Days)
+	}
+	top := cands[0]
+	m, err := r.st.GetManifest(ctx, top.Hash, q.Body)
+	if err != nil {
+		// The query joins manifests, so a miss here is a race with nothing
+		// that deletes manifests: report it as the internal error it is.
+		return api.DeployedInfo{}, fmt.Errorf("registry: deployed manifest %s: %w", short(top.Hash), err)
+	}
+	info := api.DeployedInfo{
+		Hash: top.Hash, BuildLine: q.Line, Source: store.SourceLauncher, Basis: api.DeployedBasisTurns,
+		LauncherBuild: top.LauncherBuild, GeneratedFrom: m.GeneratedFrom, FirstSeen: m.FirstSeen.UTC(),
+		FirstRegisteredAt: utc(top.FirstRegisteredAt), LastRegisteredAt: utc(top.LastRegisteredAt),
+		Registrations: top.Registrations, LastRealTurnAt: utc(top.LastRealTurnAt), RealTurns7d: top.RealTurns7d,
+		WindowDays: q.Days, Counts: map[string]int{}, Candidates: make([]api.DeployedCandidate, 0, len(cands)),
+	}
+	if top.Registered() {
+		info.Basis = api.DeployedBasisRegistration
+	}
+	_ = json.Unmarshal(m.Counts, &info.Counts)
+	if q.Body {
+		info.Body = m.Body
+	}
+	for _, c := range cands {
+		info.Candidates = append(info.Candidates, api.DeployedCandidate{
+			Hash: c.Hash, LauncherBuild: c.LauncherBuild, LastRegisteredAt: utc(c.LastRegisteredAt),
+			LastRealTurnAt: utc(c.LastRealTurnAt), RealTurns7d: c.RealTurns7d,
+		})
+	}
+	return info, nil
+}
+
+var _ api.DeployedFinder = (*Registry)(nil)
+
+func utc(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 // Load returns the compiled prefix for hash, from the cache or the store.

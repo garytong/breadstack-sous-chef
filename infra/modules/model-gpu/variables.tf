@@ -73,3 +73,39 @@ variable "invoker_service_account" {
   type        = string
   description = "Email of the only identity allowed to call the model service: sous-chef's runtime SA (sous-chef-run), which sends a Google ID token with the service URL as audience."
 }
+
+variable "extra_invokers" {
+  type        = list(string)
+  default     = []
+  description = "More service-account emails granted run.invoker on the model service beside invoker_service_account (the binding stays authoritative). The Sous Chef pipeline passes its drift runner and workflow accounts here."
+  validation {
+    condition     = alltrue([for e in var.extra_invokers : can(regex("^[a-z0-9-]+@[a-z0-9-]+\\.iam\\.gserviceaccount\\.com$", e))])
+    error_message = "extra_invokers must be service-account emails (<name>@<project>.iam.gserviceaccount.com)."
+  }
+}
+
+variable "cleanup_candidates" {
+  type        = bool
+  default     = false
+  description = "Turn on the repository's cleanup policies for the pipeline's candidate images (main.tf). false = no policy: nothing is ever deleted."
+}
+
+variable "candidate_retention_days" {
+  type        = number
+  default     = 30
+  description = "With cleanup_candidates: a c-* image older than this is deleted unless a keep rule holds it."
+  validation {
+    condition     = var.candidate_retention_days >= 7
+    error_message = "candidate_retention_days must be at least 7 (a decision can wait 14 days; keep_recent covers the rest)."
+  }
+}
+
+variable "keep_recent" {
+  type        = number
+  default     = 10
+  description = "With cleanup_candidates: the newest N image versions are always kept."
+  validation {
+    condition     = var.keep_recent >= 3
+    error_message = "keep_recent must be at least 3."
+  }
+}

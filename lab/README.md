@@ -2,6 +2,20 @@
 
 The contract is **[`docs/LAB.md`](../docs/LAB.md)**; this directory implements it.
 
+The same code runs in GCP as the drift check and automated retraining
+pipeline (int): one entry, `python -m souschef_lab.pipeline <cmd>`, in the lab
+runtime image. Runbooks: [`docs/PIPELINE.md`](../docs/PIPELINE.md) (turning it
+on), [`docs/DRIFT.md`](../docs/DRIFT.md), [`docs/RETRAIN.md`](../docs/RETRAIN.md)
+(every stage, automated and by hand); the lab's contract for it is
+`docs/LAB.md` §5c.
+
+```
+make -C lab drift-dry          # the drift check end to end on the fake service (no network)
+make -C lab retrain-dry        # a retrain round end to end on the fake service with a fake author
+make -C lab pipeline-selftest  # what the lab image's selftest checks, on this machine
+make -C lab engine-vendor SHA=<cookie-cutter sha> CC=<checkout> UPLOAD=1   # an engine snapshot for GCP
+```
+
 ```
 make -C lab venv test          # lab/.venv (stdlib runtime + pytest), run the suite
 make -C lab test-engine        # same, but the browser-engine tests must run (CI)

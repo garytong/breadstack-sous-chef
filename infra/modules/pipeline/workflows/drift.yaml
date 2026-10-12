@@ -1,0 +1,965 @@
+# souschef-drift (DESIGN §1, §2, §3.1). Input: {mode, force}
+#
+#   poll       (every 15 min) drift poll: GET the deployed launcher manifest;
+#              on a change the job stores it, runs the static diff and sets
+#              state/deployed.json pending_check_at (the 30 min debounce).
+#              A poll at or after pending_check_at runs `check` in the same
+#              execution. The first successful poll of a UTC day posts the
+#              heartbeat.
+#   check      arm D (+ the confirmation replicate when the job asks for
+#              one) and the new-key probe on the eval GPU service
+#   weekly     arm T replicate + arm D + probe + F0H; all-clear or verdict
+#   calibrate  arm T x 3 + F0H: the baseline for a model digest
+#   night      a check deferred because the eval service got no L4 runs
+#              against the production service (09:00 UTC = 02:00 PT)
+#
+# GPU stages hold state/locks/gpu-eval.json. A `retrain` verdict starts
+# souschef-retrain when retrain_auto is on, the production digest has a
+# calibrated baseline and no round holds state/locks/retrain.json.
+#
+# Job contract (I3): python -m souschef_lab.pipeline drift <mode> --run-id
+# <id> --bucket gs://<b> [--eval-url <url> --model-digest <prod digest>
+# --retrain-auto on|off --no-lock] [--force]; the outcome is
+# drift/<run>/result.json {status, verdict, changed, check_due?,
+# notifications[], retrain_eligible, retrain_blocked_by, retrain_reason,
+# baseline_calibrated, deployed, model}. The job runs its confirmation
+# replicate itself; the workflow holds state/locks/gpu-eval.json, so the
+# job is told --no-lock. A digest without a calibrated baseline is
+# calibrated first, in the same execution (DESIGN §1.4).
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - a: '${default(args, {})}'
+          - mode: '${default(map.get(a, "mode"), "poll")}'
+          - force: '${default(map.get(a, "force"), false)}'
+          - wf: "souschef-drift"
+          - run_id: '${"dr-unknown-" + mode}'
+    - valid:
+        switch:
+          - condition: '${not(mode in ["poll", "check", "weekly", "calibrate", "night"])}'
+            raise:
+              error_class: "bad_input"
+              message: '${"mode must be poll, check, weekly, calibrate or night, not " + mode}'
+    - config:
+        call: load_config
+        result: cfg
+    - stamp:
+        call: now_compact
+        result: ts
+    - ids:
+        assign:
+          - run_id: '${"dr-" + ts + "-" + mode}'
+    - outbox:
+        # what a thermometer outage parked (lib notify): every poll re-sends it
+        switch:
+          - condition: '${mode == "poll"}'
+            steps:
+              - flush:
+                  call: flush_outbox
+                  args:
+                    cfg: '${cfg}'
+    - body:
+        try:
+          steps:
+            - dispatch:
+                switch:
+                  - condition: '${mode == "poll"}'
+                    steps:
+                      - p:
+                          call: drift_poll
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id}'
+                            force: '${force}'
+                          result: out
+                  - condition: '${mode == "night"}'
+                    steps:
+                      - nightly:
+                          call: drift_night
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id}'
+                          result: out
+                  - condition: true
+                    steps:
+                      - prep:
+                          call: drift_prepare
+                          args:
+                            cfg: '${cfg}'
+                          result: env
+                      - skipped:
+                          switch:
+                            - condition: '${env.skip != null}'
+                              return:
+                                run_id: '${run_id}'
+                                skipped: '${env.skip}'
+                      - g:
+                          call: drift_gpu
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id}'
+                            mode: '${mode}'
+                            force: '${force}'
+                            env: '${env}'
+                            wait_lock: '${mode != "check"}'
+                          result: out
+        except:
+          as: e
+          steps:
+            - report:
+                call: drift_failed
+                args:
+                  cfg: '${cfg}'
+                  run_id: '${run_id}'
+                  wf: '${wf}'
+                  mode: '${mode}'
+                  e: '${e}'
+            - fail:
+                raise: '${e}'
+    - recovered:
+        call: drift_ok
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+    - done:
+        return: '${out}'
+
+# Failure alerts without a storm (state/drift-failing.json {key, count,
+# first_at, last_at, alerted_at, run_id}): the same stage:error_class failing
+# again is one failure streak. A poll (every 15 min) alerts from the 2nd
+# consecutive failure, a GPU mode (check, weekly, calibrate, night) at once;
+# either at most once a day per streak. A streak that ends posts a recovery
+# note (no mention) when it had alerted. The heartbeat covers a workflow that
+# cannot even run.
+drift_failed:
+  params: [cfg, run_id, wf, mode, e]
+  steps:
+    - shape:
+        call: as_drift_error
+        args:
+          e: '${e}'
+          mode: '${mode}'
+        result: err
+    - key:
+        assign:
+          - key: '${err.pipeline_stage + ":" + err.error_class}'
+          - now: '${sys.now()}'
+    - read:
+        try:
+          call: gcs_read
+          args:
+            bucket: '${cfg.bucket}'
+            name: "state/drift-failing.json"
+          result: cur
+        except:
+          as: e2
+          steps:
+            - unreadable:
+                assign:
+                  - cur: null
+    - streak:
+        assign:
+          - st:
+              key: '${key}'
+              count: 1
+              first_at: '${time.format(now)}'
+              last_at: '${time.format(now)}'
+              alerted_at: null
+              run_id: '${run_id}'
+    - same:
+        switch:
+          - condition: '${cur != null and default(map.get(cur, "key"), "") == key}'
+            assign:
+              - st.count: '${default(map.get(cur, "count"), 0) + 1}'
+              - st.first_at: '${default(map.get(cur, "first_at"), time.format(now))}'
+              - st.alerted_at: '${map.get(cur, "alerted_at")}'
+    - due:
+        assign:
+          - enough: '${mode != "poll" or st.count >= 2}'
+          - quiet: '${st.alerted_at != null and now - time.parse(st.alerted_at) < 86400}'
+    - post:
+        switch:
+          - condition: '${enough and not(quiet)}'
+            steps:
+              - streak_note:
+                  assign:
+                    - err.message: '${err.message + " (failing since " + st.first_at + ", " + string(st.count) + " run(s) in a row; next alert for this failure in 24 h at most)"}'
+              - tell:
+                  call: notify_failure
+                  args:
+                    cfg: '${cfg}'
+                    run_id: '${run_id}'
+                    wf: '${wf}'
+                    e: '${err}'
+                    dedup: '${"drift:" + key}'
+              - stamp:
+                  assign:
+                    - st.alerted_at: '${time.format(now)}'
+    - save:
+        try:
+          call: gcs_write
+          args:
+            bucket: '${cfg.bucket}'
+            name: "state/drift-failing.json"
+            data: '${st}'
+        except:
+          as: e3
+          steps:
+            - unsaved:
+                call: log
+                args:
+                  text: "could not write state/drift-failing.json"
+                  severity: WARNING
+    - done:
+        return: '${st}'
+
+as_drift_error:
+  params: [e, mode]
+  steps:
+    - already:
+        switch:
+          - condition: '${get_type(e) == "map" and "pipeline_stage" in e}'
+            return: '${e}'
+    - text:
+        call: err_text
+        args:
+          e: '${e}'
+        result: msg
+    - cls:
+        call: err_class
+        args:
+          e: '${e}'
+        result: cls
+    - done:
+        return:
+          pipeline_stage: '${"drift-" + mode}'
+          error_class: '${cls}'
+          message: '${msg}'
+          attempt: 1
+          attempts: 1
+
+drift_ok:
+  # A run that finished ends any failure streak (a recovery note when it had alerted).
+  params: [cfg, run_id]
+  steps:
+    - read:
+        try:
+          call: gcs_read
+          args:
+            bucket: '${cfg.bucket}'
+            name: "state/drift-failing.json"
+          result: cur
+        except:
+          as: e
+          steps:
+            - unreadable:
+                return: false
+    - none:
+        switch:
+          - condition: '${cur == null}'
+            return: false
+    - clear:
+        call: gcs_delete
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/drift-failing.json"
+    - tell:
+        switch:
+          - condition: '${map.get(cur, "alerted_at") != null}'
+            steps:
+              - note:
+                  call: notify
+                  args:
+                    cfg: '${cfg}'
+                    payload:
+                      id: '${run_id + "/drift_notice/recovered"}'
+                      kind: drift_notice
+                      severity: info
+                      run_id: '${run_id}'
+                      candidate_id: null
+                      title: "Sous Chef drift check recovered"
+                      summary: '${"souschef-drift runs again after " + string(default(map.get(cur, "count"), 0)) + " failed run(s) since " + default(map.get(cur, "first_at"), "?") + " (" + default(map.get(cur, "key"), "?") + ")."}'
+                      dedup_key: null
+                      details:
+                        streak: '${cur}'
+    - done:
+        return: true
+
+# The lab image for the int service's serving tag, the drift job pointed at
+# it, and the production model's identity: what every drift job gets as env.
+# {skip: null | reason, lab, prod, job_env}
+drift_prepare:
+  params: [cfg]
+  steps:
+    - images:
+        call: resolve_images
+        args:
+          cfg: '${cfg}'
+        result: imgs
+    - lab_missing:
+        switch:
+          - condition: '${not(imgs.lab_ok)}'
+            next: grace
+        next: point
+    - grace:
+        switch:
+          - condition: '${time.parse(imgs.rolled_at) + cfg.lab_image_grace_m * 60 > sys.now()}'
+            steps:
+              - quiet:
+                  call: log
+                  args:
+                    text: '${"sous-chef-lab:" + imgs.tag + " not pushed yet (the service rolled at " + imgs.rolled_at + "); skipping this run"}'
+              - wait_ci:
+                  return:
+                    skip: '${"lab image sous-chef-lab:" + imgs.tag + " not pushed yet"}'
+    - missing:
+        raise:
+          pipeline_stage: "images"
+          error_class: "lab_image_missing"
+          message: '${"lab image missing for " + imgs.tag + ": " + imgs.lab + " does not exist (CI pushes it; for a manual service build: make lab-image TAG=" + imgs.tag + ")"}'
+          attempt: 1
+          attempts: 1
+    - point:
+        call: job_set_image
+        args:
+          cfg: '${cfg}'
+          job: '${cfg.jobs.drift}'
+          image: '${imgs.lab}'
+    - prod:
+        call: prod_model
+        args:
+          cfg: '${cfg}'
+        result: prod
+    - done:
+        return:
+          skip: null
+          imgs: '${imgs}'
+          prod: '${prod}'
+          job_env:
+            SERVICE_IMAGE_TAG: '${imgs.tag}'
+            PROD_MODEL_IMAGE: '${prod.image}'
+            PROD_MODEL_DIGEST: '${prod.digest}'
+            PROD_MODEL_REVISION: '${prod.revision}'
+
+drift_job:
+  # One drift job run; raises a stage error on failure; returns result.json.
+  params: [cfg, run_id, stage, args, env, timeout_s]
+  steps:
+    - run:
+        call: run_job
+        args:
+          cfg: '${cfg}'
+          job: '${cfg.jobs.drift}'
+          args: '${args}'
+          env: '${env}'
+          timeout_s: '${timeout_s}'
+        result: r
+    - res:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"drift/" + run_id + "/result.json"}'
+        result: res
+    - failed:
+        switch:
+          - condition: '${not(r.ok)}'
+            raise:
+              pipeline_stage: '${stage}'
+              error_class: '${"exit " + string(r.exit_code)}'
+              message: '${"job " + cfg.jobs.drift + " " + json.encode_to_string(args) + " failed: " + r.message + " | result: " + json.encode_to_string(default(res, {}))}'
+              attempt: 1
+              attempts: 1
+              execution: '${r.execution}'
+              exit_code: '${r.exit_code}'
+          - condition: '${res == null}'
+            raise:
+              pipeline_stage: '${stage}'
+              error_class: "no_result"
+              message: '${"job " + cfg.jobs.drift + " exited 0 without drift/" + run_id + "/result.json"}'
+              attempt: 1
+              attempts: 1
+              execution: '${r.execution}'
+    - done:
+        return: '${res}'
+
+drift_poll:
+  params: [cfg, run_id, force]
+  steps:
+    - prep:
+        call: drift_prepare
+        args:
+          cfg: '${cfg}'
+        result: env
+    - skipped:
+        switch:
+          - condition: '${env.skip != null}'
+            return:
+              run_id: '${run_id}'
+              skipped: '${env.skip}'
+    - args:
+        assign:
+          - jargs: '${["drift", "poll", "--run-id", run_id, "--bucket", "gs://" + cfg.bucket]}'
+    - forced:
+        switch:
+          - condition: '${force}'
+            assign:
+              - jargs: '${list.concat(jargs, "--force")}'
+    - poll:
+        call: drift_job
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+          stage: "drift-poll"
+          args: '${jargs}'
+          env: '${env.job_env}'
+          timeout_s: 1800
+        result: res
+    - tell:
+        call: notify_result
+        args:
+          cfg: '${cfg}'
+          res: '${res}'
+          run_id: '${run_id}'
+    - beat:
+        call: heartbeat
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+    - state:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/deployed.json"
+        result: st
+    - due:
+        assign:
+          - due: '${default(map.get(res, "check_due"), false) == true}'
+          - pending: '${map.get(default(st, {}), "pending_check_at")}'
+    - due_state:
+        switch:
+          - condition: '${not(due) and pending != null and pending != "" and time.parse(pending) <= sys.now()}'
+            assign:
+              - due: true
+    - check:
+        switch:
+          - condition: '${due}'
+            steps:
+              - cid:
+                  assign:
+                    - check_id: '${text.replace_all(run_id, "-poll", "-check")}'
+              - run_check:
+                  call: drift_gpu
+                  args:
+                    cfg: '${cfg}'
+                    run_id: '${check_id}'
+                    mode: "check"
+                    force: false
+                    env: '${env}'
+                    wait_lock: false
+                  result: checked
+              - with_check:
+                  return:
+                    run_id: '${run_id}'
+                    verdict: '${map.get(res, "verdict")}'
+                    check: '${checked}'
+    - done:
+        return:
+          run_id: '${run_id}'
+          verdict: '${map.get(res, "verdict")}'
+          changed: '${map.get(res, "changed")}'
+
+heartbeat:
+  # The first successful poll of a UTC day: a create-once marker, then the
+  # heartbeat (stored by the thermometer, never sent to Slack; its absence
+  # for 36 h posts heartbeat_missed with the mention).
+  params: [cfg, run_id]
+  steps:
+    - day:
+        assign:
+          - day: '${text.substring(time.format(sys.now()), 0, 10)}'
+          - marker: '${"state/heartbeats/" + text.substring(time.format(sys.now()), 0, 10) + ".json"}'
+    - claim:
+        try:
+          call: gcs_write
+          args:
+            bucket: '${cfg.bucket}'
+            name: '${marker}'
+            data:
+              at: '${time.format(sys.now())}'
+              run_id: '${run_id}'
+            if_generation_match: 0
+        except:
+          as: e
+          steps:
+            - already:
+                switch:
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 412}'
+                    return: false
+            - other:
+                raise: '${e}'
+    - state:
+        # the thermometer's state tiles read details.model / deployed / verdict
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/deployed.json"
+        result: dep
+    - model:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/model.json"
+        result: mdl
+    - tiles:
+        assign:
+          - dep: '${default(dep, {})}'
+          - mdl: '${default(mdl, {})}'
+    - send:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload:
+            id: '${"heartbeat/" + day}'
+            kind: heartbeat
+            severity: info
+            run_id: '${run_id}'
+            candidate_id: null
+            title: "Sous Chef drift check: heartbeat"
+            summary: '${"souschef-drift polled the deployed manifest (" + run_id + ")"}'
+            dedup_key: null
+            details:
+              day: '${day}'
+              deployed:
+                hash: '${map.get(dep, "hash")}'
+                launcher_build: '${map.get(dep, "launcher_build")}'
+              model:
+                tag: '${map.get(mdl, "tag")}'
+                digest: '${map.get(mdl, "digest")}'
+                training_manifest: '${map.get(mdl, "training_manifest")}'
+              verdict: '${map.get(dep, "last_verdict")}'
+        result: sent
+    - unclaim:
+        # not delivered: let the next poll try again
+        switch:
+          - condition: '${not(sent.ok)}'
+            steps:
+              - del:
+                  call: gcs_delete
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${marker}'
+    - done:
+        return: '${sent.ok}'
+
+drift_gpu:
+  # check | weekly | calibrate on the eval GPU service, under gpu-eval.
+  params: [cfg, run_id, mode, force, env, wait_lock]
+  steps:
+    - wait_s:
+        assign:
+          - wait_s: 0
+          - timeout_s: 21600
+    - long:
+        switch:
+          - condition: '${wait_lock}'
+            assign:
+              - wait_s: 21600
+              - timeout_s: 36000
+    - lock:
+        call: lock_wait
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/gpu-eval.json"
+          run_id: '${run_id}'
+          ttl_s: '${timeout_s + 7200}'
+          wait_s: '${wait_s}'
+          breakable: true
+        result: got
+    - held:
+        switch:
+          - condition: '${not(got.acquired)}'
+            steps:
+              - defer:
+                  call: log
+                  args:
+                    text: '${"gpu-eval held by " + json.encode_to_string(got.holder) + "; " + mode + " deferred to the next poll"}'
+              - deferred:
+                  return:
+                    run_id: '${run_id}'
+                    deferred: "gpu-eval lock held"
+    - on_gpu:
+        try:
+          steps:
+            - point:
+                call: service_set_image
+                args:
+                  cfg: '${cfg}'
+                  svc: '${cfg.eval_model}'
+                  image: '${env.prod.digest_image}'
+                  note: '${"current " + env.prod.digest}'
+            - warm:
+                call: warm
+                args:
+                  cfg: '${cfg}'
+                  url: '${cfg.eval_model.url}'
+                  minutes: '${cfg.eval_warm_minutes}'
+                result: warmed
+            - no_l4:
+                switch:
+                  - condition: '${not(warmed)}'
+                    steps:
+                      - unlock_early:
+                          call: lock_release
+                          args:
+                            bucket: '${cfg.bucket}'
+                            name: "state/locks/gpu-eval.json"
+                            run_id: '${run_id}'
+                      - park:
+                          call: park_night
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id}'
+                            mode: '${mode}'
+                            force: '${force}'
+                            reason: '${"the eval service got no L4 within " + string(cfg.eval_warm_minutes) + " min"}'
+                      - night:
+                          return:
+                            run_id: '${run_id}'
+                            deferred: "night"
+            - baseline:
+                call: gcs_read
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: '${"baselines/" + env.prod.digest + "/baseline.json"}'
+                result: bl
+            - calibrate_first:
+                # a model digest with no calibrated baseline (a first enable, or
+                # a model rolled out by hand): calibrate before judging drift
+                switch:
+                  - condition: '${mode != "calibrate" and (bl == null or default(map.get(bl, "calibrated"), false) != true)}'
+                    steps:
+                      - cal:
+                          call: drift_exam
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id + "-cal"}'
+                            mode: "calibrate"
+                            force: false
+                            env: '${env}'
+                            model_url: '${cfg.eval_model.url}'
+                            timeout_s: '${timeout_s}'
+                          result: cal_res
+                      - tell_cal:
+                          call: notify_result
+                          args:
+                            cfg: '${cfg}'
+                            res: '${cal_res}'
+                            run_id: '${run_id + "-cal"}'
+            - exam:
+                call: drift_exam
+                args:
+                  cfg: '${cfg}'
+                  run_id: '${run_id}'
+                  mode: '${mode}'
+                  force: '${force}'
+                  env: '${env}'
+                  model_url: '${cfg.eval_model.url}'
+                  timeout_s: '${timeout_s}'
+                result: res
+            - unavailable:
+                # the job's own warm-up found no answer: the night window
+                switch:
+                  - condition: '${default(map.get(res, "status"), "") == "eval_unavailable"}'
+                    steps:
+                      - unlock_ua:
+                          call: lock_release
+                          args:
+                            bucket: '${cfg.bucket}'
+                            name: "state/locks/gpu-eval.json"
+                            run_id: '${run_id}'
+                      - park_ua:
+                          call: park_night
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id}'
+                            mode: '${mode}'
+                            force: '${force}'
+                            reason: '${"the drift job found the eval service unavailable: " + default(map.get(res, "error"), "")}'
+                      - night_ua:
+                          return:
+                            run_id: '${run_id}'
+                            deferred: "night"
+        except:
+          as: e
+          steps:
+            - unlock_err:
+                call: lock_release
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: "state/locks/gpu-eval.json"
+                  run_id: '${run_id}'
+            - again:
+                raise: '${e}'
+    - unlock:
+        call: lock_release
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/gpu-eval.json"
+          run_id: '${run_id}'
+    - after:
+        call: drift_after
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+          res: '${res}'
+          prod: '${env.prod}'
+        result: started
+    - done:
+        return:
+          run_id: '${run_id}'
+          verdict: '${map.get(res, "verdict")}'
+          retrain: '${started}'
+
+drift_exam:
+  # The behavioural job (+ its confirmation replicate when it asks for one).
+  params: [cfg, run_id, mode, force, env, model_url, timeout_s]
+  steps:
+    - args:
+        assign:
+          - auto: "off"
+    - auto_on:
+        switch:
+          - condition: '${cfg.retrain_auto}'
+            assign:
+              - auto: "on"
+    - args_all:
+        assign:
+          - jargs: '${["drift", mode, "--run-id", run_id, "--bucket", "gs://" + cfg.bucket, "--eval-url", model_url, "--model-digest", env.prod.digest, "--retrain-auto", auto, "--no-lock"]}'
+    - calibrate:
+        switch:
+          - condition: '${mode == "calibrate"}'
+            assign:
+              - jargs: '${list.concat(jargs, "--replicates")}'
+              - jargs: '${list.concat(jargs, "3")}'
+    - forced:
+        switch:
+          - condition: '${force}'
+            assign:
+              - jargs: '${list.concat(jargs, "--force")}'
+    - first:
+        call: drift_job
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+          stage: '${"drift-" + mode}'
+          args: '${jargs}'
+          env: '${env.job_env}'
+          timeout_s: '${timeout_s}'
+        result: res
+    - confirm:
+        switch:
+          - condition: '${default(map.get(res, "needs_confirm"), false) == true}'
+            steps:
+              - again:
+                  call: drift_job
+                  args:
+                    cfg: '${cfg}'
+                    run_id: '${run_id}'
+                    stage: '${"drift-" + mode + "-confirm"}'
+                    args: '${list.concat(jargs, "--confirm")}'
+                    env: '${env.job_env}'
+                    timeout_s: '${timeout_s}'
+                  result: res
+              - confirmed:
+                  return: '${res}'
+    - done:
+        return: '${res}'
+
+drift_after:
+  # Post the verdict's notification; start a retrain on `retrain` when the
+  # switches and the state allow. Returns the retrain execution or why not.
+  params: [cfg, run_id, res, prod]
+  steps:
+    - tell:
+        call: notify_result
+        args:
+          cfg: '${cfg}'
+          res: '${res}'
+          run_id: '${run_id}'
+    - verdict:
+        switch:
+          - condition: '${default(map.get(res, "verdict"), "ok") != "retrain"}'
+            return: null
+    - lock_first:
+        # before the eligibility checks: a stale lock makes the job report the
+        # verdict as not eligible, and must still reach a person
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/locks/retrain.json"
+        result: lock
+    - stale:
+        # a lock past expires_at: the round holding it has made no progress for
+        # 72 h. Never broken here (a person looks first): say so, with the
+        # mention, once a day (the id carries the date)
+        switch:
+          - condition: '${lock != null and "expires_at" in lock and time.parse(lock.expires_at) < sys.now()}'
+            steps:
+              - tell_stale:
+                  call: notify_failure
+                  args:
+                    cfg: '${cfg}'
+                    run_id: '${default(map.get(lock, "run_id"), run_id)}'
+                    wf: "souschef-retrain"
+                    e:
+                      pipeline_stage: "retrain-lock"
+                      error_class: "stale_lock"
+                      message: '${"drift run " + run_id + " wants a retrain (" + default(map.get(res, "retrain_reason"), "drift") + "), but state/locks/retrain.json is held by round " + default(map.get(lock, "run_id"), "?") + " with no progress since " + default(map.get(lock, "updated_at"), "?") + ". Look at that round (resume it or let it go), then delete the lock: docs/RETRAIN.md R8."}'
+                      attempt: 1
+                      attempts: 1
+                    dedup: '${"retrain-lock:" + default(map.get(lock, "run_id"), "?")}'
+                    id_suffix: '${text.substring(time.format(sys.now()), 0, 10)}'
+              - stale_out:
+                  return: '${"stale retrain lock held by " + default(map.get(lock, "run_id"), "?") + ": reported"}'
+    - switches:
+        switch:
+          - condition: '${not(cfg.retrain_auto)}'
+            return: "retrain_auto off: notify only"
+          - condition: '${default(map.get(res, "retrain_eligible"), false) != true}'
+            return: '${"not eligible: " + default(map.get(res, "retrain_blocked_by"), "see the drift report")}'
+    - baseline:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"baselines/" + prod.digest + "/baseline.json"}'
+        result: bl
+    - calibrated:
+        switch:
+          - condition: '${bl == null or default(map.get(bl, "calibrated"), false) != true}'
+            return: '${"no calibrated baseline for " + prod.digest + ": notify only"}'
+    - failed_round:
+        # a round that failed and was not resumed blocks new rounds (a
+        # deterministic failure would otherwise spend a round per check); the
+        # job's message already says so
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/failed-round.json"
+        result: fr
+    - blocked:
+        switch:
+          - condition: '${fr != null}'
+            return: '${"round " + default(map.get(fr, "run_id"), "?") + " failed at " + default(map.get(fr, "stage"), "?") + " and is not resumed: no new round"}'
+    - busy:
+        switch:
+          - condition: '${lock != null}'
+            return: "a retrain round is in progress (state/locks/retrain.json); noted in its report"
+    - start:
+        call: api_send
+        args:
+          method: POST
+          url: '${"https://workflowexecutions.googleapis.com/v1/projects/" + cfg.project + "/locations/" + cfg.workflows_region + "/workflows/" + cfg.workflows.retrain + "/executions"}'
+          body:
+            argument: '${json.encode_to_string({"mode": "full", "trigger": {"drift_run": run_id, "reason": default(map.get(res, "retrain_reason"), "drift")}})}'
+        result: ex
+    - done:
+        return: '${ex.name}'
+
+drift_night:
+  # A deferred check (state/night.json) against the production service.
+  # Merchants queue behind the exam (OLLAMA_NUM_PARALLEL 1), hence 02:00 PT.
+  params: [cfg, run_id]
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/night.json"
+        result: night
+    - nothing:
+        switch:
+          - condition: '${night == null}'
+            return:
+              run_id: '${run_id}'
+              night: "nothing deferred"
+    - prep:
+        call: drift_prepare
+        args:
+          cfg: '${cfg}'
+        result: env
+    - skipped:
+        switch:
+          - condition: '${env.skip != null}'
+            return:
+              run_id: '${run_id}'
+              skipped: '${env.skip}'
+    - mode:
+        assign:
+          - nmode: '${default(map.get(night, "mode"), "check")}'
+          - env.job_env.NIGHT_FALLBACK: "1"
+    - exam:
+        call: drift_exam
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+          mode: '${nmode}'
+          force: '${default(map.get(night, "force"), false)}'
+          env: '${env}'
+          model_url: '${cfg.prod_model.url}'
+          timeout_s: 21600
+        result: res
+    - clear:
+        call: gcs_delete
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/night.json"
+    - after:
+        call: drift_after
+        args:
+          cfg: '${cfg}'
+          run_id: '${run_id}'
+          res: '${res}'
+          prod: '${env.prod}'
+        result: started
+    - done:
+        return:
+          run_id: '${run_id}'
+          verdict: '${map.get(res, "verdict")}'
+          retrain: '${started}'
+
+park_night:
+  # Defer a behavioural run to the 09:00 UTC window on the production
+  # service (state/night.json) and say so.
+  params: [cfg, run_id, mode, force, reason]
+  steps:
+    - park:
+        call: gcs_write
+        args:
+          bucket: '${cfg.bucket}'
+          name: "state/night.json"
+          data:
+            mode: '${mode}'
+            force: '${force}'
+            requested_at: '${time.format(sys.now())}'
+            run_id: '${run_id}'
+            reason: '${reason}'
+    - tell:
+        call: notify
+        args:
+          cfg: '${cfg}'
+          payload:
+            id: '${run_id + "/drift_notice/night"}'
+            kind: drift_notice
+            severity: info
+            run_id: '${run_id}'
+            candidate_id: null
+            title: '${"Sous Chef drift " + mode + " deferred to the night window"}'
+            summary: '${"Deferred: " + reason + ". The " + mode + " runs at 09:00 UTC against the production model service."}'
+            dedup_key: '${"drift:night:" + text.substring(time.format(sys.now()), 0, 10)}'
+            details:
+              mode: '${mode}'
+    - done:
+        return: true

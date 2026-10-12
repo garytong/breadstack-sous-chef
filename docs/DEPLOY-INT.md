@@ -196,7 +196,12 @@ What a `main` build does: `go vet` + `go test` → `docker build` with
 `BUILD_ID=<sha>` → push `$AR_REPO/sous-chef:<sha>` → `gcloud run jobs update
 sous-chef-migrate --image` + `execute --wait` → `gcloud run services update
 sous-chef --image` + `jobs update sous-chef-retention --image` → check the
-newest revision is serving and `/version` reports `<sha>`.
+newest revision is serving and `/version` reports `<sha>`. Since the
+drift pipeline (section 13) it also builds the pipeline's images: the lab
+runtime image `$AR_REPO/sous-chef-lab:<sha>` (the same tag as the service,
+so every deployed build has one), and the trainer image
+`$AR_REPO/sous-chef-trainer:t-<hash>` only when that tag is not there yet
+(about 12 GB; up to 2 h the first time, seconds afterwards).
 
 After the first CI deploy, `terraform plan` in `envs/int` must be empty. If
 it is not, whatever gcloud stamped belongs in the `ignore_changes` lists in
@@ -331,7 +336,12 @@ repo, not ours to edit; README §5 "Thermometer contract"). Shape and numbers co
 Sourdough (`breadstack-thermometer/lab/sourdough/README.md`,
 `infra/sourdough.tf`). Status (2026-10-04): the Terraform is written and
 planned read-only; **nothing below has been applied** (no `sous-chef-model`
-repository, SA or service exists in int yet).
+repository, SA or service exists in int yet). **Update 2026-10-10:** both
+halves are applied on int; the service runs `model:r4` with min = max = 1,
+and `gpu_model_default = true` makes `blueberry-muffin` the default route
+(Claude `default` is its in-turn fallback; `max_tokens` 1024). The text below
+is the original runbook; where it says `default_route` stays `default`, that
+is the `gpu_model_default = false` case.
 
 What the tfvars mean (`infra/envs/int/terraform.tfvars`; the example carries
 the same lines, both halves off):
@@ -452,7 +462,45 @@ an unused route costs nothing beyond the sleeping service.
 
 ### Rolling a new model
 
-Export → `make -C lab model-stage model-build MODEL_TAG=r2` → push →
-`gpu_model_image_tag = "r2"` → apply (one new revision of the model
-service; the route is unchanged). Immutable tags mean `r1` can never be
-overwritten; roll back by setting the tag back.
+**Once the pipeline is enabled (`pipeline_enabled = true`, section 13),
+Terraform no longer rolls the model.** `infra/modules/model-gpu` ignores the
+image (and scaling, annotations and the client fields) from then on: a new
+model reaches `sous-chef-model` by an Approve on the thermometer, or by hand
+with `make model-rollout TAG=<tag>` at the repo root; roll back the same way
+(docs/RETRAIN.md §R7). `gpu_model_image_tag` only matters when the service is
+created or recreated; keep it at a tag that exists.
+
+Before that (the original path): export → `make -C lab model-stage
+model-build MODEL_TAG=r2` → push → `gpu_model_image_tag = "r2"` → apply (one
+new revision of the model service; the route is unchanged). Immutable tags
+mean `r1` can never be overwritten; roll back by setting the tag back.
+
+## 13. Drift check and automated retraining (int)
+
+A GCP pipeline in `infra/modules/pipeline`, every switch off by default:
+Cloud Scheduler polls the int launcher's manifest every 15 minutes through
+`GET /v1/manifests/deployed` (README §1), Cloud Workflows runs the drift
+exam on its own GPU service and, when the drift is big enough, a full
+retrain (Cloud Run jobs on the lab image, Vertex AI for the H100, Cloud Build
+for the model image), and the thermometer posts the result to the weekly
+digest's Slack channel and holds the Approve / Skip decision.
+
+- Turning it on, in order (quotas, the thermometer, the service build by hand
+  with its lab and trainer images, a targeted apply and the two secrets'
+  values, the `pipeline_enabled` apply, seeding, the selftest and first poll
+  with the schedule on right after it, SMOKE, calibration, then auto-retrain
+  and rollouts): [`docs/PIPELINE.md`](PIPELINE.md) §4.
+- What drift means and how to run a check: [`docs/DRIFT.md`](DRIFT.md).
+- Each retrain stage, automated and by hand: [`docs/RETRAIN.md`](RETRAIN.md).
+
+What changes for a normal deploy: nothing, except that CI also pushes the
+lab and trainer images (section 9). A service build made by hand (like
+`f79753b-speed-a`) needs `make lab-image TAG=<tag>` and
+`make trainer-image TAG=<tag>` before the pipeline can run against it (build
+them before rolling the service: PIPELINE.md §4.3). A
+service build that changes the prompt or retrieval should be followed by a
+drift calibration (docs/DRIFT.md §4).
+
+The pipeline adds a second live key to `sous-chef-service-keys` (its own,
+revocable on its own; docs/PIPELINE.md §4.5). Rotating the launcher's key
+(section 11) must keep it: write `launcher-new,pipeline` and so on.

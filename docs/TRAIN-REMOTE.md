@@ -1,5 +1,15 @@
 # Training the Sous Chef student on a GCE GPU VM (train-remote)
 
+> **Since 2026-10-11 this is the manual path.** The drift pipeline trains on
+> Vertex AI custom training with the same recipe, by itself
+> ([`docs/RETRAIN.md`](RETRAIN.md) §R4, entry `lab/tools/pipeline-train.sh`).
+> This VM is the playbook's fallback (no Vertex capacity, debugging a run by
+> hand) and still works unchanged; RETRAIN.md §R4 has the commands for a
+> pipeline round's dataset (`run-r4.sh` with `NAME=` and `DATA=`). Two notes
+> below are r1–r3 history: `train.py` has had `--checkpoint-steps`/`--resume`
+> since r4, so Spot is safe with resume, and the H100 Spot run is the r4
+> default (`tools/run-r4.sh` proves the resume before the long run).
+
 The workstation recipe (docs/TRAIN-WORKSTATION.md) run on a rented GPU in
 `breadstack-sous-chef-int`, so the 5090 stays with the collection and the lab
 Ollama on `:11435` is never touched. The recipe is **unchanged**: `unsloth/Qwen3.5-9B`,

@@ -1,0 +1,24 @@
+# What `make lab-image` / `make trainer-image` upload with `gcloud builds
+# submit --ignore-file=images/images.gcloudignore .` (the root .gcloudignore
+# ships service/ only, for the service build): the service tree, the lab and
+# images/, without build output, data, runs, venvs, caches or env files. The
+# images' own Dockerfile.dockerignore files narrow it further.
+*
+!service/
+!service/**
+!lab/
+!lab/**
+!images/
+!images/**
+service/bin/
+lab/data/
+lab/runs/
+lab/.venv/
+lab/.venv-train/
+lab/.cache/
+lab/unsloth_compiled_cache/
+lab/.pytest_cache/
+lab/*.egg-info/
+**/__pycache__/
+**/.env
+**/.env.*

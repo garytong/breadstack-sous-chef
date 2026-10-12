@@ -13,7 +13,8 @@ every apply from their own login.
 ```
 infra/
   modules/sous-chef/     the service: apis, registry, sql, secrets, iam, run, job, outputs
-  modules/model-gpu/     Phase 5 stub: private Ollama GPU service, IAM-only (behind a flag)
+  modules/model-gpu/     Phase 5: private Ollama GPU service, IAM-only (behind a flag); the image is the pipeline's once it is enabled
+  modules/pipeline/      the drift check and automated retraining (int; every switch off by default): workflows, jobs, eval + candidate GPU services, bucket, SAs, scheduler
   envs/int/              root module for int   (backend prefix sous-chef/int)
   envs/prod/             root module for prod  (backend prefix sous-chef/prod)
   envs/train/            the training GPU VM in int: own VPC + IAP SSH + NAT, bucket, notify-only budget, A100-on-demand / H100-Spot switch (backend prefix sous-chef/train; its README.md is the runbook, make -C lab train-vm-… the wrappers)
@@ -187,6 +188,8 @@ version. Add one with `gcloud secrets versions add <name> --data-file=-`:
 | `sous-chef-anthropic-api-key` | `ANTHROPIC_API_KEY` | an Anthropic API key (Claude is the day-one model) |
 | `sous-chef-service-keys` | `SERVICE_KEYS` | comma-separated random keys, e.g. `openssl rand -hex 32`; two live keys = rotation. The launcher sends one as `Authorization: Bearer <key>` |
 | `sous-chef-thermometer-api-key` | `THERMOMETER_API_KEY` | only if `thermometer_api_url` is set: a `tm_` ingest key from the thermometer |
+| `sous-chef-pipeline-service-key` | `SOUS_CHEF_KEY` in the pipeline jobs | int, `pipeline_enabled` only: a key of its own, **also appended** to `sous-chef-service-keys` (docs/PIPELINE.md §4.5) |
+| `sous-chef-pipeline-thermometer-key` | read by the workflows only | int, `pipeline_enabled` only: a `tm_` **Ingest** key (named `souschef-pipeline`; the thermometer admits it by its id, `souschef_ingest_key_ids`) |
 
 `sous-chef-database-url` is written by Terraform; never edit it by hand (a
 re-apply would overwrite it, and the password lives in state).
@@ -238,6 +241,83 @@ halves, as for the thermometer's Sourdough:
 Cost reference from the thermometer (us-east4 list price, 2026-09): about
 US$1.05/hour while an instance runs, billed until ~10 minutes after the last
 request; `min_instances = 1` is ~$25/day.
+
+**Who owns the model image.** Like the sous-chef service (CI owns its image),
+`sous-chef-model` carries `lifecycle { ignore_changes = [scaling,
+template[0].containers[0].image, client, client_version,
+template[0].annotations] }`. The pipeline's rollout (an Approve on the
+thermometer) and `make model-rollout TAG=<tag>` at the repo root own the live
+image; `gpu_model_image_tag` only sets it when the service is created or
+recreated, and a plain apply never reverts a rollout. `extra_invokers` adds
+members (the pipeline's drift and workflow accounts) to the service's
+**authoritative** `run.invoker` binding beside `sous-chef-run`.
+
+## The pipeline (`modules/pipeline`, int)
+
+The drift check and automated retraining: docs/PIPELINE.md (turning it on),
+docs/DRIFT.md, docs/RETRAIN.md. All of it is behind switches in
+`envs/int/terraform.tfvars`, every one `false` by default; with all of them
+off the plan is the plan without the module.
+
+| switch | creates or changes |
+|---|---|
+| `pipeline_enabled` | APIs `aiplatform`, `workflows`, `workflowexecutions`, `cloudbuild`; bucket `breadstack-sous-chef-int-pipeline` (US-CENTRAL1; `runs/` and `drift/` expire after 180 days, nothing else does); service accounts `souschef-workflow`, `souschef-drift`, `souschef-author`, `souschef-prep`, `souschef-trainer`, `souschef-builder`, `souschef-scheduler` and their resource-scoped grants (the bucket's by IAM conditions, below); secrets `sous-chef-pipeline-service-key` and `sous-chef-pipeline-thermometer-key` (no versions) plus read access for `souschef-author` on `sous-chef-anthropic-api-key`; Cloud Run jobs `souschef-drift`, `souschef-prepare`, `souschef-collect`, `souschef-dataset`, `souschef-eval` on the lab image; workflows `souschef-drift` and `souschef-retrain` (us-central1); GPU services `sous-chef-model-eval` and `sous-chef-model-cand` (us-east4, L4, min 0, max 1, image owned by the pipeline after creation); the cleanup policy on the `sous-chef-model` repository (model-gpu `cleanup_candidates`: the newest `keep_recent` = 10 versions always kept, a `c-*` image older than `candidate_retention_days` = 30 deleted otherwise; nothing else is ever deleted). The bucket refuses a destroy while it holds objects (`bucket_force_destroy = false`). No schedule. |
+| `pipeline_schedule` | Cloud Scheduler `souschef-drift-poll` (`*/15 * * * *`), `souschef-drift-weekly` (`0 5 * * 1`), `souschef-drift-night` (`0 9 * * *`), UTC |
+| `pipeline_retrain_auto` | an argument to the drift workflow: a `retrain` verdict starts a round; off = notify only |
+| `pipeline_rollout` | off = every Approve is a dry rollout (a permission check, production untouched) |
+| `pipeline_alert_emails` | **required while `pipeline_enabled`**: Cloud Monitoring policies on failed workflow executions and on the log-based metric `souschef_notification_not_delivered` (a notification the thermometer did not take), emailing these addresses |
+
+**Accounts and their reach.** The jobs never hold the thermometer key (only
+`souschef-workflow` reads it); the Anthropic key is readable by
+`souschef-author` (the prepare job) alone; the trainer and the builder hold no
+secret. The bucket is shared through IAM conditions on uniform bucket-level
+access: `souschef-workflow` alone holds an unconditional `objectAdmin`; the job
+accounts (`souschef-drift`, `souschef-prep`, `souschef-author`) read every
+object and write every object but `infra/` (the configuration and build spec
+the workflows act on: the thermometer URL, the switches, the model
+repository) and `config/` (the thresholds override); `souschef-trainer` reads
+`runs/` and `base/` and writes `runs/<id>/train/` only
+(`resource.name.extract(".../runs/{run}/train/")`); `souschef-builder` reads
+`runs/` only. The conditions are verified by SMOKE (*first run*).
+`souschef-workflow` has `run.developer` on the three model services (IAM
+cannot narrow it to the image field; the workflow is the only code that
+patches them, and only the image and one annotation) and starts Vertex jobs
+and builds as `souschef-trainer` / `souschef-builder`.
+
+**Outputs** the workflows and docs use: `eval_url`, `cand_url`,
+`prod_model_url`, `int_service_url`, the bucket, the job names, the service
+account emails, `thermometer_url` (default `https://thermometer.breadstackcrm.com`).
+
+**Quota** (*measured* 2026-10-10 on int): Cloud Run L4 in us-east4 is 3,
+exactly production + eval + candidate; a rollout's revision swap needs a 4th,
+so the workflow waits for the other two to scale to zero first. Ask for 5.
+Vertex A100 80 GB in us-central1 is 0 (rung 3 of the training ladder): ask
+for 1, on demand and preemptible.
+
+Images, built by `cloudbuild.yaml` beside the service image (or by hand at the
+root): `make lab-image TAG=<service tag>` (`images/lab-runtime`),
+`make trainer-image TAG=<service tag>` (`images/trainer`). Both upload with
+`--ignore-file=images/images.gcloudignore` (the service tree, the lab and
+`images/`): the root `.gcloudignore` ships `service/` only, for the service
+build. The model image is built per round
+by Cloud Build in the int project (region us-east4, beside the model
+repository) from `modules/pipeline/cloudbuild-model.yaml`.
+`make pipeline-smoke` starts the SMOKE round (docs/RETRAIN.md §R0 "SMOKE").
+
+**Testing the workflows offline** (`modules/pipeline/tests/`):
+
+- `make pipeline-lint` (`lint_workflows.py`): what a deploy would reject, plus
+  the mistakes it would not catch (unknown variables, jumps out of loops, YAML
+  1.1 booleans, and a switch entry that falls through in a step that has a
+  `next`, whose meaning Workflows does not document).
+- `make pipeline-tf-test`: the module and the int root on mock providers.
+- `e2e_dry.py` with `wfsim.py`: the two definitions **executed**, step by step,
+  against fake Google APIs (Storage over a folder, Run jobs as local
+  processes, Artifact Registry, Vertex, Cloud Build, Secret Manager) with the
+  real lab jobs, this tree's service and the thermometer's real routes:
+  docs/RETRAIN.md §R0 "The whole chain, dry". The interpreter is strict on
+  purpose (booleans only in conditions, typed `+`, missing keys raise); a
+  construct it does not model is an error, not a pass.
 
 ## Verified on this machine (2026-10-01; re-run 2026-10-02 after the Deploy/CI changes)
 

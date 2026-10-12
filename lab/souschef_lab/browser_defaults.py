@@ -67,7 +67,16 @@ PAGES = (
 OTHER_TEMPLATE = "*"  # getDefaultPageSections for a template outside its map
 
 
+ENV_OVERRIDE = "SOUS_CHEF_BROWSER_DEFAULTS"
+
+
 def fixture_path(fixtures_dir: Path | None = None) -> Path:
+    """The dump the lab reads: `fixtures_dir`'s when one is given, else
+    $SOUS_CHEF_BROWSER_DEFAULTS when set (the pipeline's enginebundle dumps
+    the defaults of the vendored engine snapshot there, DESIGN §6.2), else
+    the committed fixture."""
+    if fixtures_dir is None and os.environ.get(ENV_OVERRIDE):
+        return Path(os.environ[ENV_OVERRIDE])
     return Path(fixtures_dir or FIXTURES_DIR) / FIXTURE
 
 
