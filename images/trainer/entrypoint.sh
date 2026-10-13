@@ -15,6 +15,12 @@
 # bash, not sh: pipeline-train.sh reads PIPESTATUS (the r4 lesson).
 set -uo pipefail
 
+# gcloud storage without parallel composite uploads: the trainer's account has
+# no storage.buckets.get for gcloud's compatibility check, and the temporary
+# components would be written to gcloud/tmp/… at the bucket root, outside
+# runs/<id>/train/ (the only prefix it may write), and never cleaned up.
+export CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=${CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED:-False}
+
 # CUDA forward compatibility: torch's cu130 wheels need a 580+ driver. On an
 # older host driver, the image's cuda-compat-13-0 libcuda goes first (a
 # newer host driver must NOT get it: the compat library would then be the
@@ -42,17 +48,42 @@ case "$mode" in full|smoke) ;; *) echo "trainer: mode must be full or smoke, not
 case "$PIPELINE_BUCKET" in gs://*) ;; *) PIPELINE_BUCKET=gs://$PIPELINE_BUCKET ;; esac
 export PIPELINE_BUCKET=${PIPELINE_BUCKET%/}
 
+# train/progress.json for the workflow's vertex_attempt (pipeline-train.sh
+# writes it from here on): progress STATUS ERROR
+progress() {
+  printf '{"status":"%s","step":"selftest","stage":"selftest","error":"%s","updated_at":"%s","rung":"%s","attempt":"%s","mode":"%s"}\n' \
+    "$1" "$2" "$(date -u +%FT%TZ)" "${TRAIN_RUNG:-}" "${TRAIN_ATTEMPT:-1}" "$mode" |
+    gcloud storage cp - "$PIPELINE_BUCKET/runs/$run_id/train/progress.json" --content-type=application/json --quiet >/dev/null 2>&1 || true
+}
+
+# A SIGTERM during the self-test (a Spot preemption, a Vertex restart or
+# cancel) is recorded as `interrupted`, like pipeline-train.sh's trap (this
+# shell is PID 1 in the container: without a trap the signal is ignored and
+# the attempt dies later as `running`). The self-test runs in the background
+# and is `wait`ed for, so the trap runs at once.
+selftest_pid=
+on_signal() {
+  trap - TERM INT
+  [ -n "$selftest_pid" ] && kill -TERM "$selftest_pid" 2>/dev/null
+  progress interrupted "signal during selftest"
+  exit 143
+}
+trap on_signal TERM INT
+
 # Every attempt proves the GPU stack first (a minute), so an incompatible
 # driver fails here — recorded in train/progress.json as a failure of the
 # trainer, which the workflow does not retry on another machine — and not
 # an hour into the run.
-if ! /opt/lab/.venv-train/bin/python /opt/trainer/selftest.py --upload "$run_id"; then
-  now=$(date -u +%FT%TZ)
-  printf '{"status":"failed","stage":"selftest","error":"the trainer self-test failed (%s/runs/%s/train/selftest.json)","updated_at":"%s","rung":"%s","attempt":"%s"}\n' \
-    "$PIPELINE_BUCKET" "$run_id" "$now" "${TRAIN_RUNG:-}" "${TRAIN_ATTEMPT:-}" |
-    gcloud storage cp - "$PIPELINE_BUCKET/runs/$run_id/train/progress.json" --content-type=application/json >/dev/null 2>&1 || true
+/opt/lab/.venv-train/bin/python /opt/trainer/selftest.py --upload "$run_id" &
+selftest_pid=$!
+wait "$selftest_pid"
+rc=$?
+selftest_pid=
+if [ "$rc" -ne 0 ]; then
+  progress failed "the trainer self-test failed ($PIPELINE_BUCKET/runs/$run_id/train/selftest.json)"
   exit 1
 fi
+trap - TERM INT
 
 [ -f /opt/lab/tools/pipeline-train.sh ] || { echo "trainer: this image has no lab/tools/pipeline-train.sh"; exit 2; }
 exec bash /opt/lab/tools/pipeline-train.sh "$run_id" "$mode"

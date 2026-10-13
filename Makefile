@@ -136,14 +136,19 @@ trainer-tag: ## print this checkout's trainer content tag (t-<hash12>)
 # TAG may be a tag (r4) or a digest (sha256:…, what the pipeline's rollout.json names since it rolls out by digest)
 MODEL_REF = $(if $(filter sha256:%,$(TAG)),$(MODEL_REPO)@$(TAG),$(MODEL_REPO):$(TAG))
 
-model-rollout: ## roll sous-chef-model (production, int) to model:$(TAG) or model@$(TAG) (sha256:…) — rollouts by hand and ROLLBACKS (rollout.json names the old one)
+# `update --image` keeps the service's traffic split as it is: after a pinned split (a by-hand rollback by
+# traffic) the new revision would get 0 %. update-traffic --to-latest sends all of it to the new revision,
+# as the pipeline's own rollout does.
+model-rollout: ## roll sous-chef-model (production, int) to model:$(TAG) or model@$(TAG) (sha256:…), all traffic to it — rollouts by hand and ROLLBACKS (rollout.json names the old one)
 	@test -n "$(TAG)" || { echo "TAG=<model image tag or sha256:digest> is required, e.g. TAG=r4 or TAG=sha256:…"; exit 2; }
 	gcloud run services update sous-chef-model --project $(GCP_PROJECT) --region $(MODEL_REGION) \
 	  --image $(MODEL_REF)
+	gcloud run services update-traffic sous-chef-model --project $(GCP_PROJECT) --region $(MODEL_REGION) --to-latest
 	@echo "model-rollout: sous-chef-model -> $(MODEL_REF); drift judges the model state/model.json (or its history) names for this digest (calibrating it if it has no baseline)"
 
 # `gcloud workflows execute` starts an execution and returns its name at once (`run` would block until it ends:
 # up to the decision for a retrain). Follow one with `gcloud workflows executions describe <name>` or the console.
+# Never add --call-log-level=log-all-calls: it would log the thermometer key (docs/PIPELINE.md §7).
 pipeline-smoke: ## start a SMOKE retrain round (2–6 h with the GPU wait, ~US$2 of API, ~1 GPU-hour; dry rollout)
 	gcloud workflows execute souschef-retrain --project $(GCP_PROJECT) --location $(PIPELINE_REGION) --data='{"mode":"smoke"}'
 

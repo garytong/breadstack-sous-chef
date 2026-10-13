@@ -43,12 +43,14 @@ resource "google_artifact_registry_repository" "model" {
   }
 
   # Candidate images (modules/pipeline: model:c-<run id>, ~5.4 GB each)
-  # accumulate one per retrain round. With cleanup_candidates on: a c-*
-  # version older than candidate_retention_days is deleted UNLESS a keep
-  # rule matches it (keep rules win): the newest keep_recent versions, every
-  # hand-built tag (r1, r4, ...: prefix "r") and every image that was ever
-  # rolled out (the rollout adds a live-<run id> tag beside c-<run id>, so a
-  # live or rolled-back-to candidate is never deleted).
+  # accumulate one per retrain round. With cleanup_candidates on, the policy
+  # below names c-* versions older than candidate_retention_days, minus its
+  # keep rules (the newest keep_recent versions, every hand-built r* tag and
+  # every image ever rolled out: live-<run id>). It deletes NOTHING while
+  # immutable_tags is true: "If a repository has immutable tags enabled,
+  # tagged artifacts can't be deleted"
+  # (https://docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy).
+  # Old candidates are pruned by hand (docs/RETRAIN.md R7 "Cleanup").
   cleanup_policy_dry_run = var.cleanup_candidates ? false : null
 
   dynamic "cleanup_policies" {

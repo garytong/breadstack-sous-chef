@@ -165,7 +165,7 @@ class Store:
         return default if b is None else json.loads(b.decode("utf-8"))
 
     def write_json(self, rel: str, obj: Any) -> None:
-        self.write_bytes(rel, (json.dumps(obj, ensure_ascii=False, indent=1) + "\n").encode("utf-8"))
+        self.b.write_json(rel, obj)  # strict JSON (NaN → null), uploaded as application/json
 
     def read_jsonl(self, rel: str) -> list[dict]:
         b = self.read_bytes(rel)
@@ -174,7 +174,8 @@ class Store:
         return [json.loads(x) for x in b.decode("utf-8").splitlines() if x.strip()]
 
     def write_jsonl(self, rel: str, rows: Iterable[dict]) -> None:
-        self.write_bytes(rel, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode("utf-8"))
+        from .. import gcsio
+        self.write_bytes(rel, b"".join(gcsio.json_bytes(r, indent=None) for r in rows))
 
 
 def open_store(uri: str | Path | None) -> Store:

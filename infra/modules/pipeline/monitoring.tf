@@ -114,3 +114,30 @@ resource "google_monitoring_alert_policy" "not_delivered" {
     auto_close = "86400s"
   }
 }
+
+# The thermometer key never reaches Cloud Logging, even from an execution
+# started with --call-log-level=log-all-calls (docs/PIPELINE.md §7: never do
+# that). The workflows log errors only (workflows.tf), but an execution's own
+# call-log level overrides the workflow's, and with log-all-calls Workflows
+# logs every call step's arguments and result: the Secret Manager read's
+# result and the X-API-Key header of the thermometer calls in plain text.
+# Only Authorization headers are redacted
+# (https://docs.cloud.google.com/workflows/docs/log-workflow,
+# https://docs.cloud.google.com/workflows/docs/reference/googleapis/secretmanager/v1/projects.secrets.versions/accessString).
+#
+# Those are workflows.googleapis.com/engine_call entries (EngineCallLog) with
+# state BEGUN (arguments) or SUCCEEDED (result); errors-only logging writes
+# only EXCEPTION_RAISED / EXCEPTION_HANDLED, which this keeps (live int,
+# 2026-10-12: every souschef-* engine_call entry is one of those two). An
+# exclusion on the _Default sink drops matching entries before storage
+# (https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/projects.exclusions);
+# int has no other sink. It does not cover an organisation-level aggregated
+# sink, hence the runbook rule.
+resource "google_logging_project_exclusion" "workflow_call_args" {
+  project     = var.project_id
+  name        = "souschef-workflow-call-args"
+  description = "Sous Chef pipeline: drop the call-step arguments and results a log-all-calls execution of souschef-* would log (the thermometer key); errors stay"
+  filter      = "LOG_ID(\"workflows.googleapis.com/engine_call\") AND resource.type=\"workflows.googleapis.com/Workflow\" AND resource.labels.workflow_id=~\"^souschef-\" AND (jsonPayload.state=\"BEGUN\" OR jsonPayload.state=\"SUCCEEDED\")"
+
+  depends_on = [google_project_service.pipeline]
+}

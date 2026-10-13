@@ -835,7 +835,7 @@ class Job:
 
     def put_jsonl(self, name: str, rows: list[dict]) -> str:
         key = f"{self.prefix}/{name}"
-        self.b.write_bytes(key, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode("utf-8"))
+        self.b.write_bytes(key, b"".join(gcsio.json_bytes(r, indent=None) for r in rows))
         self.artifacts.append(key)
         return key
 
@@ -1161,7 +1161,7 @@ def _behaviour_locked(job: Job, mode: str, dep: dict, model: dict, digest: str, 
     home = home_context(rows)
     t_path = _local_manifest(job, "training", old_m.doc)
     d_path = _local_manifest(job, "deployed", new_m.doc)
-    tag = f"{job.run_id[3:16].replace('-', '')}"
+    tag = f"{job.run_id[3:23].replace('-', '')}"
     out: dict[str, Any] = {"deployed": {k: dep.get(k) for k in ("hash", "launcher_build", "generated_from")}, "mode": mode,
                            "model": {k: model.get(k) for k in ("tag", "digest", "training_manifest", "trained_at")} | {"digest": digest}}
     try:
@@ -1441,7 +1441,7 @@ def _r4_arm(job: Job, tgt: Target, name: str, cases: list[dict], m: Manifest, mp
     from .r4score import PASSING
     from .state import load_context_fixture
 
-    prefix = f"lab-dr{job.run_id[3:16].replace('-', '')}-{name.lower()}-"
+    prefix = f"lab-dr{job.run_id[3:23].replace('-', '')}-{name.lower()}-"
     log = job.work / "f0h" / f"{name}.jsonl"
     svc = None
     url, key = (tgt.harness.url, tgt.harness.key) if tgt.harness else (None, None)

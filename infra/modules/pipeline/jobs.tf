@@ -7,7 +7,7 @@
 #   souschef-eval     the paired eval, report and decision payload        (drift SA)
 #   souschef-prepare  rebase every family, author new-field cases         (author SA, + Anthropic key)
 #   souschef-collect  teacher collection through int's Claude routes      (prep SA)
-#   souschef-dataset  r4dataset + the parity gate + context.tgz           (prep SA)
+#   souschef-dataset  r4dataset + the parity gate + context.tar.gz        (prep SA)
 #
 # max_retries = 0: retries are the workflow's (attempt n/N in the failure
 # message; an exit 2 — configuration — is never retried). Every workflow run

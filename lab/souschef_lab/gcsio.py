@@ -28,6 +28,17 @@ lock that another run holds.
 
 Never prints or logs object contents; errors carry the gcloud exit and the
 last line of its stderr with URLs only.
+
+gcloud errors are classified by the HTTP status and fixed phrases gcloud
+prints, never by bare digits: every URL is removed from stderr first, since an
+object name such as `baselines/sha256:ab412cd…` or `dr-20261013-0404-poll`
+would otherwise read as a 412 or a 404 (gcloud names the object in its error).
+
+JSON objects are uploaded as application/json (Workflows parses only that
+type into a map), with NaN and ±Infinity written as null: a strict JSON
+reader (Workflows' json.decode, the thermometer) rejects them. gcloud runs with
+parallel composite uploads off: their temporary components land outside the
+writer's prefix (gcloud/tmp/…) and are never cleaned up.
 """
 
 from __future__ import annotations
@@ -88,6 +99,36 @@ def parse_iso(s: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+JSON_TYPE = "application/json"
+# what an extension-less temp file would otherwise be uploaded as (application/octet-stream)
+_CONTENT_TYPES = {".json": JSON_TYPE, ".jsonl": "application/x-ndjson", ".md": "text/markdown; charset=utf-8",
+                  ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8"}
+
+
+def content_type_for(key: str) -> str | None:
+    """The upload type by the key's extension (None: leave it to gcloud)."""
+    return _CONTENT_TYPES.get(Path(str(key)).suffix.lower())
+
+
+def _finite(v: Any) -> Any:
+    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(v, dict):
+        return {k: _finite(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_finite(x) for x in v]
+    return v
+
+
+def json_bytes(obj: Any, *, indent: int | None = 1) -> bytes:
+    """Strict JSON (NaN / ±Infinity → null: Python's default output is not JSON) + a newline, UTF-8."""
+    try:
+        text = json.dumps(obj, ensure_ascii=False, indent=indent, sort_keys=False, allow_nan=False)
+    except ValueError:
+        text = json.dumps(_finite(obj), ensure_ascii=False, indent=indent, sort_keys=False, allow_nan=False)
+    return (text + "\n").encode("utf-8")
+
+
 def _key(k: str) -> str:
     k = str(k).strip("/")
     if not k or ".." in k.split("/"):
@@ -104,7 +145,8 @@ class Bucket:
     def read_bytes(self, key: str) -> bytes:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def write_bytes(self, key: str, data: bytes, *, if_generation: int | None = None) -> None:  # pragma: no cover
+    def write_bytes(self, key: str, data: bytes, *, if_generation: int | None = None,
+                    content_type: str | None = None) -> None:  # pragma: no cover
         raise NotImplementedError
 
     def generation(self, key: str) -> int | None:  # pragma: no cover
@@ -148,8 +190,8 @@ class Bucket:
             raise StoreError(f"{self.uri(key)} is not JSON: {e}") from None
 
     def write_json(self, key: str, obj: Any, *, if_generation: int | None = None, indent: int | None = 1) -> None:
-        data = (json.dumps(obj, ensure_ascii=False, indent=indent, sort_keys=False) + "\n").encode("utf-8")
-        self.write_bytes(key, data, if_generation=if_generation)
+        self.write_bytes(key, json_bytes(obj, indent=indent), if_generation=if_generation,
+                         content_type=JSON_TYPE)
 
     def read_text(self, key: str, default: Any = _MISSING) -> Any:
         try:
@@ -259,7 +301,8 @@ class LocalBucket(Bucket):
         p = self.path(key)
         return p.stat().st_mtime_ns if p.is_file() else None
 
-    def write_bytes(self, key: str, data: bytes, *, if_generation: int | None = None) -> None:
+    def write_bytes(self, key: str, data: bytes, *, if_generation: int | None = None,
+                    content_type: str | None = None) -> None:
         p = self.path(key)
         p.parent.mkdir(parents=True, exist_ok=True)
         with self._guard():
@@ -340,11 +383,20 @@ class LocalBucket(Bucket):
 Runner = Callable[[list[str], bytes | None], subprocess.CompletedProcess]
 
 
+def gcloud_env(base: dict | None = None) -> dict:
+    """The environment gcloud runs with: parallel composite uploads off (no pipeline account has
+    storage.buckets.get for gcloud's compatibility check, and the components would be written to
+    gcloud/tmp/… at the bucket root, outside every writer's prefix; an explicit setting wins)."""
+    env = dict(os.environ if base is None else base)
+    env.setdefault("CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED", "False")
+    return env
+
+
 def _run_gcloud(args: list[str], stdin: bytes | None = None) -> subprocess.CompletedProcess:
     exe = shutil.which("gcloud")
     if not exe:
         raise StoreError("gcloud is not on PATH (the lab runtime image ships it)")
-    return subprocess.run([exe, *args], input=stdin, capture_output=True, timeout=1800, check=False)
+    return subprocess.run([exe, *args], input=stdin, capture_output=True, timeout=1800, check=False, env=gcloud_env())
 
 
 def _last_line(b: bytes) -> str:
@@ -352,8 +404,38 @@ def _last_line(b: bytes) -> str:
     return lines[-1][:400] if lines else ""
 
 
-_NOT_FOUND = ("No URLs matched", "matched no objects", "not found", "NotFound", "404", "does not exist")
-_PRECONDITION = ("PreconditionFailed", "Precondition", "412", "conditionNotMet", "At least one of the pre-conditions")
+# Classification of a failed `gcloud storage` call, on stderr with every URL removed (gcloud names the object in
+# the error: `cat` on a line of its own, `objects describe` as `gs://b/<url-encoded name> not found: 404.`, `cp` in
+# its progress lines). Texts are gcloud 585's (api_lib/storage/errors.py, command_lib/storage/name_expansion.py,
+# list_util.py, rsync_command_util.py), checked against the int bucket:
+#   describe   ERROR: (gcloud.storage.objects.describe) gs://<b>/<k%2F…> not found: 404.
+#   cat, cp,   ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n<url>
+#   rm         (name expansion GETs the object first)
+#   ls         ERROR: (gcloud.storage.ls) One or more URLs matched no objects.
+#   rsync      ERROR: (gcloud.storage.rsync) Did not find existing container at: <url>
+#   412        HTTPError 412: At least one of the pre-conditions you specified did not hold.
+#   403        HTTPError 403: … | … does not have storage.objects.list access … (or it may not exist) …
+# Any other HTTP status in the text (403, 429, 5xx after gcloud's retries) is a StoreError even when a not-found
+# phrase is there too: a real failure must never read as a missing object (read_json would return its default).
+_URL = re.compile(r"\b(?:gs|file|https?)://\S+")
+_HTTP_STATUS = re.compile(r"\bHTTPError (\d{3})\b|\bnot found: (\d{3})\b")
+_PRECONDITION_RX = re.compile(r"At least one of the pre-conditions|\bPrecondition ?Failed\b|\bconditionNotMet\b", re.I)
+_NOT_FOUND_RX = re.compile(r"matched no objects|No URLs matched|Did not find existing container|\bNotFound(?:Error)?\b|"
+                           r"\bNo such object\b")
+
+
+def classify_gcloud_error(stderr: bytes | str) -> str:
+    """'precondition' | 'not_found' | 'error' for a failed gcloud storage call's stderr."""
+    text = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else str(stderr or "")
+    text = _URL.sub("<url>", text[-8000:])
+    codes = {next(g for g in m.groups() if g) for m in _HTTP_STATUS.finditer(text)}
+    if "412" in codes or _PRECONDITION_RX.search(text):
+        return "precondition"
+    if codes - {"404"}:
+        return "error"
+    if "404" in codes or _NOT_FOUND_RX.search(text):
+        return "not_found"
+    return "error"
 
 
 class GcsBucket(Bucket):
@@ -369,10 +451,10 @@ class GcsBucket(Bucket):
             return r
         err = r.stderr if isinstance(r.stderr, bytes) else str(r.stderr or "").encode()
         last = _last_line(err)
-        text = err.decode("utf-8", "replace")[-4000:]  # `cat` names the URL on a line of its own after the error
-        if any(s in text for s in _PRECONDITION):
+        kind = classify_gcloud_error(err)
+        if kind == "precondition":
             raise PreconditionFailed(f"{self.uri(key) if key else args}: {last}")
-        if any(s in text for s in _NOT_FOUND):
+        if kind == "not_found":
             raise NotFound(self.uri(key) if key else " ".join(args[:2]))
         raise StoreError(f"gcloud storage {args[0]} exited {r.returncode}: {last}")
 
@@ -393,12 +475,16 @@ class GcsBucket(Bucket):
         g = d.get("generation")
         return int(g) if g is not None else None
 
-    def write_bytes(self, key: str, data: bytes, *, if_generation: int | None = None) -> None:
+    def write_bytes(self, key: str, data: bytes, *, if_generation: int | None = None,
+                    content_type: str | None = None) -> None:
         with tempfile.NamedTemporaryFile(prefix="gcsio-", delete=False) as f:
             f.write(data)
             tmp = f.name
         try:
             args = ["cp", tmp, self.uri(key)]
+            ctype = content_type or content_type_for(key)
+            if ctype:  # the temp file has no extension: gcloud would upload application/octet-stream
+                args.append(f"--content-type={ctype}")
             if if_generation is not None:
                 args.append(f"--if-generation-match={int(if_generation)}")
             self._call(args, key=key)

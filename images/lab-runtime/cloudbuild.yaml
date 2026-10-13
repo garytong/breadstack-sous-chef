@@ -16,9 +16,10 @@ substitutions:
   _AR_REPO: sous-chef
 
 steps:
-  - name: gcr.io/cloud-builders/docker
+  # docker:29 (Docker 29.8 CLI with buildx), pinned by its index digest, on a
+  # 2026.09 worker (Engine 29): the root cloudbuild.yaml's header says why.
+  - name: gcr.io/cloud-builders/docker@sha256:6c9d05f41f8e721e05f7d3d1b5c29904ac2595d1b67de093f59420b6e8146ecf
     id: lab-image
-    env: ['DOCKER_BUILDKIT=1']
     entrypoint: bash
     args:
       - -c
@@ -26,11 +27,12 @@ steps:
         set -euo pipefail
         [ -n "$_TAG" ] || { echo "_TAG (the service tag) is required"; exit 2; }
         IMAGE="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sous-chef-lab:$_TAG"
-        docker build --platform linux/amd64 -f images/lab-runtime/Dockerfile --build-arg BUILD_ID="$_TAG" -t "$$IMAGE" .
+        docker build --platform linux/amd64 --provenance=false --sbom=false -f images/lab-runtime/Dockerfile --build-arg BUILD_ID="$_TAG" -t "$$IMAGE" .
         docker run --rm --entrypoint /opt/lab/.venv/bin/python "$$IMAGE" -c 'import souschef_lab; print("ok")'
         docker push "$$IMAGE"
 
 timeout: 2400s
 options:
+  workerRelease: "2026.09" # Docker Engine 29
   machineType: E2_HIGHCPU_8
   logging: CLOUD_LOGGING_ONLY

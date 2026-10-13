@@ -2,8 +2,9 @@
 # staged GGUF, exactly what `make -C lab model-stage model-build` makes on a
 # workstation, built in the int project with no repository access.
 #
-# Source: gs://<bucket>/runs/<run id>/model/context.tgz, written by the
-# dataset stage: a tar of the lab image's lab/model-image/ with model-image/
+# Source: gs://<bucket>/runs/<run id>/model/context.tar.gz (context.tgz
+# before the rename; the workflow takes either), written by the dataset
+# stage: a gzipped tar of the lab image's lab/model-image/ with model-image/
 # at its top (Dockerfile, entrypoint.sh, model-context.sh, .dockerignore).
 # The staged model (Modelfile + one q4_k_m GGUF) is the trainer's
 # runs/<run id>/train/stage/.
@@ -12,7 +13,7 @@
 # it to gs://<bucket>/infra/cloudbuild-model.json) with the run's source,
 # substitutions and service account. By hand (docs/RETRAIN.md R5):
 #
-#   gcloud builds submit gs://<bucket>/runs/<run id>/model/context.tgz \
+#   gcloud builds submit gs://<bucket>/runs/<run id>/model/context.tar.gz \
 #     --project breadstack-sous-chef-int --region us-east4 \
 #     --config infra/modules/pipeline/cloudbuild-model.yaml \
 #     --service-account projects/breadstack-sous-chef-int/serviceAccounts/souschef-builder@breadstack-sous-chef-int.iam.gserviceaccount.com \
@@ -57,14 +58,22 @@ steps:
         gcloud storage cp "gs://$_BUCKET/runs/$_RUN_ID/train/stage/*" /workspace/stage/
         sh model-image/model-context.sh /workspace/stage
 
-  - name: gcr.io/cloud-builders/docker
+  # Docker 29 CLI with buildx (gcr.io/cloud-builders/docker:29, pinned by
+  # its index digest): `--build-context` needs buildx, and
+  # gcr.io/cloud-builders/docker (:latest) is Docker 20.10.24, which answers
+  # "unknown flag: --build-context".
+  # --provenance=false --sbom=false: on Engine 29 (containerd image store)
+  # buildx otherwise pushes an index with an attestation manifest, and
+  # results.images[0].digest would name that index, not the image manifest
+  # the candidate, the baselines and the rollout are keyed on.
+  - name: gcr.io/cloud-builders/docker@sha256:6c9d05f41f8e721e05f7d3d1b5c29904ac2595d1b67de093f59420b6e8146ecf
     id: build
-    env:
-      - DOCKER_BUILDKIT=1
     args:
       - build
       - --platform
       - linux/amd64
+      - --provenance=false
+      - --sbom=false
       - --build-context
       - model=/workspace/stage
       - -f
@@ -81,7 +90,12 @@ images:
 
 timeout: 3600s
 
+# workerRelease: the worker image, pinned (Docker Engine 29, Debian 13,
+# supported until 2029-09-30). Without it the default pool runs `legacy`
+# (Engine 20.10, whose BuildKit predates named build contexts) until
+# 2027-03-28, then whatever the regular channel is. https://docs.cloud.google.com/build/docs/release-channels
 options:
+  workerRelease: "2026.09"
   machineType: E2_HIGHCPU_8
   diskSizeGb: 200
   logging: CLOUD_LOGGING_ONLY

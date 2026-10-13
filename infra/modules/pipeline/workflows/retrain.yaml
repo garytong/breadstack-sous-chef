@@ -9,7 +9,7 @@
 #   prepare    job souschef-prepare   -> runs/<id>/prepare/*
 #   collect    job souschef-collect   -> runs/<id>/collect/*  (teacher build
 #              changed -> images re-resolved, collection restarted once)
-#   dataset    job souschef-dataset   -> runs/<id>/dataset/*, model/context.tgz
+#   dataset    job souschef-dataset   -> runs/<id>/dataset/*, model/context.tar.gz (or .tgz)
 #   train      Vertex custom job ladder -> runs/<id>/train/{adapter,export,stage,DONE}
 #   build      Cloud Build: model:c-<id> -> runs/<id>/model/image.json
 #   candidate  sous-chef-model-cand -> the candidate image; warm
@@ -17,7 +17,7 @@
 #              job souschef-eval -> report.json, decision.json,
 #              eval/candidate-baseline.json
 #   decide     candidate_ready (the decision row on the thermometer), then
-#              poll the decision every 10 min until approved / skipped /
+#              poll the decision every 30 min until approved / skipped /
 #              expired
 #   rollout    Approve: patch sous-chef-model's image (a dry rollout in SMOKE
 #              or with pipeline_rollout off), baseline reset, state/model.json,
@@ -260,10 +260,10 @@ main:
                             timeout_s: 21600
                             attempts: 2
                       - context_tgz:
-                          call: gcs_meta
+                          call: build_context
                           args:
-                            bucket: '${cfg.bucket}'
-                            name: '${ctx.prefix + "model/context.tgz"}'
+                            cfg: '${cfg}'
+                            ctx: '${ctx}'
                           result: tgz
                       - need_tgz:
                           switch:
@@ -271,7 +271,7 @@ main:
                               raise:
                                 pipeline_stage: "dataset"
                                 error_class: "no_build_context"
-                                message: '${"the dataset stage finished without " + ctx.prefix + "model/context.tgz (the model image build context)"}'
+                                message: '${"the dataset stage finished without " + ctx.prefix + "model/context.tar.gz (or .tgz; the model image build context)"}'
                                 attempt: 1
                                 attempts: 1
                       - done_dataset:
@@ -495,6 +495,25 @@ main:
                   wf: '${wf}'
                   e: '${err}'
                   candidate_id: '${candidate_id}'
+            - stop_training:
+                # a Vertex job outlives the execution that waits on it and keeps
+                # a GPU billing: cancel the round's current one (and await it,
+                # up to 15 min: after the failure notice, before the round's
+                # lock goes)
+                switch:
+                  - condition: '${locked and (stage == "train" or default(map.get(err, "pipeline_stage"), "") == "train")}'
+                    steps:
+                      - stop_it:
+                          call: vertex_stop_current
+                          args:
+                            cfg: '${cfg}'
+                            run_id: '${run_id}'
+                          result: stopped
+                      - stop_note:
+                          call: log
+                          args:
+                            text: '${"training job of the failed round: " + stopped}'
+                            severity: WARNING
             - free_gpu:
                 try:
                   call: lock_release
@@ -672,7 +691,7 @@ retrain_identity:
           name: "state/deployed.json"
         result: st
     - stamp:
-        call: now_compact
+        call: run_stamp
         result: ts
     - ids:
         assign:
@@ -988,7 +1007,10 @@ stage_job:
                 result: rnote
             - give_up:
                 switch:
-                  - condition: '${r.exit_code == 2 or attempt >= attempts}'
+                  # exit 2 (configuration), a cancelled execution (a person
+                  # stopped it) and a start refused or of unknown outcome
+                  # (run_job no_retry) are never retried
+                  - condition: '${r.exit_code == 2 or default(map.get(r, "cancelled"), false) == true or default(map.get(r, "no_retry"), false) == true or attempt >= attempts}'
                     raise:
                       pipeline_stage: '${stage}'
                       error_class: '${"exit " + string(r.exit_code)}'
@@ -1077,6 +1099,10 @@ stage_collect:
 # ---- training on Vertex AI (DESIGN §3.5) ----------------------------------------------------
 
 stage_train:
+  # The ladder of Vertex jobs. A job an earlier execution of this round
+  # started and left running (wf/runs/<id>/train/current.json; that
+  # execution failed or was cancelled) is adopted first, never doubled: two
+  # jobs would write the same progress.json and checkpoints.
   params: [cfg, ctx]
   steps:
     - done_before:
@@ -1096,6 +1122,106 @@ stage_train:
           - unknown: 0
           - started: '${sys.now()}'
           - outcome: null
+          - adopt: null
+          - arung: null
+          - cur_job: null
+          - out: null
+    - current:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"wf/" + ctx.prefix + "train/current.json"}'
+        result: cur
+    - current_live:
+        switch:
+          - condition: '${get_type(cur) == "map" and get_type(map.get(cur, "job")) == "string" and get_type(map.get(cur, "base")) == "string"}'
+            steps:
+              - cur_get:
+                  try:
+                    call: api_get
+                    args:
+                      url: '${cur.base + cur.job}'
+                    result: cur_job
+                  except:
+                    as: e
+                    steps:
+                      - cur_gone:
+                          assign:
+                            - cur_job: null
+              - cur_live:
+                  switch:
+                    - condition: '${get_type(cur_job) == "map" and not(default(map.get(cur_job, "state"), "") in ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"])}'
+                      assign:
+                        - adopt: '${cur}'
+    - adopt_rung:
+        switch:
+          - condition: '${adopt != null}'
+            steps:
+              - find_rung:
+                  for:
+                    value: lr
+                    in: '${cfg.trainer.ladder}'
+                    steps:
+                      - is_it:
+                          switch:
+                            - condition: '${lr.name == default(map.get(adopt, "rung"), "")}'
+                              assign:
+                                - arung: '${lr}'
+              - rung_gone:
+                  # the ladder changed since: stop that job rather than guess
+                  switch:
+                    - condition: '${arung == null}'
+                      steps:
+                        - stop_old:
+                            call: vertex_cancel
+                            args:
+                              base: '${adopt.base}'
+                              name: '${adopt.job}'
+                        - no_adopt:
+                            assign:
+                              - adopt: null
+    - adopted:
+        switch:
+          - condition: '${adopt != null}'
+            steps:
+              - adopt_note:
+                  call: log
+                  args:
+                    text: '${"adopting " + adopt.job + " (" + adopt.rung + "), left running by an earlier execution of " + ctx.run_id}'
+              - attempt_adopted:
+                  call: vertex_attempt
+                  args:
+                    cfg: '${cfg}'
+                    ctx: '${ctx}'
+                    rung: '${arung}'
+                    try_n: '${default(map.get(adopt, "try_n"), 1)}'
+                    adopt: '${adopt}'
+                  result: out
+              - logged_adopted:
+                  assign:
+                    - attempts_log: '${list.concat(attempts_log, out)}'
+              - judge_adopted:
+                  switch:
+                    - condition: '${out.state == "succeeded"}'
+                      assign:
+                        - outcome: '${out}'
+                    - condition: '${out.state == "fatal"}'
+                      raise:
+                        pipeline_stage: "train"
+                        error_class: "train_failed"
+                        message: '${"training failed: " + json.encode_to_string(attempts_log)}'
+                        attempt: '${len(attempts_log)}'
+                        attempts: '${len(attempts_log)}'
+                    - condition: '${out.state == "preempted"}'
+                      assign:
+                        - preemptions: '${preemptions + 1}'
+                    - condition: '${out.state == "unknown"}'
+                      assign:
+                        - unknown: '${unknown + 1}'
+    - adopted_won:
+        switch:
+          - condition: '${outcome != null}'
+            next: record
     - ladder:
         for:
           value: rung
@@ -1191,16 +1317,22 @@ stage_train:
     - done:
         return: '${outcome}'
 
+
 vertex_attempt:
-  # One Vertex CustomJob. {state: succeeded | preempted | capacity | refused
-  # | unknown | fatal, rung, region, job, message, ...}
-  params: [cfg, ctx, rung, try_n]
+  # One Vertex CustomJob (or the one `adopt` names: current.json of an
+  # earlier execution). {state: succeeded | preempted | capacity | refused
+  # | unknown | fatal, rung, region, job, message, ...}. The job's name goes
+  # to wf/runs/<id>/train/current.json as soon as it exists (a resume adopts
+  # it, a failed round cancels it) and goes once the job has ended.
+  params: [cfg, ctx, rung, try_n, adopt: null]
   steps:
     - init:
         assign:
           - empty: {}
           - base: '${"https://" + rung.region + "-aiplatform.googleapis.com/v1/"}'
           - started: '${sys.now()}'
+          - last_refresh: '${sys.now()}'
+          - cur_path: '${"wf/" + ctx.prefix + "train/current.json"}'
           - entry:
               rung: '${rung.name}'
               region: '${rung.region}'
@@ -1210,6 +1342,7 @@ vertex_attempt:
               attempt: '${try_n}'
               started_at: '${time.format(sys.now())}'
               job: null
+          - fin: null
           - scheduling:
               timeout: '${string(cfg.trainer.timeout_s) + "s"}'
               strategy: '${rung.strategy}'
@@ -1224,9 +1357,17 @@ vertex_attempt:
             assign:
               - wait_s: 1800
               - rung.max_wait_s: 1800
+    - flex_default:
+        # Flex-start with no wait set: say 4 h to Vertex as well (omitted or
+        # 0, Vertex waits its own 24 h or forever, CustomJobSpec
+        # scheduling.maxWaitDuration) so the job and the workflow agree
+        switch:
+          - condition: '${rung.strategy == "FLEX_START" and wait_s <= 0}'
+            assign:
+              - wait_s: 14400
     - flex:
         switch:
-          - condition: '${rung.strategy == "FLEX_START" and wait_s > 0}'
+          - condition: '${rung.strategy == "FLEX_START"}'
             assign:
               - scheduling.maxWaitDuration: '${string(wait_s) + "s"}'
     - body:
@@ -1237,6 +1378,8 @@ vertex_attempt:
                 purpose: sous-chef-pipeline
                 run: '${ctx.run_id}'
                 rung: '${rung.name}'
+                # one per create: finds a job whose create answer was lost
+                create: '${text.to_lower(text.substring(text.replace_all(default(sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID"), "x"), "-", ""), 0, 8)) + "-" + string(int(sys.now() * 1000))}'
               jobSpec:
                 workerPoolSpecs:
                   - machineSpec:
@@ -1261,8 +1404,6 @@ vertex_attempt:
                           value: '${string(try_n)}'
                 scheduling: '${scheduling}'
                 serviceAccount: '${cfg.trainer.service_account}'
-                baseOutputDirectory:
-                  outputUriPrefix: '${"gs://" + cfg.bucket + "/" + ctx.prefix + "train/vertex/"}'
     - before:
         # the trainer's progress before this attempt (a preemption shows as
         # progress made since)
@@ -1271,13 +1412,22 @@ vertex_attempt:
           bucket: '${cfg.bucket}'
           name: '${ctx.prefix + "train/progress.json"}'
         result: prog0
+    - adopting:
+        switch:
+          - condition: '${adopt != null}'
+            assign:
+              - created:
+                  name: '${adopt.job}'
+              - started: '${default(map.get(adopt, "created_t"), sys.now())}'
+              - entry.started_at: '${default(map.get(adopt, "created_at"), entry.started_at)}'
+              - entry.adopted: true
+            next: named
     - create:
         try:
-          call: api_send
+          call: vertex_create
           args:
-            method: POST
             url: '${base + "projects/" + cfg.project + "/locations/" + rung.region + "/customJobs"}'
-            body: '${job}'
+            job: '${job}'
           result: created
         except:
           as: e
@@ -1309,20 +1459,59 @@ vertex_attempt:
                           return: '${entry}'
             - other:
                 raise: '${e}'
+    - remember:
+        # before anything else can fail: a job nobody records outlives the round
+        try:
+          call: gcs_write
+          args:
+            bucket: '${cfg.bucket}'
+            name: '${cur_path}'
+            data:
+              job: '${created.name}'
+              base: '${base}'
+              rung: '${rung.name}'
+              try_n: '${try_n}'
+              run_id: '${ctx.run_id}'
+              created_at: '${entry.started_at}'
+              created_t: '${started}'
+        except:
+          as: e
+          steps:
+            - unsaved:
+                call: log
+                args:
+                  text: '${"could not record " + created.name + " in " + cur_path + ": a failed round will not stop it"}'
+                  severity: WARNING
     - named:
         assign:
           - entry.job: '${created.name}'
-          - deadline: '${sys.now() + cfg.trainer.timeout_s + default(map.get(rung, "max_wait_s"), 0) + 7200}'
+          - deadline: '${started + cfg.trainer.timeout_s + wait_s + 7200}'
           # a job that never starts (no Spot / on-demand capacity: Vertex
           # queues it silently) is given up as `capacity` after max_pending_s
           # (Flex-start: its own maxWaitDuration + 30 min), so the ladder
           # moves on instead of waiting for the 14 h deadline
-          - pending_until: '${sys.now() + default(map.get(rung, "max_pending_s"), 3600)}'
+          - pending_until: '${started + default(map.get(rung, "max_pending_s"), 3600)}'
     - flex_pending:
         switch:
           - condition: '${rung.strategy == "FLEX_START"}'
             assign:
-              - pending_until: '${sys.now() + default(map.get(rung, "max_wait_s"), 14400) + 1800}'
+              - pending_until: '${started + wait_s + 1800}'
+    - keep_lock:
+        # every 6 h (the lock lives 72 h): a refresh per 5-min poll would
+        # spend ~20 steps of the execution's 100,000 each time
+        switch:
+          - condition: '${sys.now() - last_refresh > 21600}'
+            steps:
+              - refresh:
+                  call: lock_refresh
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: "state/locks/retrain.json"
+                    run_id: '${ctx.run_id}'
+                    ttl_s: 259200
+              - refreshed:
+                  assign:
+                    - last_refresh: '${sys.now()}'
     - wait:
         call: sys.sleep
         args:
@@ -1342,47 +1531,41 @@ vertex_attempt:
             next: overdue
           - condition: '${(cj.state == "JOB_STATE_QUEUED" or cj.state == "JOB_STATE_PENDING") and not("startTime" in cj) and sys.now() > pending_until}'
             next: never_started
-    - keep_lock:
-        call: lock_refresh
-        args:
-          bucket: '${cfg.bucket}'
-          name: "state/locks/retrain.json"
-          run_id: '${ctx.run_id}'
-          ttl_s: 259200
-        next: wait
+        next: keep_lock
     - overdue:
-        try:
-          call: api_send
-          args:
-            method: POST
-            url: '${base + created.name + ":cancel"}'
-        except:
-          as: e
-          steps:
-            - ignore:
-                assign:
-                  - entry.cancel_error: true
+        call: vertex_cancel
+        args:
+          base: '${base}'
+          name: '${created.name}'
+        result: fin
+    - overdue_won:
+        # capacity or the end came between the last poll and the cancel
+        switch:
+          - condition: '${fin == "JOB_STATE_SUCCEEDED"}'
+            assign:
+              - cj.state: '${fin}'
+            next: succeeded
     - overdue_out:
         assign:
           - entry.state: unknown
-          - entry.message: '${"no end after the deadline (state " + cj.state + "); cancelled"}'
+          - entry.message: '${"no end after the deadline (state " + cj.state + "); cancelled (" + fin + ")"}'
         next: finish
     - never_started:
-        try:
-          call: api_send
-          args:
-            method: POST
-            url: '${base + created.name + ":cancel"}'
-        except:
-          as: e
-          steps:
-            - ignore_pending:
-                assign:
-                  - entry.cancel_error: true
+        call: vertex_cancel
+        args:
+          base: '${base}'
+          name: '${created.name}'
+        result: fin
+    - never_won:
+        switch:
+          - condition: '${fin == "JOB_STATE_SUCCEEDED"}'
+            assign:
+              - cj.state: '${fin}'
+            next: succeeded
     - never_started_out:
         assign:
           - entry.state: capacity
-          - entry.message: '${"never started (still " + cj.state + " after " + string(int((pending_until - started) / 60)) + " min): no capacity; cancelled"}'
+          - entry.message: '${"never started (still " + cj.state + " after " + string(int((pending_until - started) / 60)) + " min): no capacity; cancelled (" + fin + ")"}'
         next: finish
     - succeeded:
         call: gcs_meta
@@ -1407,6 +1590,9 @@ vertex_attempt:
         assign:
           - msg: '${default(map.get(cj, ["error", "message"]), cj.state)}'
           - entry.message: '${msg}'
+          # startTime: "Time when the CustomJob for the first time entered the
+          # JOB_STATE_RUNNING state" (customJobs reference)
+          - vx_started: '${map.get(cj, "startTime") != null}'
     - progress:
         call: gcs_read
         args:
@@ -1439,6 +1625,12 @@ vertex_attempt:
           - condition: '${text.match_regex(msg, "(?i)preempt")}'
             assign:
               - entry.state: preempted
+          # never ran (no startTime) and the trainer wrote nothing this
+          # attempt: no capacity, whatever the text (Flex-start's
+          # maxWaitDuration failure message is not documented)
+          - condition: '${not(vx_started) and not(pnew) and (cj.state == "JOB_STATE_FAILED" or cj.state == "JOB_STATE_EXPIRED")}'
+            assign:
+              - entry.state: capacity
           - condition: '${text.match_regex(msg, "(?i)stockout|resource.?exhausted|zone_resource_pool|insufficient|not enough resources|capacity|quota|max.?wait|unavailable|could not be scheduled")}'
             assign:
               - entry.state: capacity
@@ -1459,10 +1651,234 @@ vertex_attempt:
         assign:
           - entry.ended_at: '${time.format(sys.now())}'
           - entry.vertex_state: '${default(map.get(default(cj, empty), "state"), null)}'
+    - still_live:
+        # a cancel that had not taken after 15 min: the job may hold a GPU
+        # yet, so no other rung starts beside it. current.json stays (the
+        # failed round's except cancels it again; a resume adopts it).
+        switch:
+          - condition: '${fin != null and not(fin in ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"])}'
+            assign:
+              - entry.state: fatal
+              - entry.vertex_state: '${fin}'
+              - entry.message: '${default(map.get(entry, "message"), "") + " | still " + fin + " 15 min after its cancel: no other job starts beside it"}'
+            next: out
+    - forget:
+        # the job has ended (or its cancel was awaited): nothing to adopt or stop
+        try:
+          call: gcs_delete
+          args:
+            bucket: '${cfg.bucket}'
+            name: '${cur_path}'
+        except:
+          as: e
+          steps:
+            - kept:
+                assign:
+                  - e: null
     - out:
         return: '${entry}'
 
+vertex_create:
+  # customJobs.create has no request id, so a create whose answer was lost
+  # (5xx, connection, timeout) may have made the job: before sending it
+  # again, look for it by its one-off `create` label (customJobs.list
+  # filter labels.key=value). Never two jobs from one create.
+  params: [url, job]
+  steps:
+    - init:
+        assign:
+          - tries: 0
+          - found: null
+    - send:
+        try:
+          call: http.post
+          args:
+            url: '${url}'
+            body: '${job}'
+            headers:
+              Content-Type: application/json
+            auth:
+              type: OAuth2
+            timeout: 300
+          result: r
+        except:
+          as: e
+          steps:
+            - transient:
+                call: retry_transient
+                args:
+                  e: '${e}'
+                result: again
+            - give_up:
+                switch:
+                  - condition: '${not(again) or tries >= 4}'
+                    raise: '${e}'
+            - nap:
+                call: sys.sleep
+                args:
+                  seconds: '${15 * (tries + 1)}'
+            - look:
+                # a failed lookup raises: sending blind could double the job
+                call: api_get
+                args:
+                  url: '${url}'
+                  query:
+                    # quoted: an all-digit value must not read as a number
+                    filter: '${"labels.create=\"" + job.labels.create + "\""}'
+                result: found
+            - made:
+                switch:
+                  - condition: '${len(default(map.get(found, "customJobs"), [])) > 0}'
+                    return: '${found.customJobs[0]}'
+            - again_n:
+                assign:
+                  - tries: '${tries + 1}'
+                next: send
+    - done:
+        return: '${r.body}'
+
+vertex_cancel:
+  # Cancel a Vertex CustomJob and wait (every 30 s, up to 15 min) until it
+  # has ended: cancel "starts asynchronous cancellation ... success is not
+  # guaranteed" (customJobs.cancel), so a job can hold its GPU a while, or
+  # still SUCCEED, after the call. Returns the last state seen.
+  params: [base, name]
+  steps:
+    - cancel:
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${base + name + ":cancel"}'
+        except:
+          as: e
+          steps:
+            - refused:
+                # an ended job refuses the cancel; its state says so below
+                assign:
+                  - e: null
+    - init:
+        assign:
+          - deadline: '${sys.now() + 900}'
+          - st: "JOB_STATE_CANCELLING"
+          - j: null
+    - poll:
+        try:
+          call: api_get
+          args:
+            url: '${base + name}'
+          result: j
+        except:
+          as: e
+          steps:
+            - unread:
+                assign:
+                  - j: null
+    - seen:
+        switch:
+          - condition: '${get_type(j) == "map" and get_type(map.get(j, "state")) == "string"}'
+            assign:
+              - st: '${j.state}'
+    - ended:
+        switch:
+          - condition: '${st in ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"] or sys.now() > deadline}'
+            return: '${st}'
+    - nap:
+        call: sys.sleep
+        args:
+          seconds: 30
+        next: poll
+
+vertex_stop_current:
+  # A failed round's training job (wf/runs/<id>/train/current.json),
+  # cancelled so that it does not keep a GPU billing after the execution
+  # waiting on it is gone; the record goes once the job has ended (a resume
+  # then starts afresh from the checkpoints). Never raises.
+  params: [cfg, run_id]
+  steps:
+    - init:
+        assign:
+          - cur: null
+          - st: ""
+          - path: '${"wf/runs/" + run_id + "/train/current.json"}'
+    - read:
+        try:
+          call: gcs_read
+          args:
+            bucket: '${cfg.bucket}'
+            name: '${path}'
+          result: cur
+        except:
+          as: e
+          steps:
+            - unreadable:
+                return: "current.json unreadable"
+    - none:
+        switch:
+          - condition: '${get_type(cur) != "map" or get_type(map.get(cur, "job")) != "string" or get_type(map.get(cur, "base")) != "string"}'
+            return: "no training job"
+    - stop:
+        try:
+          call: vertex_cancel
+          args:
+            base: '${cur.base}'
+            name: '${cur.job}'
+          result: st
+        except:
+          as: e
+          steps:
+            - not_stopped:
+                return: '${"could not cancel " + cur.job}'
+    - ended:
+        switch:
+          - condition: '${st in ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"]}'
+            steps:
+              - forget:
+                  try:
+                    call: gcs_delete
+                    args:
+                      bucket: '${cfg.bucket}'
+                      name: '${path}'
+                  except:
+                    as: e
+                    steps:
+                      - kept:
+                          assign:
+                            - e: null
+    - done:
+        return: '${cur.job + ": " + st}'
+
+
 # ---- model image, candidate, paired eval -------------------------------------------------
+
+build_context:
+  # The model image build context the dataset stage wrote: model/context.tar.gz
+  # (the name the Cloud Build StorageSource documents: ".zip" or ".tar.gz"),
+  # or model/context.tgz (the earlier name). The object name, or null.
+  params: [cfg, ctx]
+  steps:
+    - tar_gz:
+        call: gcs_meta
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "model/context.tar.gz"}'
+        result: m
+    - found:
+        switch:
+          - condition: '${m != null}'
+            return: '${ctx.prefix + "model/context.tar.gz"}'
+    - tgz:
+        call: gcs_meta
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${ctx.prefix + "model/context.tgz"}'
+        result: m
+    - done:
+        switch:
+          - condition: '${m != null}'
+            return: '${ctx.prefix + "model/context.tgz"}'
+    - none:
+        return: null
 
 stage_build:
   params: [cfg, ctx]
@@ -1498,6 +1914,21 @@ stage_build:
                       note: "tag already in the repository (an earlier attempt pushed it)"
               - reused:
                   return: '${had}'
+    - source:
+        call: build_context
+        args:
+          cfg: '${cfg}'
+          ctx: '${ctx}'
+        result: source
+    - no_source:
+        switch:
+          - condition: '${source == null}'
+            raise:
+              pipeline_stage: "build"
+              error_class: "no_build_context"
+              message: '${"no " + ctx.prefix + "model/context.tar.gz (or .tgz): resume_from dataset"}'
+              attempt: 1
+              attempts: 1
     - spec:
         call: gcs_read
         args:
@@ -1507,10 +1938,11 @@ stage_build:
     - body:
         assign:
           - build: '${spec}'
+          - spec: null
           - build.source:
               storageSource:
                 bucket: '${cfg.bucket}'
-                object: '${ctx.prefix + "model/context.tgz"}'
+                object: '${source}'
           - build.substitutions:
               _BUCKET: '${cfg.bucket}'
               _RUN_ID: '${ctx.run_id}'
@@ -1531,6 +1963,9 @@ stage_build:
         assign:
           - build_id: '${op.metadata.build.id}'
           - burl: '${"https://cloudbuild.googleapis.com/v1/projects/" + cfg.project + "/locations/" + cfg.build.region + "/builds/" + op.metadata.build.id}'
+          # the spec's timeout bounds WORKING only: a build left QUEUED /
+          # PENDING (awaiting approval) / STATUS_UNKNOWN is given up after 3 h
+          - build_deadline: '${sys.now() + 10800}'
     - wait:
         call: sys.sleep
         args:
@@ -1544,12 +1979,50 @@ stage_build:
         switch:
           - condition: '${b.status == "SUCCESS"}'
             next: pushed
+          - condition: '${(b.status == "QUEUED" or b.status == "PENDING" or b.status == "WORKING" or b.status == "STATUS_UNKNOWN") and sys.now() > build_deadline}'
+            next: stuck
           - condition: '${b.status == "QUEUED" or b.status == "PENDING" or b.status == "WORKING" or b.status == "STATUS_UNKNOWN"}'
             next: wait
+        next: failed
+    - stuck:
+        try:
+          call: api_send
+          args:
+            method: POST
+            url: '${burl + ":cancel"}'
+        except:
+          as: e
+          steps:
+            - cancel_failed:
+                assign:
+                  - e: null
+    - stuck_out:
+        raise:
+          pipeline_stage: "build"
+          error_class: "build_stuck"
+          message: '${"model image build " + build_id + " still " + b.status + " after 3 h; cancelled | log " + default(map.get(b, "logUrl"), "")}'
+          attempt: '${attempt}'
+          attempts: 2
     - failed:
+        # the tag is immutable and the spec pushes only at the end (images:):
+        # an image under it came from a build that finished its steps. A
+        # TIMEOUT after the push, or a second build from a create resent on a
+        # 503 failing to push over the first's tag, leaves a good image.
+        call: ar_tag_digest
+        args:
+          cfg: '${cfg}'
+          location: '${cfg.model_repo.location}'
+          repository: '${cfg.model_repo.repository}'
+          package: "model"
+          tag: '${ctx.candidate_id}'
+        result: had
+    - recheck_pushed:
         switch:
+          - condition: '${had != null}'
+            next: reuse
           - condition: '${attempt < 2 and (b.status == "INTERNAL_ERROR" or b.status == "TIMEOUT" or b.status == "EXPIRED")}'
             next: submit
+        next: give_up
     - give_up:
         raise:
           pipeline_stage: "build"
@@ -1761,16 +2234,46 @@ thermometer_decision:
                       X-API-Key: '${key}'
                     timeout: 60
                   result: r
-                retry: '${http.default_retry}'
+                retry:
+                  predicate: ${retry_transient}
+                  max_retries: 5
+                  backoff:
+                    initial_delay: 1
+                    max_delay: 60
+                    multiplier: 2
         except:
           as: e
           steps:
+            - body_of:
+                # an error body is a map only when Workflows parsed it
+                # (application/json); a string or bytes body is decoded here
+                assign:
+                  - ebody: null
+            - body_map:
+                switch:
+                  - condition: '${get_type(e) == "map" and get_type(map.get(e, "body")) == "map"}'
+                    assign:
+                      - ebody: '${e.body}'
+                  - condition: '${get_type(e) == "map" and (get_type(map.get(e, "body")) == "string" or get_type(map.get(e, "body")) == "bytes")}'
+                    steps:
+                      - decode:
+                          try:
+                            steps:
+                              - decoded:
+                                  assign:
+                                    - ebody: '${json.decode(e.body)}'
+                          except:
+                            as: e_dec
+                            steps:
+                              - not_json:
+                                  assign:
+                                    - ebody: null
             - absent:
                 switch:
                   # the route's own JSON NOT_FOUND only: a plain 404 is the
                   # thermometer with SOUSCHEF_PIPELINE off (no such route),
                   # which says nothing about the candidate
-                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404 and get_type(map.get(e, "body")) == "map" and map.get(e, ["body", "code"]) == "NOT_FOUND"}'
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404 and get_type(ebody) == "map" and map.get(ebody, "code") == "NOT_FOUND"}'
                     return:
                       found: false
                       d: null
@@ -1873,6 +2376,13 @@ stage_decide:
                 smoke: '${ctx.smoke}'
                 bar_pass: '${bar_pass}'
                 results: '${default(map.get(dec, "results"), dec)}'
+    - drop_inputs:
+        # the decision payload (results up to 256 KB) is in ready_msg now:
+        # the copies read above would sit in this frame through the wait
+        assign:
+          - dec: null
+          - rev: null
+          - note: null
     - ask_nonce:
         # this execution's id in the message: a retried first POST whose
         # first response was lost answers 200 with this same nonce (ours);
@@ -1958,10 +2468,16 @@ stage_decide:
                     name: '${"wf/" + ctx.prefix + "decide.json"}'
                     data: '${posted}'
     - w_init:
+        # Workflows allows 100,000 steps per execution (an uncatchable
+        # ResourceLimitError past it): one poll every 30 min and a lock
+        # refresh every 6 h (the lock lives 72 h) keep the wait to roughly
+        # 650 steps a day (variables.tf caps decision_ttl_days at 14)
         assign:
-          - deadline: '${time.parse(expires_at) + 86400}'
+          - expires_t: '${time.parse(expires_at)}'
+          - deadline: '${expires_t + 86400}'
           - err_since: 0
           - err_told: 0
+          - last_refresh: '${sys.now()}'
     - w_poll:
         call: thermometer_decision
         args:
@@ -2025,16 +2541,23 @@ stage_decide:
               note: "no decision read before the expiry (+1 day)"
               override_bar: false
     - w_refresh:
-        call: lock_refresh
-        args:
-          bucket: '${cfg.bucket}'
-          name: "state/locks/retrain.json"
-          run_id: '${ctx.run_id}'
-          ttl_s: 259200
+        switch:
+          - condition: '${sys.now() - last_refresh > 21600}'
+            steps:
+              - w_refresh_lock:
+                  call: lock_refresh
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: "state/locks/retrain.json"
+                    run_id: '${ctx.run_id}'
+                    ttl_s: 259200
+              - w_refreshed:
+                  assign:
+                    - last_refresh: '${sys.now()}'
     - w_sleep:
         call: sys.sleep
         args:
-          seconds: 600
+          seconds: 1800
         next: w_poll
     - w_decided:
         call: decision_is_ours
@@ -2156,6 +2679,20 @@ stage_rollout:
           cfg: '${cfg}'
           svc: '${cfg.prod_model}'
         result: live
+    - dry_traffic:
+        call: traffic_latest
+        args:
+          s: '${live.service}'
+        result: traffic_ok
+    - dry_traffic_word:
+        assign:
+          - traffic_word: ""
+          - live.service: null
+    - dry_traffic_pinned:
+        switch:
+          - condition: '${not(traffic_ok)}'
+            assign:
+              - traffic_word: '${" A real rollout would be refused: " + cfg.prod_model.name + "''s traffic is pinned (not LATEST 100 %)."}'
     - dry_rec:
         call: gcs_write
         args:
@@ -2169,6 +2706,7 @@ stage_rollout:
             live_image: '${live.image}'
             live_revision: '${live.revision}'
             would_roll: '${tag_image}'
+            traffic_latest: '${traffic_ok}'
     - dry_why:
         call: dry_reason
         args:
@@ -2186,13 +2724,14 @@ stage_rollout:
             run_id: '${ctx.run_id}'
             candidate_id: '${ctx.candidate_id}'
             title: '${"Sous Chef: dry rollout of " + ctx.candidate_id + " (approved by " + by + ")"}'
-            summary: '${"Production untouched (" + why + "). The pipeline may update " + cfg.prod_model.name + ": " + json.encode_to_string(default(map.get(perms, "permissions"), [])) + ". Live: " + live.image + "."}'
+            summary: '${"Production untouched (" + why + "). The pipeline may update " + cfg.prod_model.name + ": " + json.encode_to_string(default(map.get(perms, "permissions"), [])) + ". Live: " + live.image + "." + traffic_word}'
             dedup_key: null
             details:
               dry_run: true
               approved_by: '${by}'
               live_image: '${live.image}'
               would_roll: '${tag_image}'
+              traffic_latest: '${traffic_ok}'
     - dry_done:
         return:
           dry_run: true
@@ -2238,6 +2777,9 @@ stage_rollout:
               message: '${"state/locks/gpu-eval.json held for 8 h by " + json.encode_to_string(got.holder) + "; the approval stands: resume with resume_from decide"}'
               attempt: 1
               attempts: 1
+    - on_prod_init:
+        assign:
+          - patching: false
     - on_prod:
         try:
           steps:
@@ -2276,6 +2818,41 @@ stage_rollout:
                   cfg: '${cfg}'
                   svc: '${cfg.prod_model}'
                 result: before
+            - pinned:
+                # a pinned split (a rollback by traffic, a person's choice)
+                # stays pinned across an update: the new revision would get
+                # 0 % while the round says "live". Refused; production untouched.
+                call: traffic_latest
+                args:
+                  s: '${before.service}'
+                result: traffic_ok
+            - pinned_refuse:
+                switch:
+                  - condition: '${not(traffic_ok)}'
+                    steps:
+                      - pinned_text:
+                          assign:
+                            - split: '${json.encode_to_string(default(map.get(before.service, "traffic"), []))}'
+                            - fix: '${"gcloud run services update-traffic " + cfg.prod_model.name + " --to-latest --region " + cfg.prod_model.region}'
+                      - pinned_raise:
+                          raise:
+                            pipeline_stage: "rollout"
+                            error_class: "traffic_pinned"
+                            message: '${"not rolled out: " + cfg.prod_model.name + " has pinned traffic " + split + ", so a new revision would serve nothing. Production is untouched; the approval stands. If the latest revision should serve: " + fix + ", then resume_from decide."}'
+                            attempt: 1
+                            attempts: 1
+            - again_before:
+                # a resume after a rollout of this candidate that did not
+                # confirm: production may already serve it; the rollback
+                # target is still what served before that first attempt
+                switch:
+                  - condition: '${prior_ro != null and map.get(prior_ro, "dry_run") == false and (map.get(prior_ro, "state") == "patching" or map.get(prior_ro, "state") == "unconfirmed") and map.get(prior_ro, "new_digest") == img.digest and get_type(map.get(prior_ro, "old_image")) == "string"}'
+                    assign:
+                      - before.image: '${prior_ro.old_image}'
+                      - before.revision: '${map.get(prior_ro, "old_revision")}'
+            - before_slim:
+                assign:
+                  - before.service: null
             - old_tag:
                 call: last_segment
                 args:
@@ -2296,6 +2873,9 @@ stage_rollout:
                     new_image: '${tag_image}'
                     new_digest: '${img.digest}'
                     rollback: '${"make model-rollout TAG=" + old_tag}'
+            - patching_now:
+                assign:
+                  - patching: true
             - patch:
                 call: service_set_image
                 args:
@@ -2304,6 +2884,22 @@ stage_rollout:
                   image: '${tag_image}'
                   note: '${ctx.candidate_id}'
                 result: patched
+            - serving:
+                # the new revision must be the one trafficStatuses sends 100 % to
+                call: service_ready_image
+                args:
+                  cfg: '${cfg}'
+                  svc: '${cfg.prod_model}'
+                result: now_serving
+            - serving_check:
+                switch:
+                  - condition: '${now_serving.revision != patched.revision or (now_serving.percent != 0 and now_serving.percent < 100)}'
+                    raise:
+                      pipeline_stage: "rollout"
+                      error_class: "traffic_not_moved"
+                      message: '${patched.revision + " is ready but " + now_serving.revision + " serves (" + string(now_serving.percent) + " %)"}'
+                      attempt: 1
+                      attempts: 1
             - warm:
                 call: warm
                 args:
@@ -2320,8 +2916,59 @@ stage_rollout:
                   bucket: '${cfg.bucket}'
                   name: "state/locks/gpu-eval.json"
                   run_id: '${ctx.run_id}'
-            - again:
-                raise: '${e}'
+            - before_patch:
+                switch:
+                  - condition: '${not(patching)}'
+                    raise: '${e}'
+            # the PATCH was sent: production may serve the candidate already
+            - why_unconfirmed:
+                call: err_text
+                args:
+                  e: '${e}'
+                result: why_msg
+            - mark_unconfirmed:
+                try:
+                  call: gcs_write
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${"wf/" + ctx.prefix + "rollout.json"}'
+                    data:
+                      dry_run: false
+                      state: unconfirmed
+                      at: '${time.format(sys.now())}'
+                      approved_by: '${by}'
+                      old_image: '${before.image}'
+                      old_revision: '${before.revision}'
+                      new_image: '${tag_image}'
+                      new_digest: '${img.digest}'
+                      error: '${why_msg}'
+                      rollback: '${"make model-rollout TAG=" + old_tag}'
+                except:
+                  as: e2
+                  steps:
+                    - unmarked:
+                        assign:
+                          - e2: null
+            - known_state:
+                # production's state is known: the new revision failed (the
+                # old one still serves) or is ready but not served at 100 %.
+                # Reported under its own class; rollout.json stays unconfirmed
+                # (a resume keeps the old image as the rollback target)
+                switch:
+                  - condition: '${get_type(e) == "map" and (map.get(e, "error_class") == "revision_not_ready" or map.get(e, "error_class") == "traffic_not_moved")}'
+                    raise:
+                      pipeline_stage: "rollout"
+                      error_class: '${e.error_class}'
+                      message: '${why_msg + ". resume_from decide retries the rollout; rollback: make model-rollout TAG=" + old_tag}'
+                      attempt: 1
+                      attempts: 1
+            - unconfirmed:
+                raise:
+                  pipeline_stage: "rollout"
+                  error_class: "rollout_unconfirmed"
+                  message: '${"production may already serve " + ctx.candidate_id + " (" + tag_image + "): the update of " + cfg.prod_model.name + " was sent but not confirmed: " + why_msg + ". Check gcloud run services describe " + cfg.prod_model.name + " --region " + cfg.prod_model.region + "; resume_from decide finishes the rollout (the baseline reset, state/model.json); rollback: make model-rollout TAG=" + old_tag}'
+                  attempt: 1
+                  attempts: 1
     - unlock:
         call: lock_release
         args:

@@ -59,7 +59,7 @@ def test_ensure_val_moves_one_group_when_val_is_empty(tmp_path):
 
 
 def test_model_context_is_the_model_image_folder(tmp_path):
-    p = DS.model_context_tgz(tmp_path / "context.tgz")
+    p = DS.model_context_tgz(tmp_path / "context.tar.gz")
     with tarfile.open(p) as t:
         names = t.getnames()
     assert "model-image/Dockerfile" in names and "model-image/model-context.sh" in names

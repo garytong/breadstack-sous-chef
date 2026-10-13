@@ -13,8 +13,9 @@ manifest, `--section-cap-scope F0,F1`. Gates (each fails the stage):
 
 Outputs: runs/<id>/dataset/{dataset/{train,val,rejects}.jsonl, stats.json,
 dataset-manifest.json, manifest.json} (the layout train.py and pipeline-train.sh
-read) and runs/<id>/model/context.tgz (the lab image's lab/model-image, the build
-context Cloud Build uses — no repository access needed there).
+read) and runs/<id>/model/context.tar.gz (the lab image's lab/model-image, the build
+context Cloud Build uses — no repository access needed there; StorageSource.object
+must be a .zip or a .tar.gz, https://docs.cloud.google.com/build/docs/api/reference/rest/v1/projects.builds).
 """
 from __future__ import annotations
 
@@ -179,8 +180,8 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
     problems += gates["train_plan"]["problems"]
     (out / "gates.json").write_text(json.dumps(gates, indent=1), encoding="utf-8")
     store.sync_up(out, f"{pre}/dataset")
-    ctx = model_context_tgz(local / "context.tgz")
-    store.upload(ctx, f"{pre}/model/context.tgz")
+    ctx = model_context_tgz(local / "context.tar.gz")
+    store.upload(ctx, f"{pre}/model/context.tar.gz")
     metrics = {"rows": st.get("rows"), "train": st.get("train"), "val": st.get("val"),
                "followups": st.get("multi_turn_rows"), "by_family": st.get("by_family"),
                "rejects_first_reason": st.get("rejects_first_reason"), "block_drift_rows": st.get("block_drift_rows"),
@@ -195,4 +196,4 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
         raise ConfigError("dataset gates: " + "; ".join(problems[:6]), reason="dataset_gate")
     return write_result(store, run_id, "dataset", "ok", metrics=metrics,
                         artifacts=[f"{pre}/dataset/dataset/train.jsonl", f"{pre}/dataset/dataset/stats.json",
-                                   f"{pre}/model/context.tgz"])
+                                   f"{pre}/model/context.tar.gz"])

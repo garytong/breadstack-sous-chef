@@ -51,8 +51,14 @@ locals {
   bucket_conditions = {
     # every object but infra/, config/ and wf/ (and the bucket itself: listing)
     jobs_write = "!resource.name.startsWith(\"${local.obj}infra/\") && !resource.name.startsWith(\"${local.obj}config/\") && !resource.name.startsWith(\"${local.obj}wf/\")"
-    # runs/<id>/train/... only
-    trainer_write = "resource.name.extract(\"${local.obj}runs/{run}/train/\") != \"\""
+    # runs/<id>/train/... only. The second clause keeps <id> one path
+    # segment: extract() takes everything up to the first later "/train/",
+    # so the first clause alone also matches runs/<id>/model/train/x. IAM
+    # conditions offer no contains() on resource.name (only startsWith,
+    # endsWith, extract, ==, !=; the IAM lint API rejects contains), so the
+    # two extracts are compared instead. Linted clean 2026-10-12 with
+    # `gcloud alpha iam policies lint-condition`.
+    trainer_write = "resource.name.extract(\"${local.obj}runs/{run}/train/\") != \"\" && resource.name.extract(\"${local.obj}runs/{run}/train/\") == resource.name.extract(\"${local.obj}runs/{run}/\")"
     # runs/ and base/, and the bucket (listing)
     trainer_read = "resource.name.startsWith(\"${local.obj}runs/\") || resource.name.startsWith(\"${local.obj}base/\") || resource.name == \"projects/_/buckets/${local.bucket_name}\""
     # runs/ (the build context and the staged model), and the bucket (listing)
@@ -279,7 +285,12 @@ resource "google_artifact_registry_repository_iam_member" "workflow_reads_lab" {
 
 # The model repository: Cloud Build pushes model:c-<run id>; the workflow
 # reads tags (the production image's digest) and adds live-<run id> to an
-# image it rolls out (the cleanup policy's keep rule, modules/model-gpu).
+# image it rolls out (a record of what was ever live; adding a tag is allowed
+# under immutable tags). The repository's tags are immutable, and "If a
+# repository has immutable tags enabled, tagged artifacts can't be deleted"
+# (https://docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy):
+# its c-* cleanup policy (modules/model-gpu) therefore deletes nothing, and
+# old candidates are pruned by hand (docs/RETRAIN.md R7 "Cleanup").
 resource "google_artifact_registry_repository_iam_member" "model_writer" {
   for_each   = toset(["builder", "workflow"])
   project    = var.project_id

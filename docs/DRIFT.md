@@ -184,7 +184,10 @@ make pipeline-drift MODE=calibrate   # = gcloud workflows execute souschef-drift
 ### Manual rollbacks
 
 Drift judges the model the production service actually serves (its digest,
-`--model-digest`). When that is not `state/model.json`'s model but one in its
+`--model-digest`): the revision its `trafficStatuses` sends the largest
+share to. A revision deployed with `--no-traffic`, or left at 0 % by a pinned
+split, is not "serving" however new it is. `make model-rollout` sends all
+traffic to the revision it deploys. When that is not `state/model.json`'s model but one in its
 `history` (a `make model-rollout` back to an earlier model), the check judges
 that model on its own training manifest and baseline and posts a
 `drift_notice` ("production runs X, not Y"). Make it permanent by writing the
@@ -223,7 +226,14 @@ The harness (`harness.py`) is the in-job twin of `vm-solo.sh serve`:
    `fields_context: true` and `fallback: null`.
 
 The model is the **live model image** on `sous-chef-model-eval`, whose image the
-workflow sets to the production service's digest before each check.
+workflow sets to the production service's digest before each check: the
+digest of the revision production **serves** (the largest share in its
+`trafficStatuses`), not merely its latest ready revision. The patch is waited
+out on the eval service itself (generation observed, not reconciling, the new
+revision ready; [PIPELINE.md §2](PIPELINE.md#2-moving-parts)). If the eval
+service's last revision failed (no L4), the next check patches it with
+`forceNewRevision`, so a stockout costs one check, not every check until the
+production digest changes.
 `int`'s own service and `sous-chef-model` never change for a check.
 
 **If the eval service cannot get an L4 within 15 minutes**, the check is

@@ -71,6 +71,60 @@ every step marked *first run* proves something that is not yet verified.
 | bucket `gs://breadstack-sous-chef-int-pipeline` | `US-CENTRAL1` | all state, baselines, the case pool, the engine snapshots, every run's artifacts ([RETRAIN.md §R8](RETRAIN.md#r8-debugging-a-failed-run)) |
 | thermometer | prod, `thermometer.breadstackcrm.com` | stores every notification, posts to the **weekly digest** webhook's channel, hosts `/sous-chef/pipeline` and the decision page |
 
+**How the workflows act on Cloud Run, Cloud Build and Vertex** (the
+2026-10-12 audit against the real APIs):
+
+- **A change is waited out on the resource itself.** After a PATCH of a job
+  or a GPU service the workflow polls that job or service (`generation` vs
+  `observedGeneration`, `reconciling`, `terminalCondition`, and for a
+  service `latestReadyRevision` = `latestCreatedRevision`), never
+  `operations/{id}`: an operation sits at location level and needs
+  `run.operations.get` on the project, and the workflow account has Cloud
+  Run roles only on its jobs and services (`iam.tf`, by design). A wait that
+  does not settle is `operation_timeout`; a revision that does not become
+  ready is `revision_not_ready`.
+- **A job is started once.** `jobs:run` has no request id either, so it is
+  sent without automatic retries: when its answer is lost (5xx, connection,
+  timeout) the workflow reads the job's `latestCreatedExecution` and takes a
+  new execution it finds, resending only when there is none. A 4xx refusal,
+  or a job it cannot read after the error, fails the stage without the
+  stage's usual retry (a second execution could run beside the first).
+- **The serving revision, not the newest ready one.** What a service
+  "runs" (the int service's tag for the lab and trainer images, the
+  production model's digest for drift and eval) is the revision with the
+  largest share in its `trafficStatuses`. A `--no-traffic` preview (§4.3
+  step 5) is the latest ready revision while it waits at 0 %, and is ignored
+  until the traffic moves. A revision records its image by digest
+  (`…/sous-chef@sha256:…`), so the int service's tag is read back from
+  Artifact Registry (that digest's tags, `latest` skipped, the first one
+  with a `sous-chef-lab` image).
+- **A failed GPU revision is retried with a new one.** When a GPU service's
+  last revision failed (no L4: `latestReadyRevision` ≠
+  `latestCreatedRevision`), the next patch to the same image passes
+  `forceNewRevision=true`; an identical template would otherwise create no
+  revision and every later check would fail `revision_not_ready`.
+- **Images are built on a pinned Cloud Build worker.** Every build config
+  (`cloudbuild.yaml`, `images/*/cloudbuild.yaml`, the model build
+  `infra/modules/pipeline/cloudbuild-model.yaml`) sets
+  `options.workerRelease: "2026.09"` (Docker Engine 29) and runs
+  `gcr.io/cloud-builders/docker:29` (pinned by digest) with
+  `--provenance=false --sbom=false`. The default `legacy` worker and the
+  untagged builder are Docker 20.10, which has no `--build-context` (the
+  model build needs it), and `legacy` stops being the default on
+  2027-03-28 ([release channels](https://docs.cloud.google.com/build/docs/release-channels)).
+  Without the two flags buildx on Engine 29 pushes an index with an
+  attestation manifest, and the digest the pipeline keys baselines and the
+  rollout on would be the index's.
+- **Vertex training jobs are tracked from creation.** The job's name goes to
+  `wf/runs/<id>/train/current.json` as soon as it is created (a create whose
+  answer is lost is looked up by its one-off `create` label before it is sent
+  again: the API has no request id); a resume adopts
+  a job still running instead of starting a second one, a failed round
+  cancels it (an execution cancelled by hand cannot: cancel its job too),
+  and every cancel is waited out (up to 15 min) before the next rung, since
+  Vertex cancels asynchronously; a job still not ended after that fails the
+  stage rather than start another rung beside it ([RETRAIN.md §R4](RETRAIN.md#r4-training)).
+
 Slack goes to the channel of the thermometer's weekly digest webhook (secret
 `thermometer-slack-digest-webhook-url`). Decision and failure messages start
 with `<@U07AFF50XL0>` so the user is notified; both the mention and the kinds
@@ -84,7 +138,7 @@ Every switch defaults to off. A plan with all of them off creates nothing.
 
 | switch | on means |
 |---|---|
-| `pipeline_enabled` | APIs (`aiplatform`, `workflows`, `workflowexecutions`, `cloudbuild`), the bucket, the service accounts and their IAM, the two pipeline secrets (empty), the five jobs, both workflows, the eval and candidate GPU services (min 0, cost nothing idle), the Artifact Registry cleanup policy. **No schedule.** Everything can be run by hand. |
+| `pipeline_enabled` | APIs (`aiplatform`, `workflows`, `workflowexecutions`, `cloudbuild`), the bucket, the service accounts and their IAM, the two pipeline secrets (empty), the five jobs, both workflows, the eval and candidate GPU services (min 0, cost nothing idle), the Artifact Registry cleanup policy (which deletes nothing while the repository's tags are immutable, §7), the Logging exclusion that keeps call arguments out of the logs (§9). **No schedule.** Everything can be run by hand. |
 | `pipeline_schedule` | Cloud Scheduler jobs `souschef-drift-poll` (`*/15 * * * *`), `souschef-drift-weekly` (`0 5 * * 1`) and `souschef-drift-night` (`0 9 * * *`). Times are UTC: Monday 05:00 UTC is Sunday 22:00 PDT (21:00 PST); 09:00 UTC is 02:00 PDT (01:00 PST). |
 | `pipeline_retrain_auto` | a `retrain` verdict starts `souschef-retrain` by itself. Off = notify only. It also needs a calibrated baseline for the live model ([DRIFT.md §4](DRIFT.md#4-baselines-noise-and-calibration)). |
 | `pipeline_rollout` | an Approve patches `sous-chef-model`. Off = every Approve is a dry rollout: a permission check and a `rolled_out` post marked dry run, production untouched. |
@@ -129,7 +183,7 @@ which is after the decision (up to 15 days).
 | quota | region | today (*measured* 2026-10-10) | ask for | why |
 |---|---|---|---|---|
 | Cloud Run `NvidiaL4GpuAllocNoZonalRedundancyPerProjectRegion` | us-east4 | 3 | 5 | production + eval + candidate is 3; a revision swap during a rollout needs a 4th instance. With 3 the rollout waits for the other two to scale to zero first ([RETRAIN.md §R7](RETRAIN.md#r7-decide-roll-out-roll-back-skip)). |
-| Vertex `custom_model_training_nvidia_a100_80gb_gpus` and its preemptible twin | us-central1 | 0 | 1 each | rung 3 of the training ladder ([RETRAIN.md §R4](RETRAIN.md#r4-training)). |
+| Vertex `custom_model_training_nvidia_a100_80gb_gpus` and its preemptible twin | us-central1 | 0 (also 0 in us-east4 and us-west1, *measured* 2026-10-12) | 1 each | rung 3 of the training ladder (`a100-80-std`, [RETRAIN.md §R4](RETRAIN.md#r4-training)). Until it is granted that rung ends as `capacity`: a refused create at once, or a job that never starts, cancelled after `max_pending_s` (1 h). |
 
 The H100 needs nothing: 64 preemptible H100 per region are already granted in
 us-central1, us-east4 and us-west1. Nothing waits for these requests; the
@@ -225,6 +279,11 @@ curl -s "$TURL/version" | jq -r .build_id                       # must print $T
 gcloud run services update-traffic sous-chef --to-latest --project $PROJECT --region $REGION
 ```
 
+Until the `update-traffic`, the pipeline keeps resolving the lab and
+trainer images from the revision that serves (the previous tag): the
+`p-$T` preview at 0 % is the latest ready revision but not the serving one
+(§2), so a round never starts on a preview's images.
+
 If the CI trigger is created later, merging to `main` does steps 2 to 5 on
 its own (migrate job, service, retention job, lab and trainer images).
 
@@ -269,6 +328,29 @@ race it (idempotent; it prints
 ```bash
 gcloud beta services identity create --service=workflows.googleapis.com --project $PROJECT
 ```
+
+Vertex AI's service agent likewise only appears after the project's first
+Vertex job, and the first training create can fail while it is being made
+(int, 2026-10-12: no `gcp-sa-aiplatform` binding, no custom job ever run).
+Create it now as well. A service agent created this way is not always given
+its role ("you must grant those service agents the roles that they are
+typically granted automatically",
+[create service agents](https://docs.cloud.google.com/iam/docs/create-service-agents)),
+so check the binding and add it when missing (both idempotent):
+
+```bash
+gcloud beta services identity create --service=aiplatform.googleapis.com --project $PROJECT
+NUM=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
+gcloud projects get-iam-policy $PROJECT --flatten=bindings \
+  --filter="bindings.members:service-$NUM@gcp-sa-aiplatform.iam.gserviceaccount.com" --format='value(bindings.role)'
+# prints roles/aiplatform.serviceAgent; if it prints nothing:
+gcloud projects add-iam-policy-binding $PROJECT --condition=None \
+  --member=serviceAccount:service-$NUM@gcp-sa-aiplatform.iam.gserviceaccount.com --role=roles/aiplatform.serviceAgent
+```
+
+**int (2026-10-12): the Vertex agent is not created yet.** The pipeline is
+already on there, so run the block above before §4.8 SMOKE (its training
+stage is the first Vertex job).
 
 Then the values, **in a real terminal** with `PROJECT` set as in §4.3, not
 through Claude Code's `!` prefix: each `!` line runs in a fresh shell (the
@@ -417,6 +499,10 @@ If the int launcher's commit has no engine snapshot, an `engine_stale` post
 
 ### 4.8 SMOKE (a person; 2–6 h with the GPU wait, about US$2 of API, 1 GPU-hour)
 
+Before it: the Vertex service agent exists (§4.4), and the applied
+`infra/cloudbuild-model.json` carries `workerRelease` (an apply after this
+change; `gcloud storage cat $PIPE/infra/cloudbuild-model.json | jq .options`).
+
 ```bash
 make pipeline-smoke        # = gcloud workflows execute souschef-retrain … --data='{"mode":"smoke"}'
 ```
@@ -426,7 +512,9 @@ Anthropic authoring, collection on int, the parity gate, the trainer's
 `selftest` (*first run*: Vertex's driver against the cu130 wheels), the
 training ladder (*first run*: whether Vertex accepts `a3-highgpu-1g` with
 Flex-start; SMOKE caps the Flex-start wait at 30 minutes, then moves to Spot),
-a resume, the GGUF export, Cloud Build, both GPU services, the bucket's
+a resume, the GGUF export, Cloud Build (*first run*: the model build has
+never run in int; worker release 2026.09, Docker 29, `--build-context`),
+both GPU services, the bucket's
 conditional grants (*first run*), the thermometer and the decision wait. Add
 the trainer image pull (about 15 GB, cross-region) and the 18 GiB base tar to
 the time. It ends with a `candidate_ready` post badged **SMOKE** with the
@@ -503,7 +591,7 @@ All posts go to the weekly digest channel. Links open the thermometer.
   skipped — a worse exam on the same rows, new dodged keys, stale rows added
   since, schema changes since — and the next round retrains on everything
   accumulated since. Doing nothing for 14 days (`decision_ttl_days`, at most
-  21) counts as Skip.
+  14: see §9) counts as Skip.
 - A decision page marked `stale_round` means the launcher changed again while
   the round ran; the page recommends Skip, and the next round covers both.
 
@@ -526,7 +614,9 @@ thermometer env `SOUSCHEF_MENTION_KINDS` (default
 | see what is running | `gcloud workflows executions list souschef-retrain --location $WF_REGION --limit 5` (and `souschef-drift`) |
 | notify only for a while | `pipeline_retrain_auto = false` + apply. Checks, heartbeats and posts continue. |
 | stop the checks | `pipeline_schedule = false` + apply. The thermometer then posts `heartbeat_missed` (with the mention) once a day after 36 h; also set `souschef_pipeline = false` there if the stop is long. |
-| roll back a model | `make model-rollout TAG=<previous tag or sha256:digest>` at the repo root (the round's `wf/runs/<id>/rollout.json` names it) ([RETRAIN.md §R7](RETRAIN.md#r7-decide-roll-out-roll-back-skip)). Drift then judges the model you rolled back to (from `state/model.json` history) and posts a notice. |
+| roll back a model | `make model-rollout TAG=<previous tag or sha256:digest>` at the repo root (the round's `wf/runs/<id>/rollout.json` names it) ([RETRAIN.md §R7](RETRAIN.md#r7-decide-roll-out-roll-back-skip)). It deploys the image and then sends all traffic to the new revision (`update-traffic --to-latest`): `gcloud run services update --image` alone keeps a pinned split, which would leave the new revision at 0 %. Drift then judges the model you rolled back to (from `state/model.json` history) and posts a notice. |
+| look inside an execution | `gcloud workflows executions describe` and the workflow's error logs (`LOG_ERRORS_ONLY`). **Never** start an execution with `--call-log-level=log-all-calls`: it would log every call's arguments and results, the thermometer key among them (only `Authorization` headers are redacted). The Logging exclusion `souschef-workflow-call-args` drops those entries before storage, so such an execution shows no more than an errors-only one; it is a backstop, not a licence. To see a stage's inputs, read its `runs/<id>/` files instead. |
+| prune old candidate images | the model repository's tags are immutable, and Artifact Registry deletes no tagged artifact while they are, so its `c-*` cleanup policy deletes nothing and every candidate (about 6.4 GB each; 32 GB for 5 images on 2026-10-12) stays ([RETRAIN.md §R7](RETRAIN.md#r7-decide-roll-out-roll-back-skip) "Cleanup" has the by-hand prune). |
 | a new service build (new prompt or retrieval) | nothing for the build itself (CI builds the lab image); run `{"mode":"calibrate"}` afterwards, because the baseline is per model image and the service build moves it ([DRIFT.md §4](DRIFT.md#4-baselines-noise-and-calibration)) |
 | a new launcher build | nothing; the next poll sees it. If `engine_stale` posts, vendor the engine. |
 | turn it all off | `pipeline_rollout`, `pipeline_retrain_auto`, `pipeline_schedule`, then `pipeline_enabled = false` + apply. Copy out what you want to keep first (`cases/`, `baselines/`, `state/`): the case pool holds every authored round. `sous-chef-model` keeps whatever image it runs. Thermometer: `souschef_pipeline = false`. |
@@ -560,5 +650,6 @@ code and in the dry end-to-end run.
 | no runaway spend | a failed round blocks automatic rounds (`state/failed-round.json`); a stale retrain lock is reported, never silently swallowed |
 | training that never starts or is preempted | Spot or on-demand jobs that have not started after `max_pending_s` (1 h) move to the next rung; a preemption the trainer's SIGTERM trap records is resumed from the checkpoints on the same rung |
 | a Skip stays skipped | rules (a)–(c) compare on the rows the ack kept, (e) counts only stale rows added since, (g) only schema changes since |
-| the decision wait fits Workflows | `decision_ttl_days` ≤ 21 (about 3,600 steps a day of a 100,000-step execution) |
+| the decision wait fits Workflows | the decision is polled every 30 min and the lock refreshed every 6 h: about 680 Workflows steps a day, about 2,160 with the thermometer down (retries count). `decision_ttl_days` ≤ 14 keeps the wait plus a slow round under the 100,000 steps an execution may take; running out is an uncatchable `ResourceLimitError` (no `stage_failed`, the lock held). The module's test holds the poll at 30 min or more. |
+| the thermometer key stays out of the logs | the workflows log errors only, and a Logging exclusion (`souschef-workflow-call-args`, `monitoring.tf`) drops the call-step arguments and results that an execution started with `--call-log-level=log-all-calls` would write (the Secret Manager read, the `X-API-Key` header). Never start one that way anyway (§7): the exclusion covers the project's `_Default` sink only. |
 

@@ -3,9 +3,12 @@
 #
 # Conventions:
 #   - every Google API call goes through api_get / api_send with OAuth2 (the
-#     workflow's own account, souschef-workflow) and Workflows' retry
-#     policies; GPU services are called with an OIDC token whose audience is
-#     the service URL
+#     workflow's own account, souschef-workflow); reads, deletes, conditional
+#     writes and requests idempotent by id are retried on what Google calls
+#     transient (retry_transient: 408, 429, 5xx, connection and timeout
+#     errors), other POST / PATCH only where they cannot have been applied
+#     (Workflows' non-idempotent policy); GPU services are called with an
+#     OIDC token whose audience is the service URL
 #   - GCS JSON objects through gcs_* (data between steps travels as GCS paths:
 #     Workflows variables are limited to 512 KB)
 #   - a stage error is raised as a map {pipeline_stage, message, error_class,
@@ -47,15 +50,35 @@ log:
           text: '${text}'
           severity: '${severity}'
 
-now_compact:
-  # 2026-10-12T03:10:05Z -> 20261012-0310
+run_stamp:
+  # 2026-10-12T03:10:05Z in execution 8a0cc8ec-… -> 20261012-0310-8a0cc8: the
+  # time stamp of a run id, unique beyond the minute (two executions in one
+  # minute, a scheduler retry or a manual run, would otherwise share GCS
+  # paths and thermometer ids, and the second one's messages read as
+  # duplicates). The execution id is a lowercase UUID.
   steps:
     - fmt:
         assign:
           - t: '${text.substring(time.format(sys.now()), 0, 16)}'
           - t: '${text.replace_all(text.replace_all(text.replace_all(t, "-", ""), ":", ""), "T", "-")}'
+          - x: '${text.replace_all(default(sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID"), ""), "-", "") + "000000"}'
     - done:
-        return: '${t}'
+        return: '${t + "-" + text.to_lower(text.substring(x, 0, 6))}'
+
+api_time:
+  # time.parse of a Google API timestamp: Workflows parses at most
+  # microseconds (stdlib/time/parse), some APIs send nanoseconds
+  # (2026-10-13T04:43:10.336255123Z); the fraction is cut to 6 digits.
+  params: [s]
+  steps:
+    - cut:
+        switch:
+          - condition: '${text.match_regex(s, "^[^.]+\\.[0-9]{7,}Z$")}'
+            assign:
+              - p: '${text.split(s, ".")}'
+              - s: '${p[0] + "." + text.substring(p[1], 0, 6) + "Z"}'
+    - done:
+        return: '${time.parse(s)}'
 
 err_text:
   # A safe, short string for an exception or a message: keys, tokens and
@@ -104,10 +127,12 @@ err_class:
         switch:
           - condition: '${get_type(e) == "map" and "error_class" in e}'
             return: '${e.error_class}'
+          # the status before the tags: every HTTP failure is tagged HttpError,
+          # and a 404 and a 500 are different failure streaks
+          - condition: '${get_type(e) == "map" and get_type(map.get(e, "code")) == "integer"}'
+            return: '${"code " + string(e.code)}'
           - condition: '${get_type(e) == "map" and "tags" in e and len(e.tags) > 0}'
             return: '${e.tags[0]}'
-          - condition: '${get_type(e) == "map" and "code" in e}'
-            return: '${"code " + string(e.code)}'
     - other:
         return: "error"
 
@@ -140,6 +165,31 @@ stage_error:
 
 # ---- Google APIs (OAuth2 as the workflow's account) --------------------------------
 
+retry_transient:
+  # The retry predicate (syntax/retrying, "custom retry policy") for requests
+  # that are safe to repeat: reads, deletes, writes with ifGenerationMatch
+  # and POSTs idempotent by id. Google's transient errors: 408, 429, 500,
+  # 502, 503, 504 and connection / timeout errors
+  # (https://docs.cloud.google.com/storage/docs/retry-strategy); Workflows'
+  # http.default_retry leaves out 408 and 500.
+  params: [e]
+  steps:
+    - pick:
+        switch:
+          - condition: '${get_type(e) != "map"}'
+            return: false
+          - condition: '${default(map.get(e, "code"), 0) in [408, 429, 500, 502, 503, 504]}'
+            return: true
+    - tags:
+        assign:
+          - tags: '${default(map.get(e, "tags"), [])}'
+    - net:
+        switch:
+          - condition: '${get_type(tags) == "list" and ("ConnectionError" in tags or "ConnectionFailedError" in tags or "TimeoutError" in tags)}'
+            return: true
+    - other:
+        return: false
+
 api_get:
   # Parameter defaults must be literals on Google (a map default fails to
   # build), so query defaults to null and becomes {} here.
@@ -159,7 +209,13 @@ api_get:
               type: OAuth2
             timeout: 120
           result: r
-        retry: '${http.default_retry}'
+        retry:
+          predicate: ${retry_transient}
+          max_retries: 5
+          backoff:
+            initial_delay: 1
+            max_delay: 60
+            multiplier: 2
     - done:
         return: '${r.body}'
 
@@ -254,7 +310,13 @@ gcs_read:
               type: OAuth2
             timeout: 120
           result: r
-        retry: '${http.default_retry}'
+        retry:
+          predicate: ${retry_transient}
+          max_retries: 5
+          backoff:
+            initial_delay: 1
+            max_delay: 60
+            multiplier: 2
         except:
           as: e
           steps:
@@ -271,6 +333,75 @@ gcs_read:
     - done:
         return: '${r.body}'
 
+gcs_read_gen:
+  # {data, generation} of a JSON object from ONE media GET, or null when it
+  # does not exist. The generation comes from the response's
+  # x-goog-generation header, so the content and the generation a later
+  # ifGenerationMatch names are the same version (a metadata GET and a media
+  # GET apart can see two versions). gcs_meta only when the header is absent.
+  params: [bucket, name]
+  steps:
+    - get:
+        try:
+          call: http.get
+          args:
+            url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + text.url_encode(name)}'
+            query:
+              alt: media
+            auth:
+              type: OAuth2
+            timeout: 120
+          result: r
+        retry:
+          predicate: ${retry_transient}
+          max_retries: 5
+          backoff:
+            initial_delay: 1
+            max_delay: 60
+            multiplier: 2
+        except:
+          as: e
+          steps:
+            - missing:
+                switch:
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 404}'
+                    return: null
+            - again:
+                raise: '${e}'
+    - fields:
+        assign:
+          - empty: {}
+          - data: '${r.body}'
+          - hdr: '${default(map.get(r, "headers"), empty)}'
+          - generation: '${default(map.get(hdr, "x-goog-generation"), map.get(hdr, "X-Goog-Generation"))}'
+          - r: null
+    - parse:
+        switch:
+          - condition: '${get_type(data) == "bytes" or get_type(data) == "string"}'
+            assign:
+              - data: '${json.decode(data)}'
+    - no_header:
+        switch:
+          - condition: '${generation == null}'
+            steps:
+              - meta:
+                  call: gcs_meta
+                  args:
+                    bucket: '${bucket}'
+                    name: '${name}'
+                  result: m
+              - gone:
+                  switch:
+                    - condition: '${m == null}'
+                      return: null
+              - from_meta:
+                  assign:
+                    - generation: '${m.generation}'
+    - done:
+        return:
+          data: '${data}'
+          generation: '${string(generation)}'
+
 gcs_meta:
   # The object's metadata (generation, updated, size), or null.
   params: [bucket, name]
@@ -286,7 +417,9 @@ gcs_meta:
 gcs_write:
   # Write `data` as JSON. if_generation_match: 0 = only when absent (locks);
   # a generation = only when unchanged since that read. A precondition
-  # failure raises the HttpError (code 412).
+  # failure raises the HttpError (code 412). A conditional write is
+  # idempotent (a repeat of one that landed gets 412), so it is retried on
+  # transient errors; an unconditional one only where it cannot have landed.
   params: [bucket, name, data, if_generation_match: null]
   steps:
     - q:
@@ -299,6 +432,7 @@ gcs_write:
           - condition: '${if_generation_match != null}'
             assign:
               - query.ifGenerationMatch: '${string(if_generation_match)}'
+            next: put_cond
     - put:
         try:
           call: http.post
@@ -313,6 +447,27 @@ gcs_write:
             timeout: 120
           result: r
         retry: '${http.default_retry_non_idempotent}'
+        next: done
+    - put_cond:
+        try:
+          call: http.post
+          args:
+            url: '${"https://storage.googleapis.com/upload/storage/v1/b/" + bucket + "/o"}'
+            query: '${query}'
+            headers:
+              Content-Type: application/json
+            body: '${data}'
+            auth:
+              type: OAuth2
+            timeout: 120
+          result: r
+        retry:
+          predicate: ${retry_transient}
+          max_retries: 5
+          backoff:
+            initial_delay: 1
+            max_delay: 60
+            multiplier: 2
     - done:
         return: '${r.body}'
 
@@ -337,7 +492,13 @@ gcs_delete:
             auth:
               type: OAuth2
             timeout: 120
-        retry: '${http.default_retry}'
+        retry:
+          predicate: ${retry_transient}
+          max_retries: 5
+          backoff:
+            initial_delay: 1
+            max_delay: 60
+            multiplier: 2
         except:
           as: e
           steps:
@@ -350,22 +511,11 @@ gcs_delete:
     - done:
         return: true
 
-gcs_copy:
-  # Server-side copy of a small object (JSON baselines).
-  params: [bucket, src, dst]
-  steps:
-    - copy:
-        call: api_send
-        args:
-          method: POST
-          url: '${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + text.url_encode(src) + "/copyTo/b/" + bucket + "/o/" + text.url_encode(dst)}'
-        result: r
-    - done:
-        return: '${r}'
-
 gcs_list:
-  # Object names under a prefix (every page).
-  params: [bucket, prefix]
+  # Object names under a prefix, in the API's lexicographic order: every
+  # page, or the first `max` names (max > 0; a long outbox listed whole
+  # would not fit Workflows' 512 KB of variables).
+  params: [bucket, prefix, max: 0]
   steps:
     - init:
         assign:
@@ -377,6 +527,11 @@ gcs_list:
               prefix: '${prefix}'
               fields: "items(name),nextPageToken"
               maxResults: 1000
+    - small:
+        switch:
+          - condition: '${max > 0 and max < 1000}'
+            assign:
+              - query.maxResults: '${max}'
     - tok:
         switch:
           - condition: '${token != null}'
@@ -393,11 +548,17 @@ gcs_list:
           value: item
           in: '${default(map.get(body, "items"), [])}'
           steps:
+            - full:
+                switch:
+                  - condition: '${max > 0 and len(names) >= max}'
+                    next: break
             - add:
                 assign:
                   - names: '${list.concat(names, item.name)}'
     - more:
         switch:
+          - condition: '${max > 0 and len(names) >= max}'
+            next: done
           - condition: '${"nextPageToken" in body and body.nextPageToken != null and body.nextPageToken != ""}'
             next: next_tok
         next: done
@@ -473,21 +634,27 @@ lock_acquire:
           acquired: true
           holder: '${body}'
     - inspect:
-        call: gcs_meta
+        # content and generation of one version (gcs_read_gen): what is judged
+        # below is exactly what break_it's ifGenerationMatch deletes
+        call: gcs_read_gen
         args:
           bucket: '${bucket}'
           name: '${name}'
-        result: meta
+        result: held
     - vanished:
         switch:
-          - condition: '${meta == null and tries < 4}'
+          - condition: '${held == null and tries < 4}'
             next: attempt
     - read:
-        call: gcs_read
-        args:
-          bucket: '${bucket}'
-          name: '${name}'
-        result: cur
+        assign:
+          - cur: null
+          - gen: null
+    - read_held:
+        switch:
+          - condition: '${held != null}'
+            assign:
+              - cur: '${held.data}'
+              - gen: '${held.generation}'
     - ours:
         # our own insert, retried after a lost response
         switch:
@@ -497,7 +664,7 @@ lock_acquire:
               holder: '${cur}'
     - expired:
         switch:
-          - condition: '${breakable and meta != null and cur != null and "expires_at" in cur and time.parse(cur.expires_at) < sys.now() and tries < 4}'
+          - condition: '${breakable and gen != null and cur != null and "expires_at" in cur and time.parse(cur.expires_at) < sys.now() and tries < 4}'
             next: log_break
         next: busy
     - log_break:
@@ -506,11 +673,20 @@ lock_acquire:
           text: '${"breaking expired lock " + name + " held by " + json.encode_to_string(cur)}'
           severity: WARNING
     - break_it:
-        call: gcs_delete
-        args:
-          bucket: '${bucket}'
-          name: '${name}'
-          generation: '${meta.generation}'
+        # 412: someone refreshed or replaced the lock since it was read; look again
+        try:
+          call: gcs_delete
+          args:
+            bucket: '${bucket}'
+            name: '${name}'
+            generation: '${gen}'
+        except:
+          as: e
+          steps:
+            - raced:
+                switch:
+                  - condition: '${not(get_type(e) == "map" and default(map.get(e, "code"), 0) == 412)}'
+                    raise: '${e}'
         next: attempt
     - busy:
         return:
@@ -544,35 +720,40 @@ lock_wait:
         next: try_lock
 
 lock_release:
-  # Delete the lock only when this run holds it.
+  # Delete the lock only when this run holds it (the version read: a 412
+  # means it changed hands meanwhile, and it is left alone).
   params: [bucket, name, run_id]
   steps:
-    - meta:
-        call: gcs_meta
+    - read:
+        call: gcs_read_gen
         args:
           bucket: '${bucket}'
           name: '${name}'
-        result: meta
+        result: held
     - none:
         switch:
-          - condition: '${meta == null}'
+          - condition: '${held == null}'
             return: false
-    - read:
-        call: gcs_read
-        args:
-          bucket: '${bucket}'
-          name: '${name}'
-        result: cur
     - mine:
         switch:
-          - condition: '${cur != null and default(map.get(cur, "run_id"), "") == run_id}'
+          - condition: '${get_type(held.data) == "map" and default(map.get(held.data, "run_id"), "") == run_id}'
             steps:
               - del:
-                  call: gcs_delete
-                  args:
-                    bucket: '${bucket}'
-                    name: '${name}'
-                    generation: '${meta.generation}'
+                  try:
+                    call: gcs_delete
+                    args:
+                      bucket: '${bucket}'
+                      name: '${name}'
+                      generation: '${held.generation}'
+                  except:
+                    as: e
+                    steps:
+                      - raced:
+                          switch:
+                            - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 412}'
+                              return: false
+                      - again:
+                          raise: '${e}'
               - ok:
                   return: true
     - not_mine:
@@ -582,25 +763,22 @@ lock_refresh:
   # Push expires_at / updated_at forward while this run holds the lock.
   params: [bucket, name, run_id, ttl_s]
   steps:
-    - meta:
-        call: gcs_meta
+    - read:
+        call: gcs_read_gen
         args:
           bucket: '${bucket}'
           name: '${name}'
-        result: meta
-    - read:
+        result: held
+    - none:
         switch:
-          - condition: '${meta == null}'
+          - condition: '${held == null}'
             return: false
     - cur:
-        call: gcs_read
-        args:
-          bucket: '${bucket}'
-          name: '${name}'
-        result: cur
+        assign:
+          - cur: '${held.data}'
     - mine:
         switch:
-          - condition: '${cur == null or default(map.get(cur, "run_id"), "") != run_id}'
+          - condition: '${get_type(cur) != "map" or default(map.get(cur, "run_id"), "") != run_id}'
             return: false
     - write:
         try:
@@ -613,7 +791,7 @@ lock_refresh:
               run_id: '${run_id}'
               expires_at: '${time.format(sys.now() + ttl_s)}'
               updated_at: '${time.format(sys.now())}'
-            if_generation_match: '${meta.generation}'
+            if_generation_match: '${held.generation}'
         except:
           as: e
           steps:
@@ -624,49 +802,94 @@ lock_refresh:
 
 # ---- Cloud Run (v2 REST) ------------------------------------------------------------------
 
-run_op_wait:
-  # Wait for a Run v2 long-running operation; raise its error.
-  params: [op, timeout_s: 1800]
+run_resource_wait:
+  # Wait until a Cloud Run job or service has settled after a PATCH, by
+  # polling the resource itself (jobs.get / services.get: run.developer on
+  # the job or service, which souschef-workflow holds). Not GET
+  # operations/{id}: an operation sits at location level and needs
+  # run.operations.get on the project, which the workflow account does not
+  # have (403 OPERATION_GET; the 2026-10-12 audit). Per the v2 reference
+  # (services `reconciling`): once reconciling is false, either the serving
+  # state matches (observedGeneration = generation, terminalCondition
+  # CONDITION_SUCCEEDED) or reconciliation failed (terminalCondition says
+  # why). `generation` (int64) arrives as a string. target: the PATCH's own
+  # generation (the operation's metadata is the resource as written), at
+  # least gen_before + 1. {ok, res, condition}; raises operation_timeout.
+  params: [url, op, gen_before, timeout_s: 1800, every_s: 15]
   steps:
     - init:
         assign:
+          - empty: {}
+          - start: '${sys.now()}'
           - deadline: '${sys.now() + timeout_s}'
-          - cur: '${op}'
-    - check:
+          # every PATCH sent here changes the template or forces a revision,
+          # so gen_before + 1 is a floor whatever the operation's metadata holds
+          - target: '${gen_before + 1}'
+          - op_gen: '${int(default(map.get(op, ["metadata", "generation"]), "0"))}'
+    - op_target:
         switch:
-          - condition: '${default(map.get(cur, "done"), false)}'
-            next: result
-          - condition: '${sys.now() > deadline}'
+          - condition: '${op_gen > target}'
+            assign:
+              - target: '${op_gen}'
+    - op_error:
+        # an operation that came back done with an error (the PATCH itself failed)
+        switch:
+          - condition: '${default(map.get(op, "done"), false) == true and map.get(op, "error") != null}'
             raise:
-              error_class: "operation_timeout"
-              message: '${"Cloud Run operation " + cur.name + " not done after " + string(timeout_s) + " s"}'
-    - sleep:
-        call: sys.sleep
-        args:
-          seconds: 10
+              error_class: "operation_failed"
+              message: '${json.encode_to_string(op.error)}'
     - poll:
         call: api_get
         args:
-          url: '${"https://run.googleapis.com/v2/" + cur.name}'
-        result: cur
-        next: check
-    - result:
+          url: '${url}'
+        result: r
+    - fields:
+        assign:
+          - has_gen: '${"generation" in r}'
+          - gen: '${int(default(map.get(r, "generation"), "0"))}'
+          - obs: '${int(default(map.get(r, "observedGeneration"), "0"))}'
+          - rec: '${default(map.get(r, "reconciling"), false) == true}'
+          - cond: '${default(map.get(r, "terminalCondition"), empty)}'
+          - cstate: '${default(map.get(cond, "state"), "CONDITION_SUCCEEDED")}'
+          - applied: '${not(has_gen) or gen >= target}'
+    - judge:
         switch:
-          - condition: '${"error" in cur and cur.error != null}'
+          - condition: '${not(rec) and applied and (not(has_gen) or obs >= gen) and cstate == "CONDITION_SUCCEEDED"}'
+            return:
+              ok: true
+              res: '${r}'
+              condition: '${cond}'
+          # failed: observedGeneration may stay at the last serving generation,
+          # so a minute's grace covers a read before reconciling turned true
+          - condition: '${not(rec) and applied and cstate == "CONDITION_FAILED" and (not(has_gen) or obs >= gen or sys.now() - start > 60)}'
+            return:
+              ok: false
+              res: '${r}'
+              condition: '${cond}'
+          - condition: '${sys.now() > deadline}'
             raise:
-              error_class: "operation_failed"
-              message: '${json.encode_to_string(cur.error)}'
-    - done:
-        return: '${cur}'
+              error_class: "operation_timeout"
+              message: '${url + " not settled after " + string(timeout_s) + " s (generation " + string(gen) + ", observed " + string(obs) + ", reconciling " + string(rec) + ", " + cstate + ")"}'
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: '${every_s}'
+        next: poll
 
 job_set_image:
-  # Re-point a job at `image` unless it already runs it.
+  # Re-point a job at `image` unless it already runs it. A 409 (the job
+  # changed between the read and the PATCH: a concurrent execution re-pointing
+  # it, a person's gcloud) is read again once.
   params: [cfg, job, image]
   steps:
+    - init:
+        assign:
+          - url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
+          - conflicts: 0
     - get:
         call: api_get
         args:
-          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
+          url: '${url}'
         result: j
     - same:
         switch:
@@ -675,25 +898,53 @@ job_set_image:
     - set:
         assign:
           - j.template.template.containers[0].image: '${image}'
+          - gen_before: '${int(default(map.get(j, "generation"), "0"))}'
     - patch:
-        call: api_send
-        args:
-          method: PATCH
-          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
-          body: '${j}'
-        result: op
+        try:
+          call: api_send
+          args:
+            method: PATCH
+            url: '${url}'
+            body: '${j}'
+          result: op
+        except:
+          as: e
+          steps:
+            - stale:
+                switch:
+                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 409 and conflicts < 1}'
+                    assign:
+                      - conflicts: '${conflicts + 1}'
+                    next: get
+            - again:
+                raise: '${e}'
     - wait:
-        call: run_op_wait
+        call: run_resource_wait
         args:
+          url: '${url}'
           op: '${op}'
+          gen_before: '${gen_before}'
           timeout_s: 600
+          every_s: 10
+        result: w
+    - judge:
+        switch:
+          - condition: '${not(w.ok)}'
+            raise:
+              error_class: "job_update_failed"
+              message: '${"job " + job + " did not take " + image + ": " + json.encode_to_string(w.condition)}'
     - done:
         return: true
 
 run_job:
   # Run a job with per-stage args and env; wait for its execution.
-  # {ok, execution, exit_code, message}. Never raises for a failed task:
-  # the caller decides about retries.
+  # {ok, execution, exit_code, message, cancelled?, no_retry?}. Never raises
+  # (a failed start is a failed attempt the caller may retry). jobs:run has
+  # no request id: a start whose answer was lost (5xx, connection, timeout)
+  # may have made an execution, so the job's latestCreatedExecution is read
+  # before and after it and a new one is taken, never a blind resend.
+  # no_retry = a 4xx refusal, or a start whose outcome is unknown;
+  # cancelled = someone cancelled the execution. The caller retries neither.
   params: [cfg, job, args, env, timeout_s]
   steps:
     - init:
@@ -701,6 +952,14 @@ run_job:
           - url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job}'
           - envlist: []
           - started: '${sys.now()}'
+          - empty: {}  # no map literals in expressions: [{}] is [empty]
+          - tl: {}
+          - sends: 0
+          - jb: null
+          - execution: null
+          - now_exec: null
+          - scode: 0
+          - start_msg: ""
     - mkenv:
         for:
           value: k
@@ -713,35 +972,147 @@ run_job:
                       name: '${k}'
                       value: '${string(env[k])}'
                   - envlist: '${list.concat(envlist, entry)}'
+    - before_run:
+        try:
+          call: api_get
+          args:
+            url: '${url}'
+          result: jb
+        except:
+          as: e
+          steps:
+            - unread_job:
+                call: err_text
+                args:
+                  e: '${e}'
+                result: start_msg
+            - not_read:
+                return:
+                  ok: false
+                  execution: null
+                  exit_code: -1
+                  message: '${"job not readable before jobs:run: " + start_msg}'
+    - prev_exec:
+        assign:
+          - prev: '${map.get(jb, ["latestCreatedExecution", "name"])}'
+          - jb: null
+          - run_body:
+              overrides:
+                containerOverrides:
+                  - args: '${args}'
+                    env: '${envlist}'
+                taskCount: 1
+                timeout: '${string(timeout_s) + "s"}'
     - start:
-        call: api_send
-        args:
-          method: POST
-          url: '${url + ":run"}'
-          body:
-            overrides:
-              containerOverrides:
-                - args: '${args}'
-                  env: '${envlist}'
-              taskCount: 1
-              timeout: '${string(timeout_s) + "s"}'
-        result: op
+        try:
+          call: http.post
+          args:
+            url: '${url + ":run"}'
+            body: '${run_body}'
+            headers:
+              Content-Type: application/json
+            auth:
+              type: OAuth2
+            timeout: 300
+          result: op
+        except:
+          as: e
+          steps:
+            - why_start:
+                call: err_text
+                args:
+                  e: '${e}'
+                result: start_msg
+            - start_code:
+                switch:
+                  - condition: '${get_type(e) == "map" and get_type(map.get(e, "code")) == "integer"}'
+                    assign:
+                      - scode: '${e.code}'
+                  - condition: true
+                    assign:
+                      - scode: 0
+            - rejected:
+                # a 4xx (but 408 / 429) was refused, not applied
+                switch:
+                  - condition: '${scode >= 400 and scode < 500 and scode != 408 and scode != 429}'
+                    return:
+                      ok: false
+                      no_retry: true
+                      execution: null
+                      exit_code: -1
+                      message: '${"jobs:run refused: " + start_msg}'
+            - nap:
+                call: sys.sleep
+                args:
+                  seconds: '${15 * (sends + 1)}'
+            - look:
+                try:
+                  call: api_get
+                  args:
+                    url: '${url}'
+                  result: jb
+                except:
+                  as: e2
+                  steps:
+                    - unknown:
+                        return:
+                          ok: false
+                          no_retry: true
+                          execution: null
+                          exit_code: -1
+                          message: '${"jobs:run answered " + start_msg + "; the job was unreadable after it, so whether an execution started is unknown (gcloud run jobs executions list --job " + job + "); not retried"}'
+            - made:
+                assign:
+                  - now_exec: '${map.get(jb, ["latestCreatedExecution", "name"])}'
+                  - jb: null
+            - adopt:
+                switch:
+                  # the reference holds the short name (live job_drift.json)
+                  - condition: '${get_type(now_exec) == "string" and now_exec != prev and len(text.split(now_exec, "/")) == 1}'
+                    assign:
+                      - execution: '${"projects/" + cfg.project + "/locations/" + cfg.jobs_region + "/jobs/" + job + "/executions/" + now_exec}'
+                    next: announce
+                  - condition: '${get_type(now_exec) == "string" and now_exec != prev}'
+                    assign:
+                      - execution: '${now_exec}'
+                    next: announce
+            - resend:
+                switch:
+                  - condition: '${sends < 3}'
+                    assign:
+                      - sends: '${sends + 1}'
+                    next: start
+            - not_started:
+                return:
+                  ok: false
+                  execution: null
+                  exit_code: -1
+                  message: '${"jobs:run failed: " + start_msg}'
     - exec_name:
         assign:
-          - execution: '${op.metadata.name}'
-          - deadline: '${started + timeout_s + 3600}'
+          - execution: '${op.body.metadata.name}'
+          - op: null
     - announce:
+        assign:
+          - deadline: '${started + timeout_s + 3600}'
+    - announce_log:
         call: log
         args:
           text: '${"started " + execution + " args " + json.encode_to_string(args)}'
     - interval:
+        # 20 s for the first 5 min, 2 min to the first hour, then 5 min: a
+        # 24 h collect polled every 2 min would spend ~6k of the execution's
+        # 100k steps per attempt
         assign:
-          - pause: 120
+          - pause: 300
     - short:
         switch:
           - condition: '${sys.now() - started < 300}'
             assign:
               - pause: 20
+          - condition: '${sys.now() - started < 3600}'
+            assign:
+              - pause: 120
     - wait:
         call: sys.sleep
         args:
@@ -751,9 +1122,35 @@ run_job:
         args:
           url: '${"https://run.googleapis.com/v2/" + execution}'
         result: ex
+    - running:
+        switch:
+          - condition: '${map.get(ex, "completionTime") == null and sys.now() > deadline}'
+            next: cancel
+          - condition: '${map.get(ex, "completionTime") == null}'
+            next: interval
+    - counts:
+        # completionTime is "not guaranteed to be set in happens-before order"
+        # with the counts (executions reference): finished = completed AND
+        # counted (or a Completed condition that has ended)
+        assign:
+          - succ: '${int(default(map.get(ex, "succeededCount"), 0))}'
+          - fail_n: '${int(default(map.get(ex, "failedCount"), 0))}'
+          - canc: '${int(default(map.get(ex, "cancelledCount"), 0))}'
+          - cond: '${default(map.get(ex, "conditions"), [])}'
+          - completed: ""
+    - completed_cond:
+        for:
+          value: c
+          in: '${cond}'
+          steps:
+            - is_completed:
+                switch:
+                  - condition: '${get_type(c) == "map" and map.get(c, "type") == "Completed"}'
+                    assign:
+                      - completed: '${default(map.get(c, "state"), "")}'
     - finished:
         switch:
-          - condition: '${"completionTime" in ex and ex.completionTime != null}'
+          - condition: '${succ + fail_n + canc >= 1 or completed == "CONDITION_SUCCEEDED" or completed == "CONDITION_FAILED"}'
             next: outcome
           - condition: '${sys.now() > deadline}'
             next: cancel
@@ -778,12 +1175,19 @@ run_job:
           message: '${"no completion after " + string(timeout_s + 3600) + " s; cancelled"}'
     - outcome:
         switch:
-          - condition: '${default(map.get(ex, "succeededCount"), 0) >= 1}'
+          - condition: '${succ >= 1 or (completed == "CONDITION_SUCCEEDED" and fail_n == 0 and canc == 0)}'
             return:
               ok: true
               execution: '${execution}'
               exit_code: 0
               message: ""
+          - condition: '${canc >= 1}'
+            return:
+              ok: false
+              cancelled: true
+              execution: '${execution}'
+              exit_code: -1
+              message: '${"execution cancelled (by a person or the platform), not retried: " + json.encode_to_string(cond)}'
     - tasks:
         try:
           call: api_get
@@ -798,11 +1202,9 @@ run_job:
                   - tl: {}
     - code:
         assign:
-          - empty: {}  # no map literals in expressions: [{}] is [empty]
           - t0: '${default(map.get(tl, "tasks"), [empty])[0]}'
           - exit_code: '${default(map.get(t0, ["lastAttemptResult", "exitCode"]), -1)}'
           - msg: '${default(map.get(t0, ["lastAttemptResult", "status", "message"]), "")}'
-          - cond: '${default(map.get(ex, "conditions"), [])}'
     - failed:
         return:
           ok: false
@@ -822,8 +1224,12 @@ service_get:
         return: '${s}'
 
 service_ready_image:
-  # The image the service's newest READY revision runs (what is serving),
-  # and the revision.
+  # The image the service SERVES and that revision: the trafficStatuses
+  # entry with the largest percent (a LATEST entry names the revision it
+  # resolved to), not latestReadyRevision, which is a `--no-traffic` preview
+  # deploy's revision while it waits at 0 %
+  # (https://docs.cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration);
+  # latestReadyRevision only when no entry carries a percent.
   params: [cfg, svc]
   steps:
     - get:
@@ -832,22 +1238,74 @@ service_ready_image:
           cfg: '${cfg}'
           svc: '${svc}'
         result: s
+    - pick:
+        assign:
+          - rev: '${s.latestReadyRevision}'
+          - best: 0
+    - serving:
+        for:
+          value: ts
+          in: '${default(map.get(s, "trafficStatuses"), [])}'
+          steps:
+            - better:
+                switch:
+                  - condition: '${get_type(map.get(ts, "revision")) == "string" and map.get(ts, "revision") != "" and default(map.get(ts, "percent"), 0) > best}'
+                    assign:
+                      - best: '${ts.percent}'
+                      - rev: '${s.name + "/revisions/" + ts.revision}'
     - rev:
         call: api_get
         args:
-          url: '${"https://run.googleapis.com/v2/" + s.latestReadyRevision}'
+          url: '${"https://run.googleapis.com/v2/" + rev}'
         result: r
     - done:
         return:
           image: '${r.containers[0].image}'
-          revision: '${s.latestReadyRevision}'
+          revision: '${rev}'
+          percent: '${best}'
+          latest_ready: '${s.latestReadyRevision}'
           created: '${r.createTime}'
           service: '${s}'
+
+traffic_latest:
+  # true when a service sends all traffic to its latest ready revision: no
+  # traffic entries (the documented default), or a LATEST target at 100 %
+  # and no REVISION target with a percent (0 % tagged previews are fine).
+  params: [s]
+  steps:
+    - init:
+        assign:
+          - latest: 0
+          - pinned: 0
+          - t: '${default(map.get(s, "traffic"), [])}'
+    - none:
+        switch:
+          - condition: '${len(t) == 0}'
+            return: true
+    - each:
+        for:
+          value: x
+          in: '${t}'
+          steps:
+            - add:
+                switch:
+                  - condition: '${map.get(x, "type") == "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"}'
+                    assign:
+                      - latest: '${latest + default(map.get(x, "percent"), 0)}'
+                  - condition: true
+                    assign:
+                      - pinned: '${pinned + default(map.get(x, "percent"), 0)}'
+    - done:
+        return: '${latest == 100 and pinned == 0}'
 
 service_set_image:
   # Patch a GPU service's image (+ the souschef/candidate annotation) and
   # wait until the new revision is the ready one. Nothing else in the
-  # service changes: the body is the service as read, with two fields set.
+  # service changes: the body is the service as read, with two fields set
+  # (and a stale template.revision name dropped: re-sending one asks for a
+  # revision that already exists). When the last revision failed (ready !=
+  # created), the PATCH forces a new revision: an identical template creates
+  # none (services.patch forceNewRevision). {changed, revision}
   params: [cfg, svc, image, note]
   steps:
     - get:
@@ -864,7 +1322,20 @@ service_set_image:
               revision: '${s.latestReadyRevision}'
     - set:
         assign:
+          - url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + svc.region + "/services/" + svc.name}'
+          - q: {}
+          - gen_before: '${int(default(map.get(s, "generation"), "0"))}'
           - s.template.containers[0].image: '${image}'
+    - force:
+        switch:
+          - condition: '${s.latestReadyRevision != s.latestCreatedRevision}'
+            assign:
+              - q.forceNewRevision: "true"
+    - no_rev_name:
+        switch:
+          - condition: '${"revision" in s.template}'
+            assign:
+              - s.template: '${map.delete(s.template, "revision")}'
     - ann:
         switch:
           - condition: '${not("annotations" in s.template) or s.template.annotations == null}'
@@ -877,34 +1348,29 @@ service_set_image:
         call: api_send
         args:
           method: PATCH
-          url: '${"https://run.googleapis.com/v2/projects/" + cfg.project + "/locations/" + svc.region + "/services/" + svc.name}'
+          url: '${url}'
           body: '${s}'
+          query: '${q}'
         result: op
     - wait:
-        call: run_op_wait
+        call: run_resource_wait
         args:
+          url: '${url}'
           op: '${op}'
+          gen_before: '${gen_before}'
           timeout_s: 2700
-    - check:
-        call: service_get
-        args:
-          cfg: '${cfg}'
-          svc: '${svc}'
-        result: after
-    - ready_dflt:
-        # The message's fallback map; expressions have no map literals.
-        assign:
-          - empty: {}
+          every_s: 20
+        result: w
     - ready:
         switch:
-          - condition: '${after.latestReadyRevision != after.latestCreatedRevision}'
+          - condition: '${not(w.ok) or map.get(w.res, "latestReadyRevision") != map.get(w.res, "latestCreatedRevision")}'
             raise:
               error_class: "revision_not_ready"
-              message: '${svc.name + ": revision " + after.latestCreatedRevision + " did not become ready; " + after.latestReadyRevision + " still serves. " + json.encode_to_string(default(map.get(after, "terminalCondition"), empty))}'
+              message: '${svc.name + ": revision " + default(map.get(w.res, "latestCreatedRevision"), "?") + " did not become ready; " + default(map.get(w.res, "latestReadyRevision"), "none") + " is the latest ready one. " + json.encode_to_string(w.condition)}'
     - done:
         return:
           changed: true
-          revision: '${after.latestReadyRevision}'
+          revision: '${w.res.latestReadyRevision}'
 
 warm:
   # Load the model on a GPU service (an empty /api/generate with keep_alive
@@ -957,6 +1423,46 @@ warm:
         return: true
 
 # ---- Artifact Registry -----------------------------------------------------------------------
+
+ar_digest_tags:
+  # The tags of <repository>/<package>@<digest> ("sha256:…"), as Artifact
+  # Registry lists them (versions/<digest>?view=FULL relatedTags), without
+  # "latest"; [] when the digest is not in the repository.
+  params: [cfg, location, repository, package, digest]
+  steps:
+    - get:
+        call: api_get_or_null
+        args:
+          url: '${"https://artifactregistry.googleapis.com/v1/projects/" + cfg.project + "/locations/" + location + "/repositories/" + repository + "/packages/" + text.url_encode(package) + "/versions/" + digest}'
+          query:
+            view: FULL
+        result: v
+    - none:
+        switch:
+          - condition: '${v == null}'
+            return: []
+    - init:
+        assign:
+          - out: []
+          - related: '${default(map.get(v, "relatedTags"), [])}'
+    - each:
+        for:
+          value: rt
+          in: '${related}'
+          steps:
+            - name:
+                assign:
+                  - rparts: '${text.split(rt.name, "/")}'
+                  - rname: '${rparts[len(rparts) - 1]}'
+            - keep:
+                switch:
+                  - condition: '${rname != "latest"}'
+                    steps:
+                      - add:
+                          assign:
+                            - out: '${list.concat(out, rname)}'
+    - done:
+        return: '${out}'
 
 ar_tag_digest:
   # sha256:... of <repository>/<package>:<tag>, or null when the tag is absent.
@@ -1035,7 +1541,14 @@ prod_model:
 resolve_images:
   # DESIGN §6.3: the int service's serving tag T -> sous-chef-lab:T and
   # sous-chef-trainer:T (CI pushes both beside sous-chef:T; a manual service
-  # build needs `make lab-image trainer-image TAG=T`).
+  # build needs `make lab-image trainer-image TAG=T`). A Cloud Run revision
+  # records its image by digest (<repo>/sous-chef@sha256:…, 2026-10-13: the
+  # first real poll failed on it), so T then comes from Artifact Registry:
+  # the digest's tags (versions/<digest>?view=FULL relatedTags, absent on an
+  # untagged version; `latest` skipped), the first one with BOTH a lab and a
+  # trainer image, else the first with a lab image, else the first. The
+  # serving revision is the one trafficStatuses names (service_ready_image).
+  # lab_digest / trainer_digest are recorded beside the tags (run.json).
   params: [cfg]
   steps:
     - ready:
@@ -1044,19 +1557,99 @@ resolve_images:
           cfg: '${cfg}'
           svc: '${cfg.int_service}'
         result: r
+    - form:
+        switch:
+          - condition: '${len(text.find_all(r.image, "@")) > 0}'
+            next: by_digest
     - tag:
         assign:
           - parts: '${text.split(r.image, ":")}'
           - tag: '${parts[len(parts) - 1]}'
     - bad_ref:
         switch:
-          - condition: '${len(text.find_all(r.image, "@")) > 0 or len(parts) < 2}'
+          - condition: '${len(parts) < 2 or len(text.find_all(tag, "/")) > 0}'
             raise:
               pipeline_stage: "images"
               error_class: "untagged_service_image"
               message: '${"the int service runs " + r.image + ", not <repo>/sous-chef:<tag>: the lab image cannot be resolved"}'
               attempt: 1
               attempts: 1
+        next: lab
+    - by_digest:
+        assign:
+          - at: '${text.split(r.image, "@")}'
+          - path: '${text.split(at[0], "/")}'
+          - tag: null
+    - digest_tags:
+        call: ar_digest_tags
+        args:
+          cfg: '${cfg}'
+          location: '${text.split(path[0], "-docker.pkg.dev")[0]}'
+          repository: '${path[len(path) - 2]}'
+          package: '${path[len(path) - 1]}'
+          digest: '${at[1]}'
+        result: tags
+    - no_tags:
+        switch:
+          - condition: '${len(tags) == 0}'
+            raise:
+              pipeline_stage: "images"
+              error_class: "untagged_service_image"
+              message: '${"the int service runs " + r.image + ", a digest with no tag in Artifact Registry: the lab image cannot be resolved"}'
+              attempt: 1
+              attempts: 1
+    - first_tag:
+        assign:
+          - tag: '${tags[0]}'
+          - with_lab: null
+          - both: false
+    - pick:
+        for:
+          value: t
+          in: '${tags}'
+          steps:
+            - has_lab:
+                call: ar_tag_digest
+                args:
+                  cfg: '${cfg}'
+                  location: '${cfg.lab_repo.location}'
+                  repository: '${cfg.lab_repo.repository}'
+                  package: "sous-chef-lab"
+                  tag: '${t}'
+                result: t_lab
+            - take:
+                switch:
+                  - condition: '${t_lab != null}'
+                    steps:
+                      - first_lab:
+                          switch:
+                            - condition: '${with_lab == null}'
+                              assign:
+                                - with_lab: '${t}'
+                      - has_trainer:
+                          call: ar_tag_digest
+                          args:
+                            cfg: '${cfg}'
+                            location: '${cfg.lab_repo.location}'
+                            repository: '${cfg.lab_repo.repository}'
+                            package: "sous-chef-trainer"
+                            tag: '${t}'
+                          result: t_tr
+                      - pair:
+                          switch:
+                            - condition: '${t_tr != null}'
+                              steps:
+                                - keep:
+                                    assign:
+                                      - tag: '${t}'
+                                      - both: true
+                                - stop:
+                                    next: break
+    - lab_only:
+        switch:
+          - condition: '${not(both) and with_lab != null}'
+            assign:
+              - tag: '${with_lab}'
     - lab:
         call: ar_tag_digest
         args:
@@ -1075,16 +1668,34 @@ resolve_images:
           package: "sous-chef-trainer"
           tag: '${tag}'
         result: trainer_d
+    - refs:
+        # by digest once resolved: a CI re-push of the (mutable) tag mid-round
+        # cannot change what a later stage runs
+        assign:
+          - lab_ref: '${cfg.lab_repo.image + ":" + tag}'
+          - trainer_ref: '${cfg.lab_repo.trainer + ":" + tag}'
+    - lab_pin:
+        switch:
+          - condition: '${lab_d != null}'
+            assign:
+              - lab_ref: '${cfg.lab_repo.image + "@" + lab_d}'
+    - trainer_pin:
+        switch:
+          - condition: '${trainer_d != null}'
+            assign:
+              - trainer_ref: '${cfg.lab_repo.trainer + "@" + trainer_d}'
     - done:
         return:
           tag: '${tag}'
           service_image: '${r.image}'
           service_revision: '${r.revision}'
           rolled_at: '${r.created}'
-          lab: '${cfg.lab_repo.image + ":" + tag}'
+          lab: '${lab_ref}'
           lab_ok: '${lab_d != null}'
-          trainer: '${cfg.lab_repo.trainer + ":" + tag}'
+          lab_digest: '${lab_d}'
+          trainer: '${trainer_ref}'
           trainer_ok: '${trainer_d != null}'
+          trainer_digest: '${trainer_d}'
 
 # ---- the thermometer (notifications, decisions; DESIGN §4) ---------------------------------
 
@@ -1099,7 +1710,9 @@ therm_key:
           version: latest
         result: k
     - done:
-        return: '${k}'
+        # a secret added with `echo` ends in a newline the thermometer would
+        # hash with the key (every message parked, every decision read 401)
+        return: '${text.replace_all_regex(k, "\\s", "")}'
 
 notify:
   # POST one notification (idempotent by its id). Never raises: a
@@ -1156,7 +1769,8 @@ notify:
           error: '${sent.error}'
 
 flush_outbox:
-  # Re-send what notify parked (oldest first, up to `limit`); a delivered one
+  # Re-send what notify parked (up to `limit`, in name order: the listing
+  # is lexicographic, not by age); a delivered one
   # leaves the outbox. Only a file whose name is its own payload's id is
   # re-sent (notify's naming); anything else is deleted unsent. Never raises.
   # Returns the count delivered.
@@ -1173,6 +1787,7 @@ flush_outbox:
           args:
             bucket: '${cfg.bucket}'
             prefix: "wf/outbox/"
+            max: '${limit}'
           result: names
         except:
           as: e
@@ -1287,7 +1902,14 @@ notify_send:
                     body: '${payload}'
                     timeout: 60
                   result: r
-                retry: '${http.default_retry}'
+                # idempotent by the payload id: a repeat of one that landed answers 200 duplicate
+                retry:
+                  predicate: ${retry_transient}
+                  max_retries: 5
+                  backoff:
+                    initial_delay: 1
+                    max_delay: 60
+                    multiplier: 2
         except:
           as: e
           steps:
@@ -1337,7 +1959,10 @@ notify_result:
   # day) and, for the eval stage, candidate_ready (the decide stage sends it
   # with the decision). The result's deployed / model / verdict go into each
   # message's details for the thermometer's state tiles. Returns the count
-  # posted.
+  # posted. Memory (Workflows holds every variable of every live frame in
+  # 512 KB): the messages are taken one at a time by index (no second copy
+  # of the list), and details over 32 KB are replaced by a stub before the
+  # message is copied into notify / notify_send.
   params: [cfg, res, run_id, candidate_id: null, id_prefix: null, skip: null]
   steps:
     - none:
@@ -1346,14 +1971,21 @@ notify_result:
             return: 0
     - pick:
         assign:
-          - notes: '${default(map.get(res, "notifications"), [])}'
+          - nmsg: '${len(default(map.get(res, "notifications"), []))}'
+          - listed: true
           - posted: 0
           - tiles: {}
+          - skip_kinds: '${default(skip, ["heartbeat"])}'
     - single:
         switch:
-          - condition: '${len(notes) == 0 and map.get(res, "notification") != null}'
+          - condition: '${nmsg == 0 and map.get(res, "notification") != null}'
             assign:
-              - notes: '${[res.notification]}'
+              - nmsg: 1
+              - listed: false
+    - nothing:
+        switch:
+          - condition: '${nmsg == 0}'
+            return: 0
     - tile_deployed:
         switch:
           - condition: '${get_type(map.get(res, "deployed")) == "map"}'
@@ -1376,13 +2008,24 @@ notify_result:
               - tiles.verdict: '${res.verdict}'
     - each:
         for:
-          value: msg
-          index: i
-          in: '${notes}'
+          value: i
+          range: '${[0, nmsg - 1]}'
           steps:
+            - take:
+                assign:
+                  - msg: null
+                  - dsize: 0
+            - take_one:
+                switch:
+                  - condition: '${listed}'
+                    assign:
+                      - msg: '${res.notifications[i]}'
+                  - condition: true
+                    assign:
+                      - msg: '${res.notification}'
             - skipped:
                 switch:
-                  - condition: '${msg == null or default(map.get(msg, "kind"), "") in default(skip, ["heartbeat"])}'
+                  - condition: '${get_type(msg) != "map" or default(map.get(msg, "kind"), "") in skip_kinds}'
                     next: continue
             - build:
                 assign:
@@ -1399,6 +2042,26 @@ notify_result:
                   - condition: '${get_type(map.get(msg, "details")) != "map"}'
                     assign:
                       - msg.details: {}
+            - size:
+                try:
+                  steps:
+                    - measure:
+                        assign:
+                          - dsize: '${len(json.encode_to_string(msg.details))}'
+                except:
+                  as: e
+                  steps:
+                    - unmeasurable:
+                        assign:
+                          - dsize: 1000000000
+            - cap:
+                switch:
+                  - condition: '${dsize > 32000}'
+                    assign:
+                      - msg.details:
+                          truncated: true
+                          bytes: '${dsize}'
+                          note: "details too large for a notification (the workflow's memory); see the run's report"
             - with_tiles:
                 assign:
                   - msg.details: '${map.merge(tiles, msg.details)}'

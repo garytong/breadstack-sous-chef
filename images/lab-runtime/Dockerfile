@@ -103,6 +103,10 @@ RUN set -eux; \
     test -f /opt/lab/fixtures/manifest.snapshot.json; \
     chown -R souschef:souschef /opt/lab
 
+# gcloud storage: no parallel composite uploads (composite objects carry no
+# MD5 and need the compose permission; audit ST-6/VX-9)
+ENV CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=False
+
 ENV PATH=/opt/lab/.venv/bin:/usr/lib/postgresql/16/bin:$PATH \
     SOUS_CHEF_BIN=/opt/sous-chef/bin/sous-chef \
     SOUS_CHEF_FIELDS_BIN=/opt/sous-chef/bin/sous-chef-fields \

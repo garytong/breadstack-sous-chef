@@ -265,7 +265,11 @@ def notification(kind: str, *, title: str, summary: str, severity: str = "info",
             "details": cap_details(details or {}), "dedup_key": dedup_key}
 
 
-MAX_DETAILS_BYTES = 200_000  # the thermometer refuses details over 256 KiB (and the whole body over 1 MiB)
+# The thermometer refuses details over 256 KiB, but the workflow is the tighter bound: Workflows holds every
+# variable of every live frame within 512 KB, and a notice is copied into ~6 frames on its way to notify_send
+# (drift_poll.res, notify_result.res/notes/msg, notify.payload, notify_send.payload). 32 KB keeps that ~200 KB
+# with room for the rest of the run; the full report is linked from the notice anyway.
+MAX_DETAILS_BYTES = 32_000
 
 
 def cap_details(details: dict, limit: int = MAX_DETAILS_BYTES) -> dict:
@@ -289,8 +293,12 @@ def cap_details(details: dict, limit: int = MAX_DETAILS_BYTES) -> dict:
         small["truncated"] = True
     if size(small) <= limit:
         return small
-    keep = {k: v for k, v in details.items() if isinstance(v, (str, int, float, bool)) or v is None}
-    return {**keep, "truncated": True, "note": "details too large for a notification; see the run's report"}
+    keep = {k: (v[:500] if isinstance(v, str) else v) for k, v in details.items()
+            if isinstance(v, (str, int, float, bool)) or v is None}
+    stub = {**keep, "truncated": True, "note": "details too large for a notification; see the run's report"}
+    if size(stub) <= limit:
+        return stub
+    return {"truncated": True, "note": "details too large for a notification; see the run's report"}
 
 
 def result_doc(*, status: str, stage: str, run_id: str, notification: dict | None = None,

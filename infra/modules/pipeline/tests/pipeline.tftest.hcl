@@ -119,6 +119,20 @@ run "workflows" {
     condition     = can(jsondecode(google_storage_bucket_object.cloudbuild_model.content).steps[1].args) && jsondecode(google_storage_bucket_object.cloudbuild_model.content).options.logging == "CLOUD_LOGGING_ONLY"
     error_message = "infra/cloudbuild-model.json is cloudbuild-model.yaml as JSON."
   }
+  assert {
+    condition = (
+      jsondecode(google_storage_bucket_object.cloudbuild_model.content).options.workerRelease == "2026.09" &&
+      !startswith(jsondecode(google_storage_bucket_object.cloudbuild_model.content).steps[1].name, "gcr.io/cloud-builders/docker:") &&
+      jsondecode(google_storage_bucket_object.cloudbuild_model.content).steps[1].name != "gcr.io/cloud-builders/docker" &&
+      contains(jsondecode(google_storage_bucket_object.cloudbuild_model.content).steps[1].args, "--provenance=false") &&
+      contains(jsondecode(google_storage_bucket_object.cloudbuild_model.content).steps[1].args, "--build-context")
+    )
+    error_message = "The model build pins a worker release with Docker Engine 29 and runs a Docker 29 client (by digest) with --provenance=false: the default legacy worker and builder are Docker 20.10, which has no --build-context, and an attestation index would change the digest the pipeline keys on."
+  }
+  assert {
+    condition     = length([for st in jsondecode(google_workflows_workflow.wf["retrain"].source_contents).stage_decide.steps : st if contains(keys(st), "w_sleep") && try(tonumber(st.w_sleep.args.seconds), 0) >= 1800]) == 1
+    error_message = "stage_decide polls the decision every 30 min or less often: decision_ttl_days' bound of 14 (variables.tf) assumes it (at the old 10-min poll with a lock refresh each time, 15 days of waiting took 69,000 of an execution's 100,000 steps)."
+  }
 }
 
 run "iam" {
@@ -175,6 +189,22 @@ run "iam" {
     condition     = toset(keys(google_cloud_run_v2_service_iam_member.workflow_develops_gpu)) == toset(["eval", "cand", "prod"]) && google_cloud_run_v2_service_iam_member.workflow_develops_gpu["prod"].name == "sous-chef-model"
     error_message = "The workflow may patch the three GPU services (the image), production included."
   }
+  assert {
+    condition = (
+      strcontains(google_storage_bucket_iam_member.trainer_write.condition[0].expression, "== resource.name.extract(\"projects/_/buckets/${local.bucket_name}/objects/runs/{run}/\")") &&
+      !strcontains(google_storage_bucket_iam_member.trainer_write.condition[0].expression, "contains(")
+    )
+    error_message = "trainer_write keeps <run id> one path segment (runs/<id>/train/, not runs/<id>/model/train/) with the two-extract comparison; IAM conditions have no contains() on resource.name."
+  }
+  assert {
+    condition = (
+      strcontains(google_logging_project_exclusion.workflow_call_args.filter, "LOG_ID(\"workflows.googleapis.com/engine_call\")") &&
+      strcontains(google_logging_project_exclusion.workflow_call_args.filter, "jsonPayload.state=\"BEGUN\"") &&
+      strcontains(google_logging_project_exclusion.workflow_call_args.filter, "jsonPayload.state=\"SUCCEEDED\"") &&
+      !strcontains(google_logging_project_exclusion.workflow_call_args.filter, "EXCEPTION")
+    )
+    error_message = "The Logging exclusion drops the call-step arguments and results a log-all-calls execution would write (the thermometer key), and keeps the errors."
+  }
 }
 
 run "switches_on" {
@@ -222,10 +252,20 @@ run "decision_ttl_capped" {
   command = plan
 
   variables {
-    decision_ttl_days = 30
+    decision_ttl_days = 15
   }
 
   expect_failures = [var.decision_ttl_days]
+}
+
+run "flex_needs_max_wait" {
+  command = plan
+
+  variables {
+    train_ladder = [{ name = "h100-flex", region = "us-central1", machine_type = "a3-highgpu-1g", accelerator_type = "NVIDIA_H100_80GB", strategy = "FLEX_START", attempts = 1 }]
+  }
+
+  expect_failures = [var.train_ladder]
 }
 
 run "ladder_validation" {

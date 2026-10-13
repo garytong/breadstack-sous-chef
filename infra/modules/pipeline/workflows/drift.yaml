@@ -48,7 +48,7 @@ main:
         call: load_config
         result: cfg
     - stamp:
-        call: now_compact
+        call: run_stamp
         result: ts
     - ids:
         assign:
@@ -305,9 +305,14 @@ drift_prepare:
           - condition: '${not(imgs.lab_ok)}'
             next: grace
         next: point
+    - rolled:
+        call: api_time
+        args:
+          s: '${imgs.rolled_at}'
+        result: rolled_t
     - grace:
         switch:
-          - condition: '${time.parse(imgs.rolled_at) + cfg.lab_image_grace_m * 60 > sys.now()}'
+          - condition: '${rolled_t + cfg.lab_image_grace_m * 60 > sys.now()}'
             steps:
               - quiet:
                   call: log
@@ -365,16 +370,21 @@ drift_job:
           name: '${"drift/" + run_id + "/result.json"}'
         result: res
     - nores:
-        # no map literals inside ${...}: the `{}` fallback lives in a variable
+        # the result's status / error / verdict only: a whole result.json in
+        # the message could pass the 256 KB string limit and lose the error
         assign:
           - empty: {}
+          - gist:
+              status: '${map.get(default(res, empty), "status")}'
+              error: '${map.get(default(res, empty), "error")}'
+              verdict: '${map.get(default(res, empty), "verdict")}'
     - failed:
         switch:
           - condition: '${not(r.ok)}'
             raise:
               pipeline_stage: '${stage}'
               error_class: '${"exit " + string(r.exit_code)}'
-              message: '${"job " + cfg.jobs.drift + " " + json.encode_to_string(args) + " failed: " + r.message + " | result: " + json.encode_to_string(default(res, empty))}'
+              message: '${"job " + cfg.jobs.drift + " " + json.encode_to_string(args) + " failed: " + r.message + " | result: " + json.encode_to_string(gist)}'
               attempt: 1
               attempts: 1
               execution: '${r.execution}'
@@ -500,12 +510,22 @@ heartbeat:
         except:
           as: e
           steps:
+            - other:
+                switch:
+                  - condition: '${not(get_type(e) == "map" and default(map.get(e, "code"), 0) == 412)}'
+                    raise: '${e}'
+            # 412: today's marker exists. Ours when the write landed and its
+            # response was lost (the retry got 412): send the heartbeat anyway
+            - whose:
+                call: gcs_read
+                args:
+                  bucket: '${cfg.bucket}'
+                  name: '${marker}'
+                result: had
             - already:
                 switch:
-                  - condition: '${get_type(e) == "map" and default(map.get(e, "code"), 0) == 412}'
+                  - condition: '${get_type(had) != "map" or map.get(had, "run_id") != run_id}'
                     return: false
-            - other:
-                raise: '${e}'
     - state:
         # the thermometer's state tiles read details.model / deployed / verdict
         call: gcs_read
@@ -637,16 +657,16 @@ drift_gpu:
                             run_id: '${run_id}'
                             deferred: "night"
             - baseline:
-                call: gcs_read
+                call: baseline_calibrated
                 args:
-                  bucket: '${cfg.bucket}'
-                  name: '${"baselines/" + env.prod.digest + "/baseline.json"}'
-                result: bl
+                  cfg: '${cfg}'
+                  digest: '${env.prod.digest}'
+                result: calibrated
             - calibrate_first:
                 # a model digest with no calibrated baseline (a first enable, or
                 # a model rolled out by hand): calibrate before judging drift
                 switch:
-                  - condition: '${mode != "calibrate" and (bl == null or default(map.get(bl, "calibrated"), false) != true)}'
+                  - condition: '${mode != "calibrate" and not(calibrated)}'
                     steps:
                       - cal:
                           call: drift_exam
@@ -729,6 +749,21 @@ drift_gpu:
           run_id: '${run_id}'
           verdict: '${map.get(res, "verdict")}'
           retrain: '${started}'
+
+baseline_calibrated:
+  # Whether baselines/<digest>/baseline.json is calibrated. The baseline (tens
+  # of KB: every exam row x replicates) lives only in this frame; a caller
+  # that held it through the exam would carry it against Workflows' 512 KB.
+  params: [cfg, digest]
+  steps:
+    - read:
+        call: gcs_read
+        args:
+          bucket: '${cfg.bucket}'
+          name: '${"baselines/" + digest + "/baseline.json"}'
+        result: bl
+    - done:
+        return: '${get_type(bl) == "map" and default(map.get(bl, "calibrated"), false) == true}'
 
 drift_exam:
   # The behavioural job (+ its confirmation replicate when it asks for one).
@@ -838,14 +873,14 @@ drift_after:
           - condition: '${default(map.get(res, "retrain_eligible"), false) != true}'
             return: '${"not eligible: " + default(map.get(res, "retrain_blocked_by"), "see the drift report")}'
     - baseline:
-        call: gcs_read
+        call: baseline_calibrated
         args:
-          bucket: '${cfg.bucket}'
-          name: '${"baselines/" + prod.digest + "/baseline.json"}'
-        result: bl
+          cfg: '${cfg}'
+          digest: '${prod.digest}'
+        result: cal_ok
     - calibrated:
         switch:
-          - condition: '${bl == null or default(map.get(bl, "calibrated"), false) != true}'
+          - condition: '${not(cal_ok)}'
             return: '${"no calibrated baseline for " + prod.digest + ": notify only"}'
     - failed_round:
         # a round that failed and was not resumed blocks new rounds (a

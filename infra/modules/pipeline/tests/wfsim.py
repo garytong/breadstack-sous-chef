@@ -33,8 +33,26 @@ one):
                TypeError, an HTTP status >= 400 an HttpError {code, message,
                body, headers, tags}
   std calls    http.get / post / patch / delete (with the default retry
-               policies), sys.log, sys.sleep (virtual time),
+               policies, or a custom predicate subworkflow), sys.log,
+               sys.sleep (virtual time),
                googleapis.secretmanager.v1.projects.secrets.versions.accessString
+  responses    header names canonicalized as Workflows returns them
+               (Content-Type, X-Goog-Generation: seen in a real execution's
+               call log, 2026-10-13); a bytes body is parsed by its
+               Content-Type: application/json -> map/list, text/* -> string,
+               anything else stays bytes (docs/http-requests); a body the
+               router hands over already parsed (or as a str) is kept as is
+  limits       https://docs.cloud.google.com/workflows/quotas, enforced:
+               100,000 steps per execution (every step run, every retry
+               attempt, a subworkflow call = its steps + the calling step;
+               /workflows/pricing), 512 KB for all variables of all live
+               frames (sized as docs/reference/syntax/variables computes it:
+               numbers/booleans 8 bytes, strings/bytes/lists 8 + elements,
+               maps 8 + keys + values), 256 KB per string, 2 MB per HTTP
+               response: ResourceLimitError, which "cannot be caught and
+               causes immediate execution failure" (syntax/error-types), so
+               it is not a WfError and no try/except sees it; 20 call levels
+               (a RecursionError). sim.steps and sim.peak_memory report usage.
 
 Every call, log line and HTTP request is recorded in sim.trace.
 """
@@ -62,6 +80,48 @@ from lint_workflows import (ExprSyntaxError, Node, check_program, check_source, 
 
 class SimError(Exception):
     """The definition does something Workflows would refuse (or the simulator does not model)."""
+
+
+class ResourceLimitError(Exception):
+    """A Workflows resource limit (steps, variable memory, string or response size). Uncatchable: deliberately not
+    a WfError, so no try/except in the definition sees it and the execution fails at once."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.value = {"message": message, "tags": ["ResourceLimitError"]}
+
+
+# https://docs.cloud.google.com/workflows/quotas
+STEP_LIMIT = 100_000
+MEMORY_LIMIT = 512 * 1024
+STRING_LIMIT = 256 * 1024
+RESPONSE_LIMIT = 2 * 1024 * 1024
+CALL_DEPTH_LIMIT = 20
+
+
+def wsize(v: Any) -> int:
+    """Memory of a value as docs/reference/syntax/variables computes it (raises ResourceLimitError for a string
+    over 256 KB)."""
+    if v is None or isinstance(v, (bool, int, float)):
+        return 8
+    if isinstance(v, str):
+        n = len(v.encode("utf-8"))
+        if n > STRING_LIMIT:
+            raise ResourceLimitError(f"a string of {n} bytes (Workflows allows {STRING_LIMIT})")
+        return 8 + n
+    if isinstance(v, (bytes, bytearray)):
+        return 8 + len(v)
+    if isinstance(v, list):
+        return 8 + sum(wsize(x) for x in v)
+    if isinstance(v, dict):
+        return 8 + sum(wsize(k) + wsize(x) for k, x in v.items())
+    return 8
+
+
+def canonical_header(name: str) -> str:
+    """Go's CanonicalMIMEHeaderKey, which is how a real execution's HttpError.headers spells them
+    (Content-Type, X-Guploader-Uploadid, X-Goog-Gcs-Base-Ts in execution 8a0cc8ec's call log)."""
+    return "-".join(p[:1].upper() + p[1:].lower() for p in str(name).split("-"))
 
 
 class WfError(Exception):
@@ -219,9 +279,33 @@ CONSTANTS = {"http.default_retry": DEFAULT_RETRY, "http.default_retry_non_idempo
 class Scope:
     """A subworkflow's variables; a for-loop iteration is a child (new names die with it, old ones are updated)."""
 
-    def __init__(self, parent: "Scope | None" = None):
+    def __init__(self, parent: "Scope | None" = None, meter: "Interpreter | None" = None):
         self.vars: dict[str, Any] = {}
         self.parent = parent
+        self.meter = meter if meter is not None else (parent.meter if parent is not None else None)
+        self.sizes: dict[str, int] = {}
+        self.total = 0
+
+    def _put(self, name: str, value: Any) -> None:
+        self.vars[name] = value
+        self.resize(name)
+
+    def resize(self, name: str) -> None:
+        if self.meter is None:
+            return
+        new = wsize(self.vars[name])
+        self.total += new - self.sizes.get(name, 0)
+        self.sizes[name] = new
+        self.meter.check_memory()
+
+    def touch(self, name: str) -> None:
+        """A variable changed in place (an indexed or dotted assignment): size it again where it lives."""
+        s: Scope | None = self
+        while s is not None:
+            if name in s.vars:
+                s.resize(name)
+                return
+            s = s.parent
 
     def has(self, name: str) -> bool:
         s: Scope | None = self
@@ -243,13 +327,13 @@ class Scope:
         s: Scope | None = self
         while s is not None:
             if name in s.vars:
-                s.vars[name] = value
+                s._put(name, value)
                 return
             s = s.parent
-        self.vars[name] = value
+        self._put(name, value)
 
     def local(self, name: str, value: Any) -> None:
-        self.vars[name] = value
+        self._put(name, value)
 
 
 # ── the interpreter ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -276,7 +360,8 @@ class TraceEvent:
 class Interpreter:
     def __init__(self, program: dict, *, http: HttpRouter, secrets: Callable[[dict], str], env: dict[str, str],
                  clock: VirtualClock, on_sleep: Callable[["Interpreter", float], None] | None = None,
-                 max_steps: int = 2_000_000, log: Callable[[str], None] | None = None, strict: bool = True):
+                 max_steps: int = STEP_LIMIT, max_memory: int = MEMORY_LIMIT, log: Callable[[str], None] | None = None,
+                 strict: bool = True):
         if "main" not in program:
             raise SimError("no main")
         if strict:
@@ -288,7 +373,11 @@ class Interpreter:
         self.clock = clock
         self.on_sleep = on_sleep
         self.max_steps = max_steps
+        self.max_memory = max_memory
         self.steps = 0
+        self.peak_memory = 0
+        self.max_depth = 0
+        self.live: list[Scope] = []  # every frame (subworkflow scope, for-loop iteration) alive now
         self.trace: list[TraceEvent] = []
         self.logf = log or (lambda s: None)
         self.depth = 0
@@ -313,6 +402,18 @@ class Interpreter:
             kwargs[self._param_name(params[0])] = copy.deepcopy(args)
         return self.call_sub("main", kwargs)
 
+    def count_step(self, where: str) -> None:
+        self.steps += 1
+        if self.steps > self.max_steps:
+            raise ResourceLimitError(f"{where}: more than {self.max_steps} steps in one execution")
+
+    def check_memory(self) -> None:
+        used = sum(s.total for s in self.live)
+        if used > self.peak_memory:
+            self.peak_memory = used
+        if used > self.max_memory:
+            raise ResourceLimitError(f"variables use {used} bytes (Workflows allows {self.max_memory})")
+
     def record(self, kind: str, **detail: Any) -> None:
         self.trace.append(TraceEvent(self.clock.now(), kind, detail))
 
@@ -325,7 +426,14 @@ class Interpreter:
         sub = self.program.get(name)
         if not isinstance(sub, dict) or "steps" not in sub:
             raise SimError(f"no subworkflow {name!r}")
-        scope = Scope()
+        scope = Scope(meter=self)
+        self.live.append(scope)
+        try:
+            return self._call_sub(name, sub, scope, kwargs)
+        finally:
+            self.live.remove(scope)
+
+    def _call_sub(self, name: str, sub: dict, scope: Scope, kwargs: dict) -> Any:
         declared = []
         for p in sub.get("params") or []:
             if isinstance(p, str):
@@ -341,9 +449,10 @@ class Interpreter:
                 raise SimError(f"call {name}: unknown argument {k!r}")
             scope.local(k, copy.deepcopy(v))
         self.depth += 1
-        if self.depth > 40:
-            raise SimError("call depth over 40")
+        self.max_depth = max(self.max_depth, self.depth)
         try:
+            if self.depth > CALL_DEPTH_LIMIT:
+                raise runtime_error("RecursionError", f"{name}: more than {CALL_DEPTH_LIMIT} levels of calls")
             self.run_steps(sub["steps"], scope, where=name)
             return None
         except _Return as r:
@@ -366,9 +475,7 @@ class Interpreter:
             names.append(next(iter(st)))
         i = 0
         while i < len(steps):
-            self.steps += 1
-            if self.steps > self.max_steps:
-                raise SimError("step budget exhausted (an endless loop?)")
+            self.count_step(f"{where}.{names[i]}")
             name = names[i]
             body = steps[i][name]
             try:
@@ -475,10 +582,11 @@ class Interpreter:
             raise SimError(f"{where}: for needs in or range")
         for i, item in enumerate(items):
             child = Scope(scope)
-            child.local(value, copy.deepcopy(item))
-            if index:
-                child.local(index, i)
+            self.live.append(child)
             try:
+                child.local(value, copy.deepcopy(item))
+                if index:
+                    child.local(index, i)
                 self.run_steps(spec["steps"], child, where)
             except _Break:
                 break
@@ -486,6 +594,8 @@ class Interpreter:
                 continue
             except _Jump as j:
                 raise SimError(f"{where}: next: {j.target} jumps out of a for loop") from None
+            finally:
+                self.live.remove(child)
 
     def exec_try(self, body: dict, scope: Scope, where: str) -> str | None:
         inner = body["try"]
@@ -493,10 +603,13 @@ class Interpreter:
         exc = body.get("except")
         policy = None
         if retry is not None:
-            policy = self.eval_value(retry, scope, where) if isinstance(retry, str) else retry
-            if isinstance(policy, dict) and "predicate" in policy and isinstance(policy["predicate"], str) \
-                    and policy["predicate"].startswith("${"):
-                policy = {**policy, "predicate": self.eval_value(policy["predicate"], scope, where)}
+            policy = self.eval_value(retry, scope, where) if isinstance(retry, str) else dict(retry)
+            if isinstance(policy, dict) and isinstance(policy.get("predicate"), str):
+                policy["predicate"] = self._predicate(policy["predicate"], scope, where)
+            if isinstance(policy, dict):
+                for k in ("max_retries",):
+                    if isinstance(policy.get(k), str):
+                        policy[k] = self.eval_value(policy[k], scope, where)
         attempt = 0
         delay = None
         while True:
@@ -509,8 +622,9 @@ class Interpreter:
                         raise SimError(f"{where}: next inside a try body")
                 return body.get("next")
             except WfError as e:
-                if policy and self._should_retry(policy, e.value) and attempt < int(policy.get("max_retries", 0)):
+                if policy and attempt < int(policy.get("max_retries", 0)) and self._should_retry(policy, e.value, where):
                     attempt += 1
+                    self.count_step(where + ".retry")  # "Each retry attempt counts as a step execution" (pricing)
                     bo = policy.get("backoff") or {}
                     delay = float(bo.get("initial_delay", 1)) if delay is None else min(
                         delay * float(bo.get("multiplier", 2)), float(bo.get("max_delay", 60)))
@@ -526,17 +640,40 @@ class Interpreter:
                 self.run_steps(exc["steps"], scope, where + ".except")
                 return body.get("next")
 
-    @staticmethod
-    def _should_retry(policy: dict, err: Any) -> bool:
+    STD_PREDICATES = ("http.default_retry_predicate", "http.default_retry_predicate_non_idempotent")
+
+    def _predicate(self, src: str, scope: Scope, where: str) -> str:
+        """A policy's predicate: one of the standard ones, or ${name} of a subworkflow taking the error."""
+        s = src.strip()
+        inner = s[2:-1].strip() if s.startswith("${") and s.endswith("}") else s
+        if inner in self.STD_PREDICATES:
+            return inner
+        if inner in self.program and inner != "main":
+            return "sub:" + inner
+        raise SimError(f"{where}: retry predicate {src!r} is neither a standard predicate nor a subworkflow")
+
+    def _should_retry(self, policy: dict, err: Any, where: str = "") -> bool:
         pred = policy.get("predicate")
+        if isinstance(pred, str) and pred.startswith("sub:"):
+            name = pred[4:]
+            params = (self.program[name].get("params") or [])
+            if len(params) != 1:
+                raise SimError(f"{where}: predicate {name} must take exactly one parameter")
+            self.count_step(where + ".predicate")
+            out = self.call_sub(name, {self._param_name(params[0]): copy.deepcopy(err)})
+            if not isinstance(out, bool):
+                raise runtime_error("TypeError", f"{where}: predicate {name} returned {wtype(out)}, not boolean")
+            return out
         if not isinstance(err, dict):
             return False
         tags = err.get("tags") or []
         code = err.get("code")
+        # stdlib/http/default_retry_predicate: 429, 502, 503, 504, ConnectionError, ConnectionFailedError, TimeoutError
         if pred == "http.default_retry_predicate":
-            return code in (429, 502, 503, 504) or "ConnectionError" in tags or "TimeoutError" in tags
+            return code in (429, 502, 503, 504) or any(t in tags for t in ("ConnectionError", "ConnectionFailedError", "TimeoutError"))
+        # .../default_retry_predicate_non_idempotent: 429, 503, ConnectionFailedError
         if pred == "http.default_retry_predicate_non_idempotent":
-            return code in (429, 503)
+            return code in (429, 503) or "ConnectionFailedError" in tags
         raise SimError(f"retry predicate {pred!r} is not simulated")
 
     # ── assign ──
@@ -592,6 +729,7 @@ class Interpreter:
             cur[int(key)] = val
         else:
             raise runtime_error("TypeError", f"{where}: cannot set {key!r} on a {wtype(cur)}")
+        scope.touch(parts[0][1])
 
     # ── values and expressions ──
     def eval_value(self, v: Any, scope: Scope, where: str) -> Any:
@@ -842,7 +980,8 @@ class Interpreter:
             return string_arg(0).split(string_arg(1))
         if name == "text.url_encode":
             need(1)
-            return urllib.parse.quote(string_arg(0), safe="-_.~")
+            # "Letters, digits, and the characters .-_ are not escaped" (stdlib/text/url_encode): "~" is
+            return urllib.parse.quote(string_arg(0), safe="-_.").replace("~", "%7E")  # quote() never escapes ~
         if name == "text.to_lower":
             need(1)
             return string_arg(0).lower()
@@ -877,8 +1016,10 @@ class Interpreter:
                 v = bytes(v).decode("utf-8")
             if not isinstance(v, str):
                 raise runtime_error("TypeError", f"{where}: json.decode of a {wtype(v)}")
+            def no_constant(c: str) -> Any:  # NaN / Infinity are not JSON; Python's json would accept them
+                raise ValueError(f"{c} is not valid JSON")
             try:
-                return json.loads(v)
+                return json.loads(v, parse_constant=no_constant)
             except ValueError as e:
                 raise runtime_error("ValueError", f"{where}: json.decode: {e}") from None
         if name == "math.floor":
@@ -888,6 +1029,25 @@ class Interpreter:
         raise SimError(f"{where}: function {name}() is not simulated")
 
     # ── std calls ──
+    @staticmethod
+    def response_body(body: Any, headers: dict, where: str) -> Any:
+        """What a call's result.body (or HttpError.body) holds: a router's bytes as Workflows parses them by
+        Content-Type; anything else as the router gave it."""
+        if isinstance(body, (bytes, bytearray)):
+            raw = bytes(body)
+            if len(raw) > RESPONSE_LIMIT:
+                raise ResourceLimitError(f"{where}: an HTTP response of {len(raw)} bytes (Workflows allows {RESPONSE_LIMIT})")
+            ct = headers.get("Content-Type", "").split(";")[0].strip().lower()
+            if ct == "application/json" or ct.endswith("+json"):
+                try:
+                    return json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+                except ValueError:
+                    return raw
+            if ct.startswith("text/"):
+                return raw.decode("utf-8", "replace")
+            return raw
+        return body
+
     def _sleep(self, seconds: float) -> None:
         self.clock.advance(seconds)
         if self.on_sleep:
@@ -932,6 +1092,8 @@ class Interpreter:
             auth = args.get("auth")
             code, body, headers = self.http(method, url, {k: wstring(v) for k, v in query.items()},
                                             dict(args.get("headers") or {}), copy.deepcopy(args.get("body")), auth)
+            headers = {canonical_header(k): str(v) for k, v in (headers or {}).items()}
+            body = self.response_body(body, headers, where)
             self.record("http", where=where, method=method, url=url, query=query, code=code,
                         auth=(auth or {}).get("type") if isinstance(auth, dict) else None)
             if code >= 400:

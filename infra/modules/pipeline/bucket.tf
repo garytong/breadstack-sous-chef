@@ -71,7 +71,7 @@ resource "google_storage_bucket_object" "config" {
 # playbook submits the same file by hand). The retrain workflow reads this
 # JSON form and fills in the run's source, image and substitutions.
 #
-# The context (runs/<id>/model/context.tgz) is job-written, so the spec pins
+# The context (runs/<id>/model/context.tar.gz) is job-written, so the spec pins
 # the sha256 of the model-image files the build runs or ships; the build's
 # first step refuses a context that differs (cloudbuild-model.yaml).
 locals {

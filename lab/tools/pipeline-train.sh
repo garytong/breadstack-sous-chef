@@ -18,8 +18,11 @@
 # — the shape the retrain workflow's vertex_attempt reads: status running | failed | interrupted | done. A failure
 # records status "failed" with the step in `error`, pushes the log (runs/<id>/train/train.log) and exits 1 (the
 # workflow classes it fatal: never retried on another machine). A SIGTERM (a Spot preemption, a Vertex restart or
-# cancel) forwards to the running step, pushes the checkpoints and records status "interrupted" (the workflow
-# classes it preempted: resumed from the checkpoints). Rerunning is safe: a run with DONE exits 0 at once.
+# cancel) records status "interrupted" FIRST (a Spot VM gets about 30 s before it is switched off: the one small
+# object the workflow classes by goes before anything slow), then stops the running step and pushes the
+# checkpoints (the workflow classes it preempted: resumed from the checkpoints). During the SFT the 120 s checkpoint
+# loop also rewrites progress.json (status running, last_step from loss.jsonl), so a VM that dies before the trap
+# finishes still shows the steps trained since the attempt began. Rerunning is safe: a run with DONE exits 0 at once.
 # The recipe is r4's (train.py RECIPE: Qwen3.5-9B bf16, fp32 LoRA r16/α16, lr 2e-4, 1 epoch, batch 1 × grad_accum 4,
 # adamw_8bit, warmup 3 %, max_seq 32,768). bash, not zsh: the step runner relies on bash's wait and traps.
 set -uo pipefail
@@ -45,18 +48,27 @@ CKPT=${CKPT:-50}
 BASE_TAR=${BASE_TAR:-unsloth-qwen3.5-9b-hf.tar}
 BASE_MODELFILE=base-modelfiles/qwen3.5-9b.modelfile
 LOG=$W/train.log
-ATTEMPT=${CLOUD_ML_TRIAL_ID:-${PIPELINE_ATTEMPT:-1}}
+# the workflow sends TRAIN_ATTEMPT (vertex_attempt's try number); CLOUD_ML_TRIAL_ID is a hyperparameter-tuning
+# variable a CustomJob never sets
+ATTEMPT=${TRAIN_ATTEMPT:-${PIPELINE_ATTEMPT:-1}}
+SYNC_EVERY=${PIPELINE_SYNC_EVERY_S:-120}
 FLAGS=(--data "$DATA/dataset" --fields-context on --eval-steps "${EVAL_STEPS:-150}" --val-max-rows "${VAL_MAX_ROWS:-150}")
 mkdir -p "$W" "$HF_HOME"
 CUR_STEP=start
 SYNC_PID=
 
+# parallel composite uploads off: the trainer account has no storage.buckets.get for gcloud's check, and the
+# components would go to gcloud/tmp/… at the bucket root, outside runs/<id>/train/ (the only prefix it may write)
+export CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=${CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED:-False}
 gs() { "$GCLOUD" storage "$@" --quiet; }
 gs_exists() { "$GCLOUD" storage ls "$1" >/dev/null 2>&1; }
 
 progress() {  # progress STATUS [ERROR] — the step, the status and what the adapter's run.json / loss.jsonl say so far
-  rm -f "$W/progress.json"
-  "$PY" - "$W/progress.json" "$CUR_STEP" "$1" "$ATTEMPT" "$MODE" "$ADAPTER_DIR" "${2:-}" "${TRAIN_RUNG:-}" <<'EOF' >/dev/null 2>&1 || true
+  # (a file of its own per caller: the checkpoint loop writes `running` from a subshell while the main shell may
+  # be writing `interrupted`)
+  local pj="$W/progress.$BASHPID.json"
+  rm -f "$pj"
+  "$PY" - "$pj" "$CUR_STEP" "$1" "$ATTEMPT" "$MODE" "$ADAPTER_DIR" "${2:-}" "${TRAIN_RUNG:-}" <<'EOF' >/dev/null 2>&1 || true
 import json, sys, time
 from pathlib import Path
 out, step, status, attempt, mode, adir, error, rung = sys.argv[1:9]
@@ -90,15 +102,17 @@ if evals:
     p["eval_loss_first"], p["eval_loss_last"] = evals[0], evals[-1]
 Path(out).write_text(json.dumps(p, indent=1))
 EOF
-  if [ ! -s "$W/progress.json" ]; then
+  if [ ! -s "$pj" ]; then
     # no python (or it failed): the status the workflow reads must still be there
     printf '{"status":"%s","step":"%s","error":"%s","attempt":"%s","updated_at":"%s"}\n' \
-      "$1" "$CUR_STEP" "$(printf '%s' "${2:-}" | tr -d '"\\')" "$ATTEMPT" "$(date -u +%FT%TZ)" > "$W/progress.json"
+      "$1" "$(printf '%s' "$CUR_STEP" | tr -d '"\\')" "$(printf '%s' "${2:-}" | tr -d '"\\')" "$ATTEMPT" \
+      "$(date -u +%FT%TZ)" > "$pj"
   fi
-  gs cp "$W/progress.json" "$R/progress.json" >/dev/null 2>&1 || true
+  gs cp "$pj" "$R/progress.json" --content-type=application/json >/dev/null 2>&1 || true
+  cp -f "$pj" "$W/progress.json" 2>/dev/null; rm -f "$pj"
 }
 
-step() { CUR_STEP=$1; echo "== $(date -u +%FT%TZ) $* ==" | tee -a "$LOG"; progress running; }
+step() { CUR_STEP=$1; printf '%s' "$1" > "$W/step"; echo "== $(date -u +%FT%TZ) $* ==" | tee -a "$LOG"; progress running; }
 # run CMD… — the command in the background and `wait`ed for, so a SIGTERM reaches the trap at once (bash runs a
 # trap only between foreground commands: a 2-hour SFT would otherwise outlive Vertex's grace period)
 CHILD=
@@ -112,7 +126,7 @@ run() {
 }
 fail() {
   echo "== $(date -u +%FT%TZ) FAILED: $* ==" | tee -a "$LOG"
-  [ -n "$SYNC_PID" ] && kill "$SYNC_PID" 2>/dev/null
+  stop_sync
   push_checkpoints
   progress failed "$CUR_STEP: $*"
   gs cp "$LOG" "$R/train.log" >/dev/null 2>&1 || true
@@ -125,13 +139,16 @@ kill_tree() {  # kill_tree PID — TERM the step and everything it started (data
   fi
   kill -TERM "$1" 2>/dev/null
 }
-interrupted() {  # SIGTERM / SIGINT: a preemption or a cancel — keep what was trained, say so, leave
+interrupted() {  # SIGTERM / SIGINT: a preemption or a cancel — say so first, then keep what was trained, leave
   trap - TERM INT
   echo "== $(date -u +%FT%TZ) INTERRUPTED (signal) during $CUR_STEP ==" | tee -a "$LOG"
-  if [ -n "$CHILD" ]; then kill_tree "$CHILD"; wait "$CHILD" 2>/dev/null; fi
-  [ -n "$SYNC_PID" ] && kill "$SYNC_PID" 2>/dev/null
-  push_checkpoints
+  # the step gets its TERM now (it stops while the status goes up), the loop is stopped so its `running` cannot
+  # land after `interrupted`, and the status goes up before the slow part (waiting for the step, the rsync)
+  [ -n "$CHILD" ] && kill_tree "$CHILD"
+  stop_sync
   progress interrupted "signal during $CUR_STEP"
+  [ -n "$CHILD" ] && wait "$CHILD" 2>/dev/null
+  push_checkpoints
   gs cp "$LOG" "$R/train.log" >/dev/null 2>&1 || true
   exit 143
 }
@@ -139,6 +156,24 @@ trap interrupted TERM INT
 push_checkpoints() {
   [ -d "$ADAPTER_DIR/checkpoints" ] && gs rsync --recursive "$ADAPTER_DIR/checkpoints" "$R/checkpoints" >/dev/null 2>&1
   return 0
+}
+sync_loop() {  # every SYNC_EVERY s: the checkpoints, then progress `running` (last_step from loss.jsonl moves on)
+  trap - TERM INT
+  while sleep "$SYNC_EVERY"; do
+    [ -e "$W/.sync-stop" ] && break
+    push_checkpoints
+    [ -e "$W/.sync-stop" ] && break
+    CUR_STEP=$(cat "$W/step" 2>/dev/null || printf '%s' "$CUR_STEP")
+    progress running
+  done
+}
+start_sync() { rm -f "$W/.sync-stop"; sync_loop & SYNC_PID=$!; }
+stop_sync() {  # the loop and whatever it is running (a gcloud upload), then wait for it: nothing of it lands later
+  [ -n "$SYNC_PID" ] || return 0
+  touch "$W/.sync-stop"
+  kill_tree "$SYNC_PID"
+  wait "$SYNC_PID" 2>/dev/null
+  SYNC_PID=
 }
 
 if gs_exists "$R/DONE"; then echo "pipeline-train: $R/DONE exists — nothing to do"; exit 0; fi
@@ -198,9 +233,8 @@ if [ "$MODE" = full ] && [ "$RESUMED" = 0 ] && [ ! -f "$ADAPTER_DIR/adapter/adap
 fi
 
 if [ ! -f "$ADAPTER_DIR/adapter/adapter_config.json" ]; then
-  ( while sleep 120; do push_checkpoints; done ) &
-  SYNC_PID=$!
-  trap '[ -n "$SYNC_PID" ] && kill "$SYNC_PID" 2>/dev/null' EXIT
+  start_sync
+  trap '[ -n "$SYNC_PID" ] && kill_tree "$SYNC_PID" 2>/dev/null' EXIT
   if [ "$MODE" = smoke ]; then
     step "SFT (smoke: 4 updates, checkpoint every 2)"
     run "$PY" -m souschef_lab.train "${FLAGS[@]}" --name "$NAME-sft" --max-steps 4 --checkpoint-steps 2 --resume || fail "SFT"
@@ -212,7 +246,7 @@ if [ ! -f "$ADAPTER_DIR/adapter/adapter_config.json" ]; then
     step "SFT ($NAME-sft; resumes from the newest checkpoint)"
     run "$PY" -m souschef_lab.train "${FLAGS[@]}" --name "$NAME-sft" --checkpoint-steps "$CKPT" --resume || fail "SFT"
   fi
-  kill "$SYNC_PID" 2>/dev/null; SYNC_PID=
+  stop_sync
   push_checkpoints
 fi
 

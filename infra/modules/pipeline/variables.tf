@@ -180,12 +180,30 @@ variable "l4_headroom" {
 }
 
 variable "decision_ttl_days" {
-  type        = number
-  default     = 14
-  description = "A candidate_ready decision expires (= Skip) this many days after it was sent. At most 21: the retrain execution polls the decision every 10 min (~3,600 Workflows steps a day) and an execution may take 100,000 steps."
+  type    = number
+  default = 14
+  # The bound is Workflows' 100,000 steps per execution
+  # (https://docs.cloud.google.com/workflows/quotas); running out raises
+  # ResourceLimitError, which no try catches: no stage_failed, run.json left
+  # "running", the retrain lock held. The retrain execution waits up to
+  # ttl + 1 days for the decision (retrain.yaml stage_decide: a poll every
+  # 30 min, the lock refreshed every 6 h). Measured by running stage_decide
+  # and the stage loops in tests/wfsim.py (2026-10-12): the wait costs about
+  # 680 steps a day, 1,450 when candidate_ready is re-posted at every poll
+  # (no decision row), 2,160 with the thermometer answering 503 all day (the
+  # retries count). The rest of a pathologically slow round at the defaults
+  # is about 46,000: collect's 3 attempts x 24 h of job polls (170 steps an
+  # hour), up to 48 h of Vertex polls, three L4 warm-up loops of
+  # l4_wait_minutes (360 steps an hour each), the build's 3-h deadline. So
+  # (ttl + 1) x 2,160 + 46,000 must stay under ~90,000: ttl <= 14 gives
+  # 78,400. (The old 10-min poll with a refresh at every poll cost 4,608
+  # steps a day: 101,376 for a 21-day wait alone.) A longer window needs a
+  # cheaper wait first (events.await_callback is one step).
+  # tests/pipeline.tftest.hcl holds the poll at 30 min or more.
+  description = "A candidate_ready decision expires (= Skip) this many days after it was sent. At most 14, so the decision wait (30-min polls, ~680 Workflows steps a day, ~2,160 with the thermometer down) plus a slow round stays under the 100,000 steps an execution may take."
   validation {
-    condition     = var.decision_ttl_days >= 1 && var.decision_ttl_days <= 21 && floor(var.decision_ttl_days) == var.decision_ttl_days
-    error_message = "decision_ttl_days must be a whole number of days, 1..21 (the decision wait must stay under Workflows' 100,000 steps per execution)."
+    condition     = var.decision_ttl_days >= 1 && var.decision_ttl_days <= 14 && floor(var.decision_ttl_days) == var.decision_ttl_days
+    error_message = "decision_ttl_days must be a whole number of days, 1..14 (the decision wait, up to ~2,160 Workflows steps a day, plus a slow round must stay under the 100,000 steps per execution)."
   }
 }
 
@@ -222,6 +240,11 @@ variable "train_ladder" {
     max_wait_s       = optional(number, 0)
     max_pending_s    = optional(number, 3600)
   }))
+  # a100-80-std: the A100 80 GB training quota (on-demand and preemptible)
+  # is 0 in us-central1, us-east4 and us-west1 (measured 2026-10-12, Vertex
+  # quotas API). Until docs/PIPELINE.md §4.1's request is granted the rung
+  # ends as `capacity` (a refused create at once, or a job that never starts,
+  # cancelled after max_pending_s) and the ladder moves on to a100-40-std.
   default = [
     { name = "h100-flex", region = "us-central1", machine_type = "a3-highgpu-1g", accelerator_type = "NVIDIA_H100_80GB", strategy = "FLEX_START", attempts = 1, max_wait_s = 14400 },
     { name = "h100-spot-usc1", region = "us-central1", machine_type = "a3-highgpu-1g", accelerator_type = "NVIDIA_H100_80GB", strategy = "SPOT", attempts = 4 },
@@ -233,9 +256,9 @@ variable "train_ladder" {
   description = "The Vertex training ladder (DESIGN §3.5), tried in order: a rung moves on after `attempts` preemptions, at once on no capacity (including a job that has not started after max_pending_s — Flex-start: after max_wait_s + 30 min), and after two failures of unknown cause (four in all fail the stage). A Spot rung's attempts after the first are resumes from the newest checkpoint. A rung Vertex refuses outright (400 on create, e.g. no FLEX_START for the machine) is skipped."
   validation {
     condition = length(var.train_ladder) > 0 && alltrue([
-      for r in var.train_ladder : contains(["FLEX_START", "SPOT", "STANDARD"], r.strategy) && r.attempts >= 1 && can(regex("^[a-z0-9-]+$", r.name)) && r.max_pending_s >= 600
+      for r in var.train_ladder : contains(["FLEX_START", "SPOT", "STANDARD"], r.strategy) && r.attempts >= 1 && can(regex("^[a-z0-9-]+$", r.name)) && r.max_pending_s >= 600 && (r.strategy != "FLEX_START" || r.max_wait_s > 0)
     ])
-    error_message = "train_ladder: at least one rung; strategy FLEX_START | SPOT | STANDARD; attempts >= 1; name [a-z0-9-]; max_pending_s >= 600."
+    error_message = "train_ladder: at least one rung; strategy FLEX_START | SPOT | STANDARD; attempts >= 1; name [a-z0-9-]; max_pending_s >= 600; a FLEX_START rung needs max_wait_s > 0 (the maxWaitDuration the workflow sends Vertex and its own pending deadline; with 0 the workflow would fall back to 4 h)."
   }
 }
 

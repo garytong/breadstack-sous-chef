@@ -76,7 +76,7 @@ def test_retrain_dry_smoke_end_to_end(tmp_path, capsys):
     assert s.exists(f"runs/{run_id}/prepare/authored-smoke.jsonl")
     assert not s.list("cases/pool/authored") and len(s.read_json("cases/pool/index.json")["files"]) == 1
     # the dataset, the model build context and the candidate's baseline are where the next stages read them
-    assert s.exists(f"runs/{run_id}/dataset/dataset/train.jsonl") and s.exists(f"runs/{run_id}/model/context.tgz")
+    assert s.exists(f"runs/{run_id}/dataset/dataset/train.jsonl") and s.exists(f"runs/{run_id}/model/context.tar.gz")
     cb = s.read_json(f"runs/{run_id}/eval/candidate-baseline.json")
     assert cb["source"] == "candidate-eval" and cb["replicates"] and cb["digest"] == "sha256:dry-candidate"
     assert all(k.split(":", 1)[0] in ("paraphrase", "holdout", "real", "followup", "out_of_scope", "out_of_scope_holdout")
@@ -118,6 +118,18 @@ assert args[0] == "storage", args
 cmd, rest = args[1], [a for a in args[2:] if not a.startswith("--")]
 def loc(u):
     return root / u[len("gs://"):] if u.startswith("gs://") else Path(u)
+if os.environ.get("FAKE_GCLOUD_LOG"):  # the order of the uploads; a progress.json upload with what it says
+    import json, time
+    line = [f"{time.monotonic():.3f}", cmd, *rest]
+    if cmd == "cp" and rest[-1].endswith("/progress.json") and Path(rest[0]).is_file():
+        try:
+            d = json.loads(Path(rest[0]).read_text())
+            line += [f"status={d.get('status')}", f"step={d.get('step')}", f"last_step={d.get('last_step')}",
+                     f"attempt={d.get('attempt')}"]
+        except ValueError:
+            pass
+    with open(os.environ["FAKE_GCLOUD_LOG"], "a") as f:
+        f.write("\t".join(line) + "\n")
 if cmd == "ls":
     p = loc(rest[0])
     sys.exit(0 if p.exists() else 1)
@@ -157,6 +169,7 @@ if [ "$1" = -m ] && [ "$2" = souschef_lab.train ]; then
   d=runs/adapters/$name
   if [ -n "${STUB_SLEEP:-}" ] && [ "$name" = "${STUB_SLEEP}" ]; then
     mkdir -p "$d/checkpoints/checkpoint-50"; echo '{}' > "$d/checkpoints/checkpoint-50/state.json"
+    printf '{"step": 50, "loss": 0.5}\n' > "$d/loss.jsonl"
     echo "sleeping $name" >> "$STUB_LOG"; sleep 60; exit 0
   fi
   if [ $resume = 1 ] && [ -d "$d/checkpoints/checkpoint-2" ]; then echo "Resuming from $d/checkpoints/checkpoint-2 (optimizer, scheduler and data position restored)."; fi
@@ -316,3 +329,51 @@ def test_pipeline_train_sigterm_pushes_checkpoints_and_records_interrupted(train
     assert prog["status"] == "interrupted" and prog["step"].startswith("SFT")
     assert (train / "checkpoints" / "checkpoint-50" / "state.json").is_file()
     assert not (train / "DONE").exists()
+
+
+def _gcloud_log(path: Path) -> list[list[str]]:
+    return [ln.split("\t") for ln in path.read_text().splitlines()] if path.is_file() else []
+
+
+def test_pipeline_train_sigterm_writes_interrupted_before_the_slow_part_and_heartbeats_during_sft(train_env):
+    """A Spot VM gets about 30 s after the SIGTERM: `interrupted` goes up before the step is waited for and the
+    checkpoints are pushed, and nothing of the checkpoint loop (`running`) lands after it. While the SFT runs,
+    the loop rewrites progress.json as `running` with last_step from loss.jsonl, so a VM switched off before the
+    trap finishes still shows the steps trained in this attempt. The attempt is the workflow's TRAIN_ATTEMPT."""
+    import signal
+    import time as _t
+    te = train_env
+    glog = te["tmp"] / "gcloud.log"
+    env = {**te["env"], "STUB_SLEEP": f"{te['run']}-sft", "PIPELINE_SYNC_EVERY_S": "1", "FAKE_GCLOUD_LOG": str(glog),
+           "TRAIN_ATTEMPT": "3", "CLOUD_ML_TRIAL_ID": "9"}
+    ck = te["gcs"] / "bkt" / "runs" / te["run"] / "train" / "checkpoints" / "checkpoint-2"
+    ck.mkdir(parents=True)
+    (ck / "state.json").write_text("{}")
+    out_f = (te["tmp"] / "train.out").open("w")
+    proc = subprocess.Popen(["bash", str(LAB / "tools" / "pipeline-train.sh"), te["run"], "full"], env=env, cwd=te["tmp"],
+                            stdout=out_f, stderr=subprocess.STDOUT, text=True)
+
+    def heartbeat():
+        return [ln for ln in _gcloud_log(glog) if "status=running" in ln and "last_step=50" in ln
+                and any(x.startswith("step=SFT") for x in ln)]
+    deadline = _t.monotonic() + 120
+    while _t.monotonic() < deadline and not heartbeat():
+        _t.sleep(0.2)
+    assert heartbeat(), _gcloud_log(glog)
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=60)
+    out_f.close()
+    assert proc.returncode == 143, (te["tmp"] / "train.out").read_text()[-2000:]
+    log = _gcloud_log(glog)
+    prog_ups = [i for i, ln in enumerate(log) if ln[1] == "cp" and ln[-4].startswith("status=")]
+    statuses = [log[i][-4] for i in prog_ups]
+    assert statuses[-1] == "status=interrupted" and statuses.count("status=interrupted") == 1, statuses
+    first_int = next(i for i in prog_ups if log[i][-4] == "status=interrupted")
+    # after `interrupted`: the checkpoint push and the log, and never another progress write
+    after = [ln[1] + ":" + ln[-1] for ln in log[first_int + 1:]]
+    assert any(a.startswith("rsync:") and a.endswith("/checkpoints") for a in after), after
+    assert all(i < first_int for i in prog_ups if log[i][-4] != "status=interrupted")
+    assert all(log[i][-1] == "attempt=3" for i in prog_ups)
+    prog = json.loads((te["gcs"] / "bkt" / "runs" / te["run"] / "train" / "progress.json").read_text())
+    assert prog["status"] == "interrupted" and prog["last_step"] == 50 and prog["attempt"] == "3"
+

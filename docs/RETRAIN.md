@@ -32,7 +32,7 @@ W=$PIPE/runs/$RUN
 | — | init: lock, resolve images, pin the deployed manifest (`run.json → deployed`; every stage reads it), `retrain_started` | workflow | 1 min | `runs/<id>/run.json` |
 | R1 | prepare: rebase every family, author new-field cases | job `souschef-prepare` | 30–60 min | `prepare/{cases.jsonl,report.json,leak-report.json}` |
 | R2 | teacher collection, 3 passes | job `souschef-collect` | 1.8–2.2 h | `collect/*` |
-| R3 | dataset + parity gate | job `souschef-dataset` | 15 min | `dataset/*`, `model/context.tgz` |
+| R3 | dataset + parity gate | job `souschef-dataset` | 15 min | `dataset/*`, `model/context.tar.gz` |
 | R4 | SFT + export + stage | Vertex custom job | 2.4–2.8 h + any capacity wait | `train/{adapter,export,stage,progress.json,DONE}` |
 | R5 | model image | Cloud Build | 15–25 min | `model/image.json`, `model:c-<id>` |
 | R6 | candidate deploy, paired eval, report | `sous-chef-model-cand`, job `souschef-eval` | 2–3 h | `eval/*`, `report.json`, `decision.json` |
@@ -394,7 +394,7 @@ final hold-out check. Gates, each of which fails the stage:
    previews, previewed, previewing).
 4. `train --dry-run`: rows, tokens, updates, none over 32,768 tokens.
 
-It also writes `model/context.tgz` (the image's `lab/model-image/`) for R5,
+It also writes `model/context.tar.gz` (the image's `lab/model-image/`) for R5,
 so Cloud Build needs no repository access.
 
 Output: `dataset/{dataset/{train,val,rejects}.jsonl, stats.json, dataset-manifest.json, manifest.json}`,
@@ -460,8 +460,35 @@ stage at once. SMOKE caps the Flex-start wait at 30 minutes.
 |---|---|---|---|---|
 | 1 | `a3-highgpu-1g` (1× H100 80 GB) | Flex-start, max wait 4 h | us-central1 | not preempted once started; preemptible quota (64) |
 | 2 | `a3-highgpu-1g` | Spot, up to 3 preemption resumes per region | us-central1 → us-east4 → us-west1 | a preemption loses ≤ 50 updates (≈ 9 min) |
-| 3 | `a2-ultragpu-1g` (A100 80 GB) | on demand | us-central1 | needs the quota request ([PIPELINE.md §4.1](PIPELINE.md#41-quotas-a-person-start-first-they-take-a-day-or-more)) |
+| 3 | `a2-ultragpu-1g` (A100 80 GB) | on demand | us-central1 | needs the quota request ([PIPELINE.md §4.1](PIPELINE.md#41-quotas-a-person-start-first-they-take-a-day-or-more)): 0 today, so the rung ends as `capacity` (at once, or after `max_pending_s`) and the ladder moves on |
 | 4 | `a2-highgpu-1g` (A100 40 GB) | on demand | us-central1 | fits (r3 peaked at 21.6 GB), about 2× slower |
+
+**The job's lifecycle.** Vertex needs its service agent before the first
+job ([PIPELINE.md §4.4](PIPELINE.md#44-the-two-secrets-first-a-person-targeted-apply-then-no-echo-writes)).
+The workflow writes the job's name to `wf/runs/<id>/train/current.json` the
+moment the create returns, and removes it once the job has ended. The
+create has no request id, so a create whose answer is lost (a 5xx, a
+dropped connection) is not simply sent again: each create carries a
+one-off `create` label, and the workflow lists the region's jobs by that
+label (`customJobs.list`, filter `labels.create=<value>`) and takes the job
+it finds before it sends the create once more. A resume
+(or a re-run of the stage) finds a job there that is still queued or
+running and **adopts** it instead of creating a second one (two jobs would
+write the same `progress.json` and checkpoints); a job from a rung no
+longer in the ladder is cancelled. A round that fails while a job runs
+cancels that job, so it does not keep an H100 billing. An execution
+cancelled by hand runs no step after the cancel: its job keeps running
+until a `resume_from train` adopts it, or until you cancel it
+(`gcloud ai custom-jobs cancel <job> --region <region>`, the job and region
+are in `current.json`).
+Every cancel (overdue, never started, a stopped round) is **waited out**:
+Vertex cancels asynchronously, so the workflow polls every 30 s, up to
+15 min, until the job is `SUCCEEDED`, `FAILED`, `CANCELLED` or `EXPIRED`
+before it moves to the next rung (a job that still succeeds is taken; one
+still not ended after 15 min fails the stage as training `fatal`, its
+`current.json` kept, rather than start a second job beside it).
+A Flex-start or Spot job that ends without ever starting is `capacity`,
+whatever its message.
 
 Disk pd-ssd 500 GB, timeout 12 h, service account `souschef-trainer` (bucket
 only, no secrets). Expect 610–650 updates for an r4-sized set, 2.0–2.4 h of
@@ -471,6 +498,7 @@ SFT on the H100, eval loss falling across about 4 validations.
 
 ```bash
 make pipeline-retrain RESUME=train RUN=$RUN    # = gcloud workflows execute souschef-retrain … resume_from train
+gcloud storage cat $PIPE/wf/runs/$RUN/train/current.json | jq     # the job the round is on, while one runs
 gcloud ai custom-jobs list --project $PROJECT --region us-central1 --filter="displayName~$RUN"
 gcloud storage cat $W/train/progress.json | jq
 gcloud ai custom-jobs stream-logs <job id> --project $PROJECT --region us-central1
@@ -503,10 +531,21 @@ accepts: one GGUF and a `Modelfile` with temperature 0.3, presence_penalty 0,
 top_k 20, top_p 0.95, num_ctx 65536.
 
 **The image** (Cloud Build, `infra/modules/pipeline/cloudbuild-model.yaml`,
-service account `souschef-builder`, `E2_HIGHCPU_8`, 200 GB, 1 h): copy the
-stage, `model-context.sh`, `docker build --build-context model=…` from
-`model/context.tgz`, push `us-east4-docker.pkg.dev/$PROJECT/sous-chef-model/model:c-$RUN`
-(tags are immutable), record the digest in `model/image.json`. The context
+service account `souschef-builder`, `E2_HIGHCPU_8`, 200 GB, 1 h, worker
+release `2026.09` = Docker Engine 29): copy the stage, `model-context.sh`,
+`docker build --provenance=false --sbom=false --build-context model=…` with
+`gcr.io/cloud-builders/docker:29` (pinned by digest) from
+`model/context.tar.gz` (`context.tgz` from lab images before the rename; the
+workflow takes either), push `us-east4-docker.pkg.dev/$PROJECT/sous-chef-model/model:c-$RUN`
+(tags are immutable), record the digest in `model/image.json`. The default
+worker and builder are Docker 20.10, which answers `unknown flag:
+--build-context`; without `--provenance=false` buildx on Engine 29 pushes an
+index with an attestation manifest and the recorded digest would be the
+index's. The workflow gives a build that stays queued or pending (awaiting
+approval) 3 h, then cancels it (`build_stuck`). A build that ends
+`TIMEOUT`, `INTERNAL_ERROR` or `EXPIRED` is resubmitted once, unless the
+`c-<id>` tag already exists: then the push finished and the image under the
+tag is used (an immutable tag can never be pushed again). The context
 is job-written, so the build spec Terraform writes (`infra/cloudbuild-model.json`)
 pins the sha256 of `Dockerfile`, `.dockerignore`, `entrypoint.sh` and
 `model-context.sh` from the applied checkout's `lab/model-image/`, and the
@@ -584,14 +623,18 @@ from the workstation through an IAP tunnel, and compare with
 ## R7. Decide, roll out, roll back, skip
 
 **The wait.** After `candidate_ready` (with the mention) the workflow asks the
-thermometer for the decision every 10 minutes:
+thermometer for the decision every 30 minutes, and refreshes the retrain
+lock every 6 hours (its TTL is 72 h):
 `GET /api/ingest/souschef/decisions/<candidate_id>` → `pending | approved |
-skipped | expired`. The window is `decision_ttl_days` (14; at most 21, so the
-wait stays under Workflows' 100,000 steps per execution); expiry counts as
-Skip. A 21-day wait alone takes about 79,000 steps, leaving about 20,000 for
-the stages before it: enough for a normal round, tight for a slow one (a
-collect retry plus long training and eval). Keep the 14-day default unless a
-longer window is really needed. Thermometer errors are retried; after 6 h of errors `stage_failed:
+skipped | expired`. An Approve is therefore acted on within about half an
+hour. The window is `decision_ttl_days` (14, also the most allowed); expiry
+counts as Skip. The bound is Workflows' 100,000 steps per execution, and
+running out is an uncatchable `ResourceLimitError` (no `stage_failed`, the
+lock held): the wait costs about 680 steps a day (about 2,160 with the
+thermometer down, its retries included), so 15 days take at most about
+32,000, leaving the rest for a slow round (measured in `tests/wfsim.py`;
+`infra/modules/pipeline/variables.tf` has the arithmetic). The old 10-minute
+poll cost 4,608 steps a day. Thermometer errors are retried; after 6 h of errors `stage_failed:
 decision api` is posted and the wait continues.
 
 **Only this round's decision counts.** The thermometer answers 409 to a second
@@ -622,12 +665,26 @@ wins; a second click gets "already decided".
 3. save the current image to `wf/runs/<id>/rollout.json` (a resume at
    `decide` after a finished rollout finds it `done` and never patches
    production again);
-4. patch `sous-chef-model` to `model@<digest>` with annotation
-   `souschef/candidate=<id>`, wait Ready, warm it with one generate;
-5. check int's `/version`: blueberry-muffin still points at the same URL (no
+4. check the traffic: `sous-chef-model` must send all traffic to its latest
+   ready revision (no `traffic` entries, or `LATEST` at 100 % and no pinned
+   revision; a 0 % tagged preview is fine). A patch keeps a pinned split as
+   it is, so a new revision would serve nothing: a pinned split (a rollback
+   by traffic, a person's choice) is refused with `stage_failed:
+   traffic_pinned`, production untouched and the approval standing; the
+   message gives the `gcloud run services update-traffic … --to-latest`
+   command, then `resume_from decide`. A dry rollout reports a pinned split
+   in its `rolled_out` summary;
+5. patch `sous-chef-model` to `model@<digest>` with annotation
+   `souschef/candidate=<id>` (`forceNewRevision` when its last revision had
+   failed), wait until the service itself has settled (generation observed,
+   not reconciling, the new revision ready; no operation is read: [PIPELINE.md §2](PIPELINE.md#2-moving-parts)), then
+   check that `trafficStatuses` sends 100 % to that revision (else
+   `stage_failed: traffic_not_moved`), and warm it with one generate;
+6. check int's `/version`: blueberry-muffin still points at the same URL (no
    service change is needed);
-6. tag the image `live-<run>` (the cleanup policy keeps `live-*`);
-7. run the bucket's side of the decision as a job (`pipeline decision
+7. tag the image `live-<run>` (a record of every image that was live;
+   adding a tag is allowed under immutable tags);
+8. run the bucket's side of the decision as a job (`pipeline decision
    --outcome approved --digest <digest> --by <approver>` on `souschef-eval`,
    `retrain/decide.py`): `eval/candidate-baseline.json` →
    `baselines/<digest>/baseline.json` (calibrated: 2 paired-eval replicates),
@@ -636,15 +693,16 @@ wins; a second click gets "already decided".
    and `dataset/` under `cases/trained/<candidate>/`, which never expire), every authored
    round this one trained on marked `trained_in` in `cases/pool/index.json`,
    `state/ack.json` deleted; it leaves `result-decision.json`;
-8. post `rolled_out`.
+9. post `rolled_out`.
 
 **Roll back** (a person):
 
 ```bash
 make model-rollout TAG='<previous tag or sha256:digest>'   # repo root; rollout.json's "rollback" line names it
-# or directly:
+# or directly (the second command: `update` keeps a pinned split, so send all traffic to the new revision):
 gcloud run services update sous-chef-model --project $PROJECT --region $GPU_REGION \
   --image "$GPU_REGION-docker.pkg.dev/$PROJECT/sous-chef-model/model:<previous tag>"   # or model@sha256:…
+gcloud run services update-traffic sous-chef-model --project $PROJECT --region $GPU_REGION --to-latest
 ```
 
 The previous image is in `wf/runs/<id>/rollout.json` and in `state/model.json →
@@ -674,9 +732,27 @@ roll out a parked candidate later, `make model-rollout TAG=c-<id>`, then
 
 **Cleanup** after either: `train/checkpoints/` is deleted; adapter, export,
 stage, logs, eval and report stay (180-day lifecycle on `runs/`); locks are
-released. The `sous-chef-model` repository keeps its newest 10 images and
-deletes `c-*` images older than 30 days beyond those (infra/README.md "The
-pipeline"); roll out a parked candidate you still want within that window.
+released.
+
+**Candidate images are never deleted automatically.** The `sous-chef-model`
+repository has a cleanup policy for `c-*` images older than 30 days
+(keeping the newest 10, `r*` and `live-*`), but its tags are immutable, and
+"If a repository has immutable tags enabled, tagged artifacts can't be
+deleted" ([cleanup policies](https://docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy)):
+the policy deletes nothing, and every candidate (about 6.4 GB) stays. A
+parked candidate can therefore be rolled out at any time. To prune by hand
+(a person; no round may be building or rolling out: `state/locks/retrain.json`
+absent), lift the immutability for the deletes and put it back
+([repository settings](https://docs.cloud.google.com/artifact-registry/docs/repositories/update-repo-settings);
+`terraform apply` also puts it back, `modules/model-gpu` sets it):
+
+```bash
+REPO=us-east4-docker.pkg.dev/$PROJECT/sous-chef-model/model
+gcloud artifacts docker images list $REPO --include-tags --format='table(version,tags,createTime)'   # pick the c-* to drop; never r*, live-*, or what sous-chef-model or state/model.json names
+gcloud artifacts repositories update sous-chef-model --project $PROJECT --location us-east4 --no-immutable-tags
+gcloud artifacts docker images delete "$REPO@sha256:<digest>" --delete-tags --project $PROJECT --quiet   # once per image
+gcloud artifacts repositories update sous-chef-model --project $PROJECT --location us-east4 --immutable-tags
+```
 
 ## R8. Debugging a failed run
 
@@ -694,7 +770,7 @@ engine/{index.json, <sha>/{snapshot.tar.zst, engine.json}}   manifests/<hash>.js
 runs/<rt-run>/run.json                     the round: trigger, images, manifest, engine
               result-<stage>.json          each stage's {status, stage, run_id, notification?, metrics, artifacts[]}
               prepare/  collect/  dataset/  train/{checkpoints/,adapter/,export/,stage/,progress.json,DONE}
-              model/{context.tgz,image.json}  eval/  report.json  decision.json
+              model/{context.tar.gz,image.json}  eval/  report.json  decision.json
 ```
 
 **First look:**
@@ -707,6 +783,11 @@ gcloud storage ls $W/ && gcloud storage cat $W/result-<stage>.json | jq
 gcloud run jobs executions list --job souschef-<stage> --project $PROJECT --region $REGION --limit 3
 gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=souschef-<stage>" --project $PROJECT --limit 50 --freshness 1d
 ```
+
+Never re-run or start an execution with `--call-log-level=log-all-calls` to
+see more: it logs every call's arguments and results, the thermometer key
+among them ([PIPELINE.md §7](PIPELINE.md#7-day-two)). The stage's inputs and
+outputs are in `runs/<id>/`.
 
 Exit codes of every job: 0 = the stage finished (the outcome is in its result
 file), 1 = failure (retried by policy, then `stage_failed`), 2 = configuration
@@ -758,6 +839,15 @@ which the thermometer treats as a duplicate, and its expiry is kept. With
 | `engine_stale` / retrain refused | no snapshot for the launcher's commit | `engine-vendor` ([DRIFT.md §6](DRIFT.md#6-the-engine-snapshot)), resume |
 | `stale lock` (posted once a day by the drift workflow when a `retrain` verdict meets it) | a round's lock past its expiry: no progress for 72 h | check no execution is active, then `gcloud storage rm $PIPE/state/locks/retrain.json` |
 | candidate not Ready | no L4 in us-east4 for `l4_wait_minutes` (6 h) | wait or request quota 5; resume from `candidate` |
+| `revision_not_ready` | a patched GPU service's new revision did not become ready (no L4, a bad image); the message has its `terminalCondition` | resume the stage; the next patch to the same image forces a new revision |
+| `revision_not_ready` (rollout) | production's new revision did not become ready: the old revision still serves; `rollout.json` is `unconfirmed` and keeps the old image | `resume_from decide` (the next patch forces a new revision); nothing to roll back |
+| `operation_timeout` | a patched job or service did not settle (generation observed, not reconciling) within the wait | `gcloud run services describe` / `jobs describe` for its conditions; resume the stage |
+| `traffic_pinned` (rollout) | `sous-chef-model` has a pinned traffic split, so a new revision would serve nothing; production untouched, the approval stands | if the latest revision should serve: `gcloud run services update-traffic sous-chef-model --to-latest --region us-east4`, then `resume_from decide` |
+| `traffic_not_moved` (rollout) | the new revision is ready but `trafficStatuses` does not send it 100 % | read the service's traffic; production may serve the new image partly; fix the split, then `resume_from decide` (`rollout.json` keeps the old image for a rollback) |
+| `rollout_unconfirmed` (rollout) | the patch of `sous-chef-model` was sent but its outcome is unknown (the wait timed out, a read failed): production may already serve the candidate; `rollout.json` is `unconfirmed` and keeps the old image | `gcloud run services describe sous-chef-model --region us-east4` (`trafficStatuses`, `latestReadyRevision`); then `resume_from decide` to finish the rollout, or roll back with the message's `make model-rollout TAG=…` |
+| `build_stuck` | the model build stayed queued or pending for 3 h; it was cancelled | `gcloud builds list --region us-east4`; resume from `build` |
+| `no_build_context` | `model/context.tar.gz` (or `.tgz`) is missing | resume from `dataset` |
+| `build FAILURE` with `unknown flag: --build-context` | the build ran on the legacy worker or builder (Docker 20.10): `infra/cloudbuild-model.json` predates `workerRelease` | `terraform apply` (rewrites the spec), resume from `build` |
 | `decision_mismatch` | the decision row is not this round's (another notification, run or SMOKE flag; a duplicate at the first ask; a failing bar approved without the override) | look at the decision page and the thermometer's API keys (only the key id in `souschef_ingest_key_ids` may post); then `resume_from decide`, or start a new round |
 | `digest_mismatch` | the candidate tag, the build record and the decision's digest disagree (at rollout), or `model/image.json` is not what the `c-<id>` tag names (at candidate or eval) | do not roll out; read `model/image.json`, `decision.json` and the repository's `c-<id>` tag; at candidate or eval, `resume_from build` |
 | `candidate_decided` (at init) | a resume up to `eval` of a decided candidate | `resume_from decide`, or a new round |

@@ -30,10 +30,11 @@ steps:
         if gcloud artifacts docker images describe "$$REPO:$$T" --project "$_PROJECT_ID" >/dev/null 2>&1; then NEED=false; fi
         printf 'REPO=%s\nT=%s\nNEED=%s\n' "$$REPO" "$$T" "$$NEED" | tee /workspace/trainer.env
 
-  - name: gcr.io/cloud-builders/docker
+  # docker:29 (Docker 29.8 CLI with buildx), pinned by its index digest, on a
+  # 2026.09 worker (Engine 29): the root cloudbuild.yaml's header says why.
+  - name: gcr.io/cloud-builders/docker@sha256:6c9d05f41f8e721e05f7d3d1b5c29904ac2595d1b67de093f59420b6e8146ecf
     id: trainer-build
     waitFor: ['trainer-check']
-    env: ['DOCKER_BUILDKIT=1']
     entrypoint: bash
     args:
       - -c
@@ -42,7 +43,7 @@ steps:
         source /workspace/trainer.env
         if [ "$$NEED" != true ]; then echo "$$REPO:$$T exists: not building"; exit 0; fi
         docker pull "$$REPO:latest" >/dev/null 2>&1 && CACHE=(--cache-from "$$REPO:latest") || CACHE=()
-        docker build --platform linux/amd64 -f images/trainer/Dockerfile --build-arg BUILDKIT_INLINE_CACHE=1 "$${CACHE[@]}" \
+        docker build --platform linux/amd64 --provenance=false --sbom=false -f images/trainer/Dockerfile --build-arg BUILDKIT_INLINE_CACHE=1 "$${CACHE[@]}" \
           -t "$$REPO:$$T" -t "$$REPO:latest" .
         docker push "$$REPO:$$T"
         docker push "$$REPO:latest"
@@ -63,6 +64,7 @@ steps:
 
 timeout: 10800s
 options:
+  workerRelease: "2026.09" # Docker Engine 29
   machineType: E2_HIGHCPU_32
   diskSizeGb: 300
   logging: CLOUD_LOGGING_ONLY

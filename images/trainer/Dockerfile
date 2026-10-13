@@ -103,6 +103,10 @@ RUN set -eux; \
     chmod 0755 /opt/trainer/entrypoint.sh; \
     mkdir -p /work/hf
 
+# gcloud storage: no parallel composite uploads (composite objects carry no
+# MD5 and need the compose permission; audit ST-6/VX-9)
+ENV CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=False
+
 ENV PATH=/opt/lab/.venv-train/bin:$PATH \
     SOUS_CHEF_LAB=/opt/lab \
     HF_HOME=/work/hf \

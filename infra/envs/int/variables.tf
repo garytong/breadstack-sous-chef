@@ -206,7 +206,7 @@ variable "pipeline_l4_headroom" {
 variable "pipeline_cleanup_candidates" {
   type        = bool
   default     = true
-  description = "With the pipeline on: the model repository's cleanup policy deletes c-* candidate images older than 30 days, keeping the newest 10, every hand-built r* tag and every image ever rolled out (live-*)."
+  description = "With the pipeline on: the model repository gets a cleanup policy for c-* candidate images older than 30 days (keeping the newest 10, every hand-built r* tag and every image ever rolled out, live-*). It deletes nothing while the repository's tags are immutable (modules/model-gpu immutable_tags = true): Artifact Registry never deletes a tagged artifact under immutable tags, so every candidate (~6 GB) stays until pruned by hand (docs/RETRAIN.md R7 \"Cleanup\")."
 }
 variable "pipeline_alert_emails" {
   type        = list(string)

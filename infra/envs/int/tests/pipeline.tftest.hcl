@@ -49,6 +49,7 @@ variables {
   pipeline_schedule        = false
   pipeline_retrain_auto    = false
   pipeline_rollout         = false
+  pipeline_alert_emails    = [] # the live tfvars sets one; pipeline_needs_alert_emails needs none
 }
 
 run "pipeline_off" {
