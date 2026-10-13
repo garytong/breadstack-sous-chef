@@ -41,10 +41,15 @@ main:
   steps:
     - init:
         assign:
-          - a: '${default(args, {})}'
+          # map defaults are YAML values: Workflows expressions have no map literals
+          - empty: {}
+          - manual_trigger:
+              drift_run: null
+              reason: "manual"
+          - a: '${default(args, empty)}'
           - mode: '${default(map.get(a, "mode"), "full")}'
           - resume_from: '${default(map.get(a, "resume_from"), "")}'
-          - trigger: '${default(map.get(a, "trigger"), {"drift_run": null, "reason": "manual"})}'
+          - trigger: '${default(map.get(a, "trigger"), manual_trigger)}'
           - dry_req: '${default(map.get(a, "dry_rollout"), false)}'
           - accept_loss: '${default(map.get(a, "accept_rebase_loss"), "")}'
           - wf: "souschef-retrain"
@@ -155,8 +160,8 @@ main:
                       bucket: '${cfg.bucket}'
                       prefix: '${"runs/" + run_id + "/"}'
                       imgs: '${imgs}'
-                      trigger: '${default(map.get(default(ident.run, {}), "trigger"), trigger)}'
-                      dry_req: '${dry_req or default(map.get(default(ident.run, {}), "dry_rollout"), false)}'
+                      trigger: '${default(map.get(default(ident.run, empty), "trigger"), trigger)}'
+                      dry_req: '${dry_req or default(map.get(default(ident.run, empty), "dry_rollout"), false)}'
                       deployed: '${ident.deployed}'
             - record:
                 call: run_record
@@ -452,6 +457,11 @@ main:
                 switch:
                   - condition: '${locked and mode != "smoke" and resume_stage != ""}'
                     steps:
+                      - resume_data:
+                          assign:
+                            - resume_args:
+                                resume_from: '${resume_stage}'
+                                run_id: '${run_id}'
                       - write_failed:
                           try:
                             call: gcs_write
@@ -465,7 +475,7 @@ main:
                                 error_class: '${default(map.get(err, "error_class"), "error")}'
                                 at: '${time.format(sys.now())}'
                                 execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
-                                resume: '${"gcloud workflows execute souschef-retrain --project=" + cfg.project + " --location=" + cfg.workflows_region + " --data=" + json.encode_to_string(json.encode_to_string({"resume_from": resume_stage, "run_id": run_id}))}'
+                                resume: '${"gcloud workflows execute souschef-retrain --project=" + cfg.project + " --location=" + cfg.workflows_region + " --data=" + json.encode_to_string(json.encode_to_string(resume_args))}'
                           except:
                             as: e5
                             steps:
@@ -668,11 +678,12 @@ retrain_identity:
         assign:
           # the round's manifest, pinned in run.json: every stage reads this
           # one, even if the launcher deploys again mid-round
+          - empty: {}
           - pin:
-              hash: '${map.get(default(st, {}), "hash")}'
-              launcher_build: '${map.get(default(st, {}), "launcher_build")}'
-              generated_from: '${map.get(default(st, {}), "generated_from")}'
-          - h: '${default(map.get(default(st, {}), "hash"), "nohash00")}'
+              hash: '${map.get(default(st, empty), "hash")}'
+              launcher_build: '${map.get(default(st, empty), "launcher_build")}'
+              generated_from: '${map.get(default(st, empty), "generated_from")}'
+          - h: '${default(map.get(default(st, empty), "hash"), "nohash00")}'
           - rid: '${"rt-" + ts + "-" + text.substring(h + "00000000", 0, 8)}'
           - cand: '${"c-" + rid}'
     - smoke_tag:
@@ -817,7 +828,11 @@ run_record:
           - rec.status: running
           - rec.updated_at: '${time.format(sys.now())}'
           - rec.images: '${ctx.imgs}'
-          - rec.resumes: '${list.concat(default(map.get(existing, "resumes"), []), {"at": time.format(sys.now()), "from": resume_from, "execution": sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")})}'
+          - resume_entry:
+              at: '${time.format(sys.now())}'
+              from: '${resume_from}'
+              execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+          - rec.resumes: '${list.concat(default(map.get(existing, "resumes"), []), resume_entry)}'
     - write:
         call: gcs_write
         args:
@@ -911,15 +926,16 @@ stage_job:
   # Run a lab stage up to `attempts` times; post the notification its result
   # carries (candidate_ready excepted: the decide stage sends that one with
   # the decision). Exit 2 is never retried. {res, attempt, execution}
-  params: [cfg, ctx, stage, job, args, timeout_s, attempts, env: {}]
+  params: [cfg, ctx, stage, job, args, timeout_s, attempts, env: null]
   steps:
     - base:
         assign:
+          - empty: {}
           - jenv:
               SERVICE_IMAGE_TAG: '${ctx.imgs.tag}'
               PIPELINE_RUN_ID: '${ctx.run_id}'
               PIPELINE_CANDIDATE_ID: '${ctx.candidate_id}'
-          - jenv: '${map.merge(jenv, env)}'
+          - jenv: '${map.merge(jenv, default(env, empty))}'
     - tries:
         for:
           value: attempt
@@ -1000,8 +1016,11 @@ result_note:
         switch:
           - condition: '${res == null}'
             return: "; no result file"
+    - empty_map:
+        assign:
+          - empty: {}
     - some:
-        return: '${"; result status " + default(map.get(res, "status"), "?") + ": " + json.encode_to_string(default(map.get(res, "error"), default(map.get(res, "metrics"), {})))}'
+        return: '${"; result status " + default(map.get(res, "status"), "?") + ": " + json.encode_to_string(default(map.get(res, "error"), default(map.get(res, "metrics"), empty)))}'
 
 stage_collect:
   # Teacher collection; a teacher build change mid-run re-resolves the images
@@ -1011,6 +1030,7 @@ stage_collect:
   steps:
     - init:
         assign:
+          - empty: {}
           - restarts: 0
           - imgs: '${ctx.imgs}'
           - cargs: '${["collect", "--run-id", ctx.run_id, "--bucket", "gs://" + cfg.bucket, "--mode", ctx.mode]}'
@@ -1027,13 +1047,13 @@ stage_collect:
         result: out
     - changed:
         switch:
-          - condition: '${default(map.get(default(out.res, {}), "status"), "") != "teacher_changed"}'
+          - condition: '${default(map.get(default(out.res, empty), "status"), "") != "teacher_changed"}'
             return: '${imgs}'
           - condition: '${restarts >= 1}'
             raise:
               pipeline_stage: "collect"
               error_class: "teacher_changed"
-              message: '${"teacher build changed twice during collection (" + json.encode_to_string(default(map.get(out.res, "metrics"), {})) + "); collection stopped"}'
+              message: '${"teacher build changed twice during collection (" + json.encode_to_string(default(map.get(out.res, "metrics"), empty)) + "); collection stopped"}'
               attempt: 2
               attempts: 2
     - re_resolve:
@@ -1178,6 +1198,7 @@ vertex_attempt:
   steps:
     - init:
         assign:
+          - empty: {}
           - base: '${"https://" + rung.region + "-aiplatform.googleapis.com/v1/"}'
           - started: '${sys.now()}'
           - entry:
@@ -1394,11 +1415,11 @@ vertex_attempt:
         result: prog
     - prog_fields:
         assign:
-          - pst: '${default(map.get(default(prog, {}), "status"), "")}'
-          - pat: '${map.get(default(prog, {}), "updated_at")}'
+          - pst: '${default(map.get(default(prog, empty), "status"), "")}'
+          - pat: '${map.get(default(prog, empty), "updated_at")}'
           - pnew: false
-          - step0: '${default(map.get(default(prog0, {}), "last_step"), 0)}'
-          - step1: '${default(map.get(default(prog, {}), "last_step"), 0)}'
+          - step0: '${default(map.get(default(prog0, empty), "last_step"), 0)}'
+          - step1: '${default(map.get(default(prog, empty), "last_step"), 0)}'
     - prog_new:
         # written during this attempt (time.parse only on a string; a minute
         # of slack for a stamp at whole seconds or a skewed clock — the
@@ -1437,7 +1458,7 @@ vertex_attempt:
     - finish:
         assign:
           - entry.ended_at: '${time.format(sys.now())}'
-          - entry.vertex_state: '${default(map.get(default(cj, {}), "state"), null)}'
+          - entry.vertex_state: '${default(map.get(default(cj, empty), "state"), null)}'
     - out:
         return: '${entry}'
 
@@ -1796,7 +1817,8 @@ stage_decide:
         result: rev
     - text:
         assign:
-          - note: '${default(map.get(default(rev, {}), "notification"), {})}'
+          - empty: {}
+          - note: '${default(map.get(default(rev, empty), "notification"), empty)}'
           - bar_pass: '${default(map.get(dec, "bar_pass"), false)}'
           - ttl_days: '${cfg.decision_ttl_days}'
     - smoke_ttl:
@@ -1844,7 +1866,7 @@ stage_decide:
               candidate_id: '${ctx.candidate_id}'
               title: '${default(map.get(note, "title"), "Sous Chef candidate ready: decide or skip" + smoke_label)}'
               summary: '${default(map.get(note, "summary"), ctx.candidate_id + " vs the live model; bar " + bar_word + ". Approve rolls it out to int now. Skip parks it and batches its cases into the next big drift.")}'
-              details: '${default(map.get(note, "details"), {})}'
+              details: '${default(map.get(note, "details"), empty)}'
               dedup_key: null
               decision:
                 expires_at: '${expires_at}'
@@ -2417,7 +2439,8 @@ built_image:
         result: from_tag
     - seen:
         assign:
-          - built: '${map.get(default(img, {}), "digest")}'
+          - empty: {}
+          - built: '${map.get(default(img, empty), "digest")}'
     - same:
         switch:
           - condition: '${from_tag == null or built == null or from_tag != built}'
@@ -2450,8 +2473,9 @@ approved_digest:
         result: dec
     - seen:
         assign:
-          - built: '${map.get(default(img, {}), "digest")}'
-          - shown: '${map.get(default(dec, {}), ["results", "candidate", "digest"])}'
+          - empty: {}
+          - built: '${map.get(default(img, empty), "digest")}'
+          - shown: '${map.get(default(dec, empty), ["results", "candidate", "digest"])}'
     - same:
         switch:
           - condition: '${from_tag == null or built == null or shown == null or from_tag != built or shown != built}'
@@ -2520,8 +2544,9 @@ route_check:
                   note: "Route check skipped (int /version unreachable)."
     - info:
         assign:
-          - ri: '${map.get(default(r.body, {}), ["route_info", cfg.route_name])}'
-          - url: '${map.get(default(ri, {}), "url")}'
+          - empty: {}
+          - ri: '${map.get(default(r.body, empty), ["route_info", cfg.route_name])}'
+          - url: '${map.get(default(ri, empty), "url")}'
     - judge:
         switch:
           - condition: '${ri == null}'
@@ -2545,6 +2570,7 @@ stage_skip:
   steps:
     - who:
         assign:
+          - empty: {}
           - state: '${default(map.get(d, "state"), "expired")}'
           - by: '${default(map.get(d, "decided_by"), "expiry")}'
     - expired_by:
@@ -2578,8 +2604,8 @@ stage_skip:
                       candidate_id: '${ctx.candidate_id}'
                       run_id: '${ctx.run_id}'
                       smoke: true
-                      image: '${map.get(default(img, {}), "image")}'
-                      digest: '${map.get(default(img, {}), "digest")}'
+                      image: '${map.get(default(img, empty), "image")}'
+                      digest: '${map.get(default(img, empty), "digest")}'
                       state: '${state}'
                       decided_by: '${by}'
                       decided_at: '${default(map.get(d, "decided_at"), time.format(sys.now()))}'
@@ -2599,7 +2625,7 @@ stage_skip:
                     digest: null
     - count:
         assign:
-          - authored: '${map.get(default(dec, {}), ["results", "cases", "authored_accumulated"])}'
+          - authored: '${map.get(default(dec, empty), ["results", "cases", "authored_accumulated"])}'
           - words: "Its authored cases stay in the pool"
     - count_words:
         switch:
@@ -2672,7 +2698,8 @@ decision_job:
         result: out
     - note:
         assign:
-          - m: '${default(map.get(default(out.res, {}), "metrics"), {})}'
+          - empty: {}
+          - m: '${default(map.get(default(out.res, empty), "metrics"), empty)}'
     - done:
         return: '${outcome + ": " + default(map.get(m, "baseline"), default(map.get(m, "ack"), "done")) + " " + default(map.get(m, "parked"), "")}'
 

@@ -32,7 +32,8 @@ main:
   steps:
     - init:
         assign:
-          - a: '${default(args, {})}'
+          - empty: {}
+          - a: '${default(args, empty)}'
           - mode: '${default(map.get(a, "mode"), "poll")}'
           - force: '${default(map.get(a, "force"), false)}'
           - wf: "souschef-drift"
@@ -89,13 +90,13 @@ main:
                           call: drift_prepare
                           args:
                             cfg: '${cfg}'
-                          result: env
+                          result: penv
                       - skipped:
                           switch:
-                            - condition: '${env.skip != null}'
+                            - condition: '${penv.skip != null}'
                               return:
                                 run_id: '${run_id}'
-                                skipped: '${env.skip}'
+                                skipped: '${penv.skip}'
                       - g:
                           call: drift_gpu
                           args:
@@ -103,7 +104,7 @@ main:
                             run_id: '${run_id}'
                             mode: '${mode}'
                             force: '${force}'
-                            env: '${env}'
+                            env: '${penv}'
                             wait_lock: '${mode != "check"}'
                           result: out
         except:
@@ -363,13 +364,17 @@ drift_job:
           bucket: '${cfg.bucket}'
           name: '${"drift/" + run_id + "/result.json"}'
         result: res
+    - nores:
+        # no map literals inside ${...}: the `{}` fallback lives in a variable
+        assign:
+          - empty: {}
     - failed:
         switch:
           - condition: '${not(r.ok)}'
             raise:
               pipeline_stage: '${stage}'
               error_class: '${"exit " + string(r.exit_code)}'
-              message: '${"job " + cfg.jobs.drift + " " + json.encode_to_string(args) + " failed: " + r.message + " | result: " + json.encode_to_string(default(res, {}))}'
+              message: '${"job " + cfg.jobs.drift + " " + json.encode_to_string(args) + " failed: " + r.message + " | result: " + json.encode_to_string(default(res, empty))}'
               attempt: 1
               attempts: 1
               execution: '${r.execution}'
@@ -392,13 +397,13 @@ drift_poll:
         call: drift_prepare
         args:
           cfg: '${cfg}'
-        result: env
+        result: penv
     - skipped:
         switch:
-          - condition: '${env.skip != null}'
+          - condition: '${penv.skip != null}'
             return:
               run_id: '${run_id}'
-              skipped: '${env.skip}'
+              skipped: '${penv.skip}'
     - args:
         assign:
           - jargs: '${["drift", "poll", "--run-id", run_id, "--bucket", "gs://" + cfg.bucket]}'
@@ -414,7 +419,7 @@ drift_poll:
           run_id: '${run_id}'
           stage: "drift-poll"
           args: '${jargs}'
-          env: '${env.job_env}'
+          env: '${penv.job_env}'
           timeout_s: 1800
         result: res
     - tell:
@@ -437,7 +442,8 @@ drift_poll:
     - due:
         assign:
           - due: '${default(map.get(res, "check_due"), false) == true}'
-          - pending: '${map.get(default(st, {}), "pending_check_at")}'
+          - empty: {}
+          - pending: '${map.get(default(st, empty), "pending_check_at")}'
     - due_state:
         switch:
           - condition: '${not(due) and pending != null and pending != "" and time.parse(pending) <= sys.now()}'
@@ -457,7 +463,7 @@ drift_poll:
                     run_id: '${check_id}'
                     mode: "check"
                     force: false
-                    env: '${env}'
+                    env: '${penv}'
                     wait_lock: false
                   result: checked
               - with_check:
@@ -515,8 +521,9 @@ heartbeat:
         result: mdl
     - tiles:
         assign:
-          - dep: '${default(dep, {})}'
-          - mdl: '${default(mdl, {})}'
+          - empty: {}
+          - dep: '${default(dep, empty)}'
+          - mdl: '${default(mdl, empty)}'
     - send:
         call: notify
         args:
@@ -857,13 +864,22 @@ drift_after:
         switch:
           - condition: '${lock != null}'
             return: "a retrain round is in progress (state/locks/retrain.json); noted in its report"
+    - retrain_args:
+        # the retrain execution's argument, built as YAML (no map literals
+        # inside ${...}) and sent JSON-encoded below
+        assign:
+          - retrain_args:
+              mode: "full"
+              trigger:
+                drift_run: '${run_id}'
+                reason: '${default(map.get(res, "retrain_reason"), "drift")}'
     - start:
         call: api_send
         args:
           method: POST
           url: '${"https://workflowexecutions.googleapis.com/v1/projects/" + cfg.project + "/locations/" + cfg.workflows_region + "/workflows/" + cfg.workflows.retrain + "/executions"}'
           body:
-            argument: '${json.encode_to_string({"mode": "full", "trigger": {"drift_run": run_id, "reason": default(map.get(res, "retrain_reason"), "drift")}})}'
+            argument: '${json.encode_to_string(retrain_args)}'
         result: ex
     - done:
         return: '${ex.name}'
@@ -889,17 +905,17 @@ drift_night:
         call: drift_prepare
         args:
           cfg: '${cfg}'
-        result: env
+        result: penv
     - skipped:
         switch:
-          - condition: '${env.skip != null}'
+          - condition: '${penv.skip != null}'
             return:
               run_id: '${run_id}'
-              skipped: '${env.skip}'
+              skipped: '${penv.skip}'
     - mode:
         assign:
           - nmode: '${default(map.get(night, "mode"), "check")}'
-          - env.job_env.NIGHT_FALLBACK: "1"
+          - penv.job_env.NIGHT_FALLBACK: "1"
     - exam:
         call: drift_exam
         args:
@@ -907,7 +923,7 @@ drift_night:
           run_id: '${run_id}'
           mode: '${nmode}'
           force: '${default(map.get(night, "force"), false)}'
-          env: '${env}'
+          env: '${penv}'
           model_url: '${cfg.prod_model.url}'
           timeout_s: 21600
         result: res
@@ -922,7 +938,7 @@ drift_night:
           cfg: '${cfg}'
           run_id: '${run_id}'
           res: '${res}'
-          prod: '${env.prod}'
+          prod: '${penv.prod}'
         result: started
     - done:
         return:

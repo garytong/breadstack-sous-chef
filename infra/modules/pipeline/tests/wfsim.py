@@ -17,11 +17,17 @@ one):
                return), steps, for (in / range, index, break, continue),
                try / retry / except, raise, return, next (a step name, end,
                break, continue); a jump never leaves a for loop
-  expressions  ${...}: literals, lists, maps, . and [] access, and / or
-               (short-circuit, booleans only), not, in, == != < <= > >=,
-               + - * / % //, unary -, and the standard library functions the
-               definitions call (default, map.*, text.*, time.*, sys.*,
-               json.*, list.concat, keys, len, string, int, double, get_type)
+  expressions  ${...} parsed by lint_workflows' parser (Google's documented
+               grammar: no map literals, `not` binding tighter than any
+               binary operator): literals, list literals, . and [] access,
+               and / or (short-circuit, booleans only), not, in, == != < <=
+               > >=, + - * / % //, unary -, and the standard library
+               functions the definitions call (default, map.*, text.*,
+               time.*, sys.*, json.*, list.concat, keys, len, string, int,
+               double, get_type)
+  deploy check from_files (and the constructor, unless strict=False) refuses
+               a definition lint_workflows finds an error in, as a deploy
+               would (SimError with file:line)
   values       copied on assignment and on every call (Workflows has value
                semantics); a missing key is a KeyError, a bad operand a
                TypeError, an HTTP status >= 400 an HttpError {code, message,
@@ -37,13 +43,19 @@ from __future__ import annotations
 import copy
 import json
 import re
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lint_workflows import (ExprSyntaxError, Node, check_program, check_source, load_source,  # noqa: E402
+                            parse_expression)
 
 # ── errors and control flow ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -171,190 +183,16 @@ def to_json(v: Any) -> str:
 
 # ── the expression language ─────────────────────────────────────────────────────────────────────────────────────────────
 
-_TOKEN = re.compile(r"""
-    (?P<ws>\s+)
-  | (?P<num>\d+\.\d*(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|\.\d+)
-  | (?P<str>"(?:[^"\\]|\\.)*")
-  | (?P<name>[A-Za-z_][A-Za-z0-9_]*)
-  | (?P<op>//|==|!=|<=|>=|[-+*/%<>()\[\]{},:.])
-""", re.VERBOSE)
-
-KEYWORDS = {"and", "or", "not", "in", "true", "false", "null"}
+# The grammar is lint_workflows' (one tokenizer and parser for the checker and the simulator, built from
+# Google's documented grammar): no map literals inside ${}, `not` binding tighter than any binary operator,
+# true/True/TRUE, '...' strings. Node, parse_expression and ExprSyntaxError come from there.
 
 
-def tokenize(src: str) -> list[tuple[str, Any]]:
-    out, i = [], 0
-    while i < len(src):
-        m = _TOKEN.match(src, i)
-        if not m:
-            raise SimError(f"cannot tokenize expression at {src[i:i + 20]!r} in {src!r}")
-        i = m.end()
-        kind = m.lastgroup
-        text = m.group(kind)
-        if kind == "ws":
-            continue
-        if kind == "num":
-            out.append(("num", float(text) if any(c in text for c in ".eE") else int(text)))
-        elif kind == "str":
-            out.append(("str", json.loads(text)))
-        elif kind == "name":
-            out.append(("kw", text) if text in KEYWORDS else ("name", text))
-        else:
-            out.append(("op", text))
-    out.append(("eof", None))
-    return out
-
-
-@dataclass
-class Node:
-    kind: str
-    a: Any = None
-    b: Any = None
-    c: Any = None
-
-
-class Parser:
-    def __init__(self, src: str):
-        self.src = src
-        self.toks = tokenize(src)
-        self.i = 0
-
-    def peek(self) -> tuple[str, Any]:
-        return self.toks[self.i]
-
-    def take(self, kind: str | None = None, val: Any = None) -> tuple[str, Any]:
-        t = self.toks[self.i]
-        if (kind and t[0] != kind) or (val is not None and t[1] != val):
-            raise SimError(f"expected {val or kind} at token {self.i} ({t}) in {self.src!r}")
-        self.i += 1
-        return t
-
-    def at(self, kind: str, val: Any = None) -> bool:
-        t = self.toks[self.i]
-        return t[0] == kind and (val is None or t[1] == val)
-
-    def parse(self) -> Node:
-        n = self.or_()
-        if not self.at("eof"):
-            raise SimError(f"trailing tokens in {self.src!r} at {self.peek()}")
-        return n
-
-    def or_(self) -> Node:
-        n = self.and_()
-        while self.at("kw", "or"):
-            self.take()
-            n = Node("or", n, self.and_())
-        return n
-
-    def and_(self) -> Node:
-        n = self.not_()
-        while self.at("kw", "and"):
-            self.take()
-            n = Node("and", n, self.not_())
-        return n
-
-    def not_(self) -> Node:
-        if self.at("kw", "not"):
-            self.take()
-            return Node("not", self.not_())
-        return self.cmp()
-
-    def cmp(self) -> Node:
-        n = self.add()
-        while True:
-            t = self.peek()
-            if t[0] == "op" and t[1] in ("==", "!=", "<", "<=", ">", ">="):
-                self.take()
-                n = Node("bin", t[1], n, self.add())
-            elif t == ("kw", "in"):
-                self.take()
-                n = Node("bin", "in", n, self.add())
-            else:
-                return n
-
-    def add(self) -> Node:
-        n = self.mul()
-        while self.at("op", "+") or self.at("op", "-"):
-            op = self.take()[1]
-            n = Node("bin", op, n, self.mul())
-        return n
-
-    def mul(self) -> Node:
-        n = self.unary()
-        while any(self.at("op", o) for o in ("*", "/", "%", "//")):
-            op = self.take()[1]
-            n = Node("bin", op, n, self.unary())
-        return n
-
-    def unary(self) -> Node:
-        if self.at("op", "-"):
-            self.take()
-            return Node("neg", self.unary())
-        return self.postfix()
-
-    def postfix(self) -> Node:
-        n = self.primary()
-        while True:
-            if self.at("op", "."):
-                self.take()
-                name = self.take("name")[1]
-                n = Node("attr", n, name)
-            elif self.at("op", "["):
-                self.take()
-                idx = self.or_()
-                self.take("op", "]")
-                n = Node("index", n, idx)
-            elif self.at("op", "("):
-                self.take()
-                args = []
-                if not self.at("op", ")"):
-                    args.append(self.or_())
-                    while self.at("op", ","):
-                        self.take()
-                        args.append(self.or_())
-                self.take("op", ")")
-                n = Node("call", n, args)
-            else:
-                return n
-
-    def primary(self) -> Node:
-        t = self.take()
-        if t[0] in ("num", "str"):
-            return Node("lit", t[1])
-        if t == ("kw", "true"):
-            return Node("lit", True)
-        if t == ("kw", "false"):
-            return Node("lit", False)
-        if t == ("kw", "null"):
-            return Node("lit", None)
-        if t[0] == "name":
-            return Node("name", t[1])
-        if t == ("op", "("):
-            n = self.or_()
-            self.take("op", ")")
-            return n
-        if t == ("op", "["):
-            items = []
-            if not self.at("op", "]"):
-                items.append(self.or_())
-                while self.at("op", ","):
-                    self.take()
-                    items.append(self.or_())
-            self.take("op", "]")
-            return Node("list", items)
-        if t == ("op", "{"):
-            pairs = []
-            if not self.at("op", "}"):
-                while True:
-                    k = self.or_()
-                    self.take("op", ":")
-                    pairs.append((k, self.or_()))
-                    if not self.at("op", ","):
-                        break
-                    self.take()
-            self.take("op", "}")
-            return Node("map", pairs)
-        raise SimError(f"unexpected token {t} in {self.src!r}")
+def parse(src: str) -> Node:
+    try:
+        return parse_expression(src)
+    except ExprSyntaxError as e:
+        raise SimError(f"Workflows would not deploy this expression ({e.rule}: {e} at col {e.pos + 1}): {src!r}") from None
 
 
 def dotted(n: Node) -> str | None:
@@ -419,6 +257,15 @@ class Scope:
 HttpRouter = Callable[[str, str, dict, dict, Any, Any], tuple[int, Any, dict]]
 
 
+def refuse_undeployable(findings: list, what: str) -> None:
+    errors = [f for f in findings if f.severity == "error"]
+    if errors:
+        head = "\n".join(str(f) for f in errors[:20])
+        more = f"\n... and {len(errors) - 20} more" if len(errors) > 20 else ""
+        raise SimError(f"{what} would not deploy ({len(errors)} error(s); lint_workflows.py lists them all):\n"
+                       f"{head}{more}")
+
+
 @dataclass
 class TraceEvent:
     t: float
@@ -429,9 +276,11 @@ class TraceEvent:
 class Interpreter:
     def __init__(self, program: dict, *, http: HttpRouter, secrets: Callable[[dict], str], env: dict[str, str],
                  clock: VirtualClock, on_sleep: Callable[["Interpreter", float], None] | None = None,
-                 max_steps: int = 2_000_000, log: Callable[[str], None] | None = None):
+                 max_steps: int = 2_000_000, log: Callable[[str], None] | None = None, strict: bool = True):
         if "main" not in program:
             raise SimError("no main")
+        if strict:
+            refuse_undeployable(check_program(program), "the program")
         self.program = program
         self.http = http
         self.secrets = secrets
@@ -447,9 +296,14 @@ class Interpreter:
 
     # ── entry ──
     @classmethod
-    def from_files(cls, *paths: str, **kw: Any) -> "Interpreter":
-        src = "\n".join(open(p, encoding="utf-8").read() for p in paths)
-        return cls(yaml.safe_load(src), **kw)
+    def from_files(cls, *paths: str, strict: bool = True, **kw: Any) -> "Interpreter":
+        """The definition as workflows.tf deploys it (the files joined with newlines), refused like a deploy
+        would refuse it: every error finding of lint_workflows (with file:line) is a SimError."""
+        src = "\n".join(Path(p).read_text(encoding="utf-8") for p in paths)
+        if strict:
+            refuse_undeployable(check_source(load_source(Path(paths[0]).stem, [Path(p) for p in paths])),
+                                " + ".join(Path(p).name for p in paths))
+        return cls(yaml.safe_load(src), strict=False, **kw)
 
     def run(self, args: Any = None) -> Any:
         main = self.program["main"]
@@ -764,7 +618,7 @@ class Interpreter:
     def eval_expr(self, src: str, scope: Scope, where: str) -> Any:
         node = self._exprs.get(src)
         if node is None:
-            node = Parser(src).parse()
+            node = parse(src)
             self._exprs[src] = node
         try:
             return self.ev(node, scope, where)
@@ -797,14 +651,6 @@ class Interpreter:
             return scope.get(n.a)
         if k == "list":
             return [self.ev(x, scope, where) for x in n.a]
-        if k == "map":
-            out = {}
-            for kn, vn in n.a:
-                key = self.ev(kn, scope, where)
-                if not isinstance(key, str):
-                    raise runtime_error("TypeError", f"{where}: map literal key {key!r} is not a string")
-                out[key] = self.ev(vn, scope, where)
-            return out
         if k == "attr":
             d = dotted(n)
             if d in CONSTANTS and not scope.has(d.split(".")[0]):

@@ -141,14 +141,20 @@ stage_error:
 # ---- Google APIs (OAuth2 as the workflow's account) --------------------------------
 
 api_get:
-  params: [url, query: {}]
+  # Parameter defaults must be literals on Google (a map default fails to
+  # build), so query defaults to null and becomes {} here.
+  params: [url, query: null]
   steps:
+    - init:
+        assign:
+          - empty: {}
+          - q: '${default(query, empty)}'
     - get:
         try:
           call: http.get
           args:
             url: '${url}'
-            query: '${query}'
+            query: '${q}'
             auth:
               type: OAuth2
             timeout: 120
@@ -158,8 +164,8 @@ api_get:
         return: '${r.body}'
 
 api_get_or_null:
-  # 404 -> null
-  params: [url, query: {}]
+  # 404 -> null. query: null is {} (api_get).
+  params: [url, query: null]
   steps:
     - get:
         try:
@@ -183,8 +189,14 @@ api_get_or_null:
 api_send:
   # POST / PATCH with a JSON body. Retried only where the request cannot have
   # been applied (Workflows' non-idempotent policy: 429, 503).
-  params: [method, url, body: {}, query: {}]
+  # body and query default to null (map defaults fail to build) and become {}.
+  params: [method, url, body: null, query: null]
   steps:
+    - init:
+        assign:
+          - empty: {}
+          - b: '${default(body, empty)}'
+          - q: '${default(query, empty)}'
     - pick:
         switch:
           - condition: '${method == "PATCH"}'
@@ -198,8 +210,8 @@ api_send:
           call: http.post
           args:
             url: '${url}'
-            body: '${body}'
-            query: '${query}'
+            body: '${b}'
+            query: '${q}'
             headers:
               Content-Type: application/json
             auth:
@@ -213,8 +225,8 @@ api_send:
           call: http.patch
           args:
             url: '${url}'
-            body: '${body}'
-            query: '${query}'
+            body: '${b}'
+            query: '${q}'
             headers:
               Content-Type: application/json
             auth:
@@ -696,7 +708,11 @@ run_job:
           steps:
             - add:
                 assign:
-                  - envlist: '${list.concat(envlist, {"name": k, "value": string(env[k])})}'
+                  # Expressions have no map literals: build the entry as YAML.
+                  - entry:
+                      name: '${k}'
+                      value: '${string(env[k])}'
+                  - envlist: '${list.concat(envlist, entry)}'
     - start:
         call: api_send
         args:
@@ -782,7 +798,8 @@ run_job:
                   - tl: {}
     - code:
         assign:
-          - t0: '${default(map.get(tl, "tasks"), [{}])[0]}'
+          - empty: {}  # no map literals in expressions: [{}] is [empty]
+          - t0: '${default(map.get(tl, "tasks"), [empty])[0]}'
           - exit_code: '${default(map.get(t0, ["lastAttemptResult", "exitCode"]), -1)}'
           - msg: '${default(map.get(t0, ["lastAttemptResult", "status", "message"]), "")}'
           - cond: '${default(map.get(ex, "conditions"), [])}'
@@ -874,12 +891,16 @@ service_set_image:
           cfg: '${cfg}'
           svc: '${svc}'
         result: after
+    - ready_dflt:
+        # The message's fallback map; expressions have no map literals.
+        assign:
+          - empty: {}
     - ready:
         switch:
           - condition: '${after.latestReadyRevision != after.latestCreatedRevision}'
             raise:
               error_class: "revision_not_ready"
-              message: '${svc.name + ": revision " + after.latestCreatedRevision + " did not become ready; " + after.latestReadyRevision + " still serves. " + json.encode_to_string(default(map.get(after, "terminalCondition"), {}))}'
+              message: '${svc.name + ": revision " + after.latestCreatedRevision + " did not become ready; " + after.latestReadyRevision + " still serves. " + json.encode_to_string(default(map.get(after, "terminalCondition"), empty))}'
     - done:
         return:
           changed: true
@@ -1312,12 +1333,12 @@ notify_send:
 notify_result:
   # Post every notification a job put in its result (notifications[], else
   # notification) with the workflow's ids, <prefix>/<kind>/<i>. Kinds in
-  # skip are not posted: heartbeat (the drift workflow posts its own, once a
+  # skip (null = ["heartbeat"]) are not posted: heartbeat (the drift workflow posts its own, once a
   # day) and, for the eval stage, candidate_ready (the decide stage sends it
   # with the decision). The result's deployed / model / verdict go into each
   # message's details for the thermometer's state tiles. Returns the count
   # posted.
-  params: [cfg, res, run_id, candidate_id: null, id_prefix: null, skip: ["heartbeat"]]
+  params: [cfg, res, run_id, candidate_id: null, id_prefix: null, skip: null]
   steps:
     - none:
         switch:
@@ -1361,7 +1382,7 @@ notify_result:
           steps:
             - skipped:
                 switch:
-                  - condition: '${msg == null or default(map.get(msg, "kind"), "") in skip}'
+                  - condition: '${msg == null or default(map.get(msg, "kind"), "") in default(skip, ["heartbeat"])}'
                     next: continue
             - build:
                 assign:

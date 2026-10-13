@@ -259,6 +259,17 @@ terraform apply -var=image=$IMG \
   -target='module.pipeline[0].google_secret_manager_secret.pipeline'
 ```
 
+Workflows creates its service agent a few minutes after the API is switched
+on, and a workflow created before the agent exists fails with `Workflows
+service agent does not exist` (int, 2026-10-13: both workflows failed in
+§4.5 and a second apply created them). Create the agent now, so §4.5 cannot
+race it (idempotent; it prints
+`service-<project number>@gcp-sa-workflows.iam.gserviceaccount.com`):
+
+```bash
+gcloud beta services identity create --service=workflows.googleapis.com --project $PROJECT
+```
+
 Then the values, **in a real terminal** with `PROJECT` set as in §4.3, not
 through Claude Code's `!` prefix: each `!` line runs in a fresh shell (the
 variables would be empty by the next line) and `read -s` needs a terminal.
