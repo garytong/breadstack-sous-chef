@@ -1537,14 +1537,21 @@ def setup(w: World, bundle: Path, snapshot: Path) -> None:
     b.write_json("cases/pool/index.json", {"files": [{"path": "cases/pool/r4/cases-all.jsonl", "manifest": m0.hash,
                                                       "round": "r4", "trained_in": "r4"}]})
     EB.publish(b, bundle)
-    # the base weights (a stand-in tar) as R0 seeds them
+    # the base weights (a stand-in tar) as R0 seeds them, in the real tar's layout (2026-10-14 header walk): the
+    # hub-cache folder at the top, refs/main naming the snapshot, the snapshot's files hard links to blobs/
     with tempfile.TemporaryDirectory() as td:
-        hub = Path(td) / "hub" / "models--unsloth--Qwen3.5-9B"
-        hub.mkdir(parents=True)
-        (hub / "config.json").write_text("{}")
+        hub = Path(td) / "models--unsloth--Qwen3.5-9B"
+        rev = "005429cee5cb648998cf2b70eebdd83175989c9a"
+        (hub / "refs").mkdir(parents=True)
+        (hub / "refs" / "main").write_text(rev)
+        (hub / "blobs").mkdir()
+        (hub / "snapshots" / rev).mkdir(parents=True)
+        for name, body in (("config.json", "{}"), ("model.safetensors-00001-of-00004.safetensors", "w")):
+            (hub / "blobs" / name).write_text(body)
+            os.link(hub / "blobs" / name, hub / "snapshots" / rev / name)
         base = w.bucket / "base"
         base.mkdir(parents=True)
-        subprocess.run(["tar", "-C", td, "-cf", str(base / "unsloth-qwen3.5-9b-hf.tar"), "hub"], check=True)
+        subprocess.run(["tar", "-C", td, "-cf", str(base / "unsloth-qwen3.5-9b-hf.tar"), hub.name], check=True)
         sha = subprocess.run(["sha256sum", "unsloth-qwen3.5-9b-hf.tar"], cwd=base, capture_output=True, text=True, check=True).stdout
         (base / "unsloth-qwen3.5-9b-hf.tar.sha256").write_text(sha)
     # what Terraform writes into the bucket (bucket.tf), the model-image pins filled in

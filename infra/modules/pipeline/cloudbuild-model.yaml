@@ -39,7 +39,8 @@ substitutions:
   _IMAGE: ""
 
 steps:
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  # pinned (the slim tag moves weekly): 589.0.0-slim's index digest, 2026-10-13
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:589.0.0-slim@sha256:ffd36b9b80bb08b2dea60b58ca2b60dfa3a40a3c00f3e5732d6d113f4e7ffa45
     id: stage
     entrypoint: bash
     args:
@@ -66,6 +67,11 @@ steps:
   # buildx otherwise pushes an index with an attestation manifest, and
   # results.images[0].digest would name that index, not the image manifest
   # the candidate, the baselines and the rollout are keyed on.
+  # OLLAMA_IMAGE: the Dockerfile's own pin (same tag, same index digest)
+  # through Google's Docker Hub cache, mirror.gcr.io: Cloud Build workers
+  # share IPs, and Docker Hub allows an unauthenticated IP 100 pulls per 6 h
+  # (docs.docker.com/docker-hub/usage); a `toomanyrequests` FAILURE is not
+  # resubmitted. https://cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images
   - name: gcr.io/cloud-builders/docker@sha256:6c9d05f41f8e721e05f7d3d1b5c29904ac2595d1b67de093f59420b6e8146ecf
     id: build
     args:
@@ -74,6 +80,8 @@ steps:
       - linux/amd64
       - --provenance=false
       - --sbom=false
+      - --build-arg
+      - OLLAMA_IMAGE=mirror.gcr.io/ollama/ollama:0.34.4@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551
       - --build-context
       - model=/workspace/stage
       - -f

@@ -471,6 +471,7 @@ class VX:
         self.plan, self.jobs, self.n, self.cancels = plan, {}, 0, []
         self.cancel_polls, self.lose = cancel_polls, lose_create_answer
         self.filters: list = []
+        self.on_end = None  # on_end(job): what the trainer left in the bucket when the job ended
 
     def handle(self, m, u, q, h, b):
         path = urllib.parse.urlsplit(u).path
@@ -509,6 +510,14 @@ class VX:
         elif beh == "run_then_ok":
             j["state"] = "JOB_STATE_SUCCEEDED" if j["polls"] >= 3 else "JOB_STATE_RUNNING"
             j["startTime"] = "2026-10-03T00:00:00Z"
+        elif beh in ("exit1", "flex_14"):
+            # exit1: the container exited 1 (Vertex's own text); flex_14: Flex-start's wait ran out (code 14), with a
+            # startTime though no machine was ever provisioned (2026-10-14, job 463589157793431552)
+            j["state"], j["startTime"] = "JOB_STATE_FAILED", "2026-10-03T00:00:00Z"
+            j["error"] = {"code": 3, "message": "The replica workerpool0-0 exited with a non-zero status of 1."} \
+                if beh == "exit1" else {"code": 14, "message": "Job failed."}
+            if self.on_end:
+                self.on_end(j)
         return 200, self.view(j), {}
 
     @staticmethod
@@ -571,6 +580,62 @@ class Vertex(unittest.TestCase):
         self.assertTrue(out["state"] == "succeeded" and vx.n == 1, (out, vx.n))
         self.assertTrue(vx.filters and vx.filters[0].startswith('labels.create="') and vx.filters[0].endswith('"'), vx.filters)
 
+    def attempt(self, beh, on_end, rung=None):
+        vx = VX([beh])
+        r = vrouter(vx)
+        vx.on_end = lambda j: on_end(r, j)
+        out = interp("retrain", r).call_sub("vertex_attempt", {"cfg": CFG, "ctx": CTX, "rung": rung or CFG["trainer"]["ladder"][1],
+                                                              "try_n": 1})
+        return out, vx, r
+
+    def test_restarted_failure_stays_fatal(self):
+        # Vertex restarted the container after exit 1; the restart rewrote progress.json as `interrupted` (2026-10-14).
+        # The trainer's sticky train/failed-<nonce>.json for THIS job decides: fatal, never retried as a preemption
+        def end(r, j):
+            n = j["labels"]["create"]
+            r.put("runs/rt-x/train/progress.json", {"status": "interrupted", "step": "pull base", "nonce": n,
+                                                     "updated_at": "2099-01-01T00:00:00Z"})
+            r.put(f"runs/rt-x/train/failed-{n}.json", {"status": "failed", "error": "export q4_k_m: export", "nonce": n})
+        out, vx, r = self.attempt("exit1", end)
+        self.assertEqual(out["state"], "fatal", out)
+        self.assertIn("export q4_k_m", out["message"])
+        n = next(iter(vx.jobs.values()))["labels"]["create"]
+        self.assertTrue(n and n.startswith("8a0cc8ec-"), n)
+
+    def test_the_nonce_reaches_the_trainer(self):
+        vx = VX(["run_then_ok"])
+        bodies = []
+        h = vx.handle
+
+        def spy(m, u, q, hd, b):
+            if m == "POST" and u.endswith("/customJobs"):
+                bodies.append(b)
+            return h(m, u, q, hd, b)
+        vx.handle = spy
+        interp("retrain", vrouter(vx)).call_sub("stage_train", {"cfg": SPOT_ONLY, "ctx": CTX})
+        env = {e["name"]: e["value"] for e in bodies[0]["jobSpec"]["workerPoolSpecs"][0]["containerSpec"]["env"]}
+        self.assertEqual(env["TRAIN_NONCE"], bodies[0]["labels"]["create"])
+        self.assertEqual(env["TRAIN_IMAGE"], "tr:t")
+
+    def test_another_jobs_progress_is_not_this_attempts(self):
+        # a leftover container of an earlier job wrote `interrupted` while this job ran: not this job's preemption
+        def end(r, j):
+            r.put("runs/rt-x/train/progress.json", {"status": "interrupted", "step": "SFT", "nonce": "other-1",
+                                                     "updated_at": "2099-01-01T00:00:00Z"})
+        out, _, _ = self.attempt("exit1", end)
+        self.assertEqual(out["state"], "unknown", out)
+
+    def test_own_interrupted_progress_is_a_preemption(self):
+        def end(r, j):
+            r.put("runs/rt-x/train/progress.json", {"status": "interrupted", "step": "SFT", "nonce": j["labels"]["create"],
+                                                     "updated_at": "2000-01-01T00:00:00Z"})
+        out, _, _ = self.attempt("exit1", end)
+        self.assertEqual(out["state"], "preempted", out)
+
+    def test_flex_wait_code_14_is_capacity(self):
+        out, _, _ = self.attempt("flex_14", lambda r, j: None, rung=CFG["trainer"]["ladder"][0])
+        self.assertEqual(out["state"], "capacity", out)
+
     def test_stop_current(self):
         vx = VX([])
         name = "projects/p/locations/us-central1/customJobs/9"
@@ -581,6 +646,35 @@ class Vertex(unittest.TestCase):
         s = it.call_sub("vertex_stop_current", {"cfg": CFG, "run_id": "rt-x"})
         self.assertTrue("JOB_STATE_CANCELLED" in s and "wf/runs/rt-x/train/current.json" not in r.gcs, s)
         self.assertEqual(it.call_sub("vertex_stop_current", {"cfg": CFG, "run_id": "rt-x"}), "no training job")
+
+
+class RunRecord(unittest.TestCase):
+    def test_resume_moves_the_failure_and_links_the_execution(self):
+        r = Router()
+        old = {"run_id": "rt-x", "status": "failed", "images": {"tag": "t0"}, "stages": {}, "resumes": [],
+               "failed": {"stage": "train", "error_class": "train_failed"}}
+        rec = interp("retrain", r).call_sub("run_record", {"cfg": CFG, "ctx": CTX, "existing": old, "resume_from": "train"})
+        self.assertNotIn("failed", rec)
+        self.assertEqual(rec["status"], "running")
+        self.assertEqual(rec["resumes"][-1]["previous_failure"]["error_class"], "train_failed")
+        self.assertEqual(rec["resumes"][-1]["previous_images"], {"tag": "t0"})
+        self.assertEqual(rec["execution_url"], "https://console.cloud.google.com/workflows/workflow/us-central1/souschef-retrain"
+                                               "/execution/8a0cc8ec-1111-2222-3333-444455556666?project=p")
+        self.assertEqual(r.gcs["runs/rt-x/run.json"][0], rec)
+
+
+    def test_resume_refuses_another_service_tag(self):
+        it = interp("retrain", Router())
+        run = {"images": {"tag": "e5a8e05"}}
+        call = lambda tag, frm, at: it.call_sub("images_unchanged", {"run": run, "imgs": {"tag": tag}, "resume_from": frm,
+                                                                      "start_at": at})
+        e = raised(self, lambda: call("f00ba47", "train", 3))
+        self.assertEqual(e.get("error_class"), "images_changed", e)
+        self.assertTrue(call("e5a8e05", "train", 3))   # the same tag, re-pointed
+        self.assertTrue(call("f00ba47", "dataset", 2))  # before the dataset: rebuilt with the new images
+        self.assertTrue(call("f00ba47", "decide", 7))   # the decision wait runs no image
+        self.assertTrue(call("f00ba47", "", 0))         # a new round
+        self.assertTrue(it.call_sub("images_unchanged", {"run": None, "imgs": {"tag": "t"}, "resume_from": "", "start_at": 0}))
 
 
 class Build(unittest.TestCase):

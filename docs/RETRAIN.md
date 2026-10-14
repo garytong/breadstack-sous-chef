@@ -154,7 +154,7 @@ The same stages with tiny inputs (2–6 h with the GPU waits, about US$2 of API,
 | dataset | the parity gate in full; `--val-pct 20` |
 | train | first the trainer image's `selftest` (CUDA visible, bf16, `import unsloth`); then the ladder with `--max-steps 4 --checkpoint-steps 2`, a resume to 6, and a full export (proves llama.cpp) |
 | build / candidate | real, tag `c-smoke-<id>` |
-| eval | 10 rows per set, 1 replicate, both arms |
+| eval | 10 rows per set, 1 replicate, both arms; the candidate arm's error rows (it is 4 updates from the base) are recorded in `eval/info.json` `tolerated_errors`, not fatal (the current arm's still fail the stage: `eval_errors`) |
 | decision | the real page and API, badge **SMOKE**, expires after 1 day |
 | approve | a **dry rollout**: `testIamPermissions(run.services.update)` on `sous-chef-model` and a `services.get`; `rolled_out` with `dry_run: true` |
 
@@ -423,13 +423,26 @@ with the same `SOUS_CHEF_*` exports and a local Postgres on `:5433`
 `sous-chef-trainer:t-<hash12>` (CUDA 13, the pinned unsloth/torch env, a
 prebuilt llama.cpp, the lab), entry `tools/pipeline-train.sh <run_id> <full|smoke>`:
 
-1. pull `dataset/` and the base tar, `sha256sum -c`;
-2. pull `train/checkpoints/` if present (a resume after preemption);
+1. pull `dataset/` and the base tar, `sha256sum -c`, unpacked into
+   `$HF_HOME/hub` (the tar holds the hub-cache folder
+   `models--unsloth--Qwen3.5-9B/`; the job runs with `HF_HUB_OFFLINE=1`, so
+   the snapshot at `refs/main` must resolve there before anything trains);
+2. pull `train/checkpoints/` if present (a resume after preemption; only a
+   checkpoint with `trainer_state.json`, `optimizer.pt`, `scheduler.pt` and
+   `adapter_model.safetensors` is resumed from, and a checkpoint is pushed
+   only once complete, `trainer_state.json` last);
 3. row checks, then the dry plan;
 4. on the first attempt only, the resume smoke (2 updates with a checkpoint,
    resumed to 4: it must log `Resuming from …checkpoint-2`);
 5. full SFT, checkpoints synced to the bucket every 2 minutes;
-6. export q4_k_m with `base-modelfiles/qwen3.5-9b.modelfile`;
+6. export q4_k_m with `base-modelfiles/qwen3.5-9b.modelfile`. Unsloth's
+   merge looks for the base as a local folder or on the Hub, never in the
+   HF cache, so offline the Hub id fails ("could not reach the Hugging Face
+   Hub"): export.py merges from a copy of the adapter whose
+   `base_model_name_or_path` is the cached snapshot folder (the revision
+   trained on; `export.json` `base_snapshot`). Unsloth's intermediates
+   (`gguf/`, the merged 16-bit model, and `gguf_gguf/`) are deleted, not
+   pushed;
 7. `make model-stage NAME=<id> MODEL_TEMPERATURE=0.3 MODEL_PRESENCE_PENALTY=0`;
 8. push adapter, export and stage to `train/`;
 9. write `DONE`. Every step updates `progress.json` (`status` running |
@@ -441,6 +454,14 @@ prebuilt llama.cpp, the lab), entry `tools/pipeline-train.sh <run_id> <full|smok
    `wait`ed for — which stops the step and its children, pushes the
    checkpoints and writes `status: interrupted` (classed **preempted**:
    resumed from the checkpoints).
+   **The job's nonce.** Each job gets `TRAIN_NONCE` (its one-off `create`
+   label); `progress.json` carries it and the workflow reads only what this
+   job wrote. A failure also writes `train/failed-<nonce>.json`. Vertex
+   restarts a container that exited 1, even after it has marked the job
+   FAILED (the first SMOKE, 2026-10-14: the restarts rewrote `failed` as
+   `running` and `interrupted`, so a deterministic failure was retried as a
+   preemption); the entrypoint exits 1 at once, writing nothing, when that
+   file exists, and the workflow classes a job with it **fatal** first.
 
 **The recipe is r4's; only the data changes.** `unsloth/Qwen3.5-9B`, bf16
 base, fp32 LoRA r16/α16, lr 2e-4, 1 epoch, batch 1 × grad_accum 4,
@@ -847,11 +868,13 @@ which the thermometer treats as a duplicate, and its expiry is kept. With
 | `rollout_unconfirmed` (rollout) | the patch of `sous-chef-model` was sent but its outcome is unknown (the wait timed out, a read failed): production may already serve the candidate; `rollout.json` is `unconfirmed` and keeps the old image | `gcloud run services describe sous-chef-model --region us-east4` (`trafficStatuses`, `latestReadyRevision`); then `resume_from decide` to finish the rollout, or roll back with the message's `make model-rollout TAG=…` |
 | `build_stuck` | the model build stayed queued or pending for 3 h; it was cancelled | `gcloud builds list --region us-east4`; resume from `build` |
 | `no_build_context` | `model/context.tar.gz` (or `.tgz`) is missing | resume from `dataset` |
+| `build FAILURE` with `toomanyrequests` | a Docker Hub pull limit: the spec predates the `mirror.gcr.io` base | `terraform apply` (rewrites `infra/cloudbuild-model.json`), resume from `build` |
 | `build FAILURE` with `unknown flag: --build-context` | the build ran on the legacy worker or builder (Docker 20.10): `infra/cloudbuild-model.json` predates `workerRelease` | `terraform apply` (rewrites the spec), resume from `build` |
 | `decision_mismatch` | the decision row is not this round's (another notification, run or SMOKE flag; a duplicate at the first ask; a failing bar approved without the override) | look at the decision page and the thermometer's API keys (only the key id in `souschef_ingest_key_ids` may post); then `resume_from decide`, or start a new round |
 | `digest_mismatch` | the candidate tag, the build record and the decision's digest disagree (at rollout), or `model/image.json` is not what the `c-<id>` tag names (at candidate or eval) | do not roll out; read `model/image.json`, `decision.json` and the repository's `c-<id>` tag; at candidate or eval, `resume_from build` |
 | `candidate_decided` (at init) | a resume up to `eval` of a decided candidate | `resume_from decide`, or a new round |
-| training `fatal` | the trainer itself failed (`progress.json` status `failed`, the step in `error`) | read `train/train.log`; fix; resume from `train` |
+| training `fatal` | the trainer itself failed (`train/failed-<nonce>.json`, or `progress.json` status `failed`; the step in `error`) | read `train/train.log` (the job's own log in Cloud Logging, `resource.type=ml_job`, if a restart overwrote it); fix; resume from `train` |
+| `images_changed` (stage `images`) | a resume from `train` … `eval` while the service serves another tag than the round's (`run.json` `images.tag`): train and eval would run other images than the ones that built the dataset | start a new round; or, to resume with a fixed trainer, rebuild it under the round's own tag (`make trainer-image TAG=<run.json images.tag>`) while that tag still serves |
 
 Locks are only ever broken by a person, after checking
 `gcloud workflows executions list … --filter='state=ACTIVE'` is empty.

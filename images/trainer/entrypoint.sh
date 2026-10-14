@@ -9,8 +9,8 @@
 #   shell                   bash (debugging: docker run -it ... shell)
 #
 # Env from the workflow: PIPELINE_BUCKET, GOOGLE_CLOUD_PROJECT, TRAIN_RUNG,
-# TRAIN_ATTEMPT. No secret: the trainer's account reads and writes the
-# pipeline bucket only.
+# TRAIN_ATTEMPT, TRAIN_NONCE (the job's one-off `create` label), TRAIN_IMAGE.
+# No secret: the trainer's account reads and writes the pipeline bucket only.
 #
 # bash, not sh: pipeline-train.sh reads PIPESTATUS (the r4 lesson).
 set -uo pipefail
@@ -51,10 +51,30 @@ export PIPELINE_BUCKET=${PIPELINE_BUCKET%/}
 # train/progress.json for the workflow's vertex_attempt (pipeline-train.sh
 # writes it from here on): progress STATUS ERROR
 progress() {
-  printf '{"status":"%s","step":"selftest","stage":"selftest","error":"%s","updated_at":"%s","rung":"%s","attempt":"%s","mode":"%s"}\n' \
-    "$1" "$2" "$(date -u +%FT%TZ)" "${TRAIN_RUNG:-}" "${TRAIN_ATTEMPT:-1}" "$mode" |
+  local body
+  body=$(printf '{"status":"%s","step":"selftest","stage":"selftest","error":"%s","updated_at":"%s","rung":"%s","attempt":"%s","mode":"%s","nonce":"%s"}' \
+    "$1" "$2" "$(date -u +%FT%TZ)" "${TRAIN_RUNG:-}" "${TRAIN_ATTEMPT:-1}" "$mode" "${TRAIN_NONCE:-}")
+  printf '%s\n' "$body" |
     gcloud storage cp - "$PIPELINE_BUCKET/runs/$run_id/train/progress.json" --content-type=application/json --quiet >/dev/null 2>&1 || true
+  # a failure also leaves train/failed-<nonce>.json, which a restart of this job never rewrites
+  if [ "$1" = failed ] && [ -n "${TRAIN_NONCE:-}" ]; then
+    printf '%s\n' "$body" |
+      gcloud storage cp - "$PIPELINE_BUCKET/runs/$run_id/train/failed-$TRAIN_NONCE.json" --content-type=application/json --quiet >/dev/null 2>&1 || true
+  fi
 }
+
+# Vertex restarts a container that exited non-zero, even after it has marked
+# the job FAILED (the first SMOKE, 2026-10-14: job 8149263396877893632 ran
+# three times; the restarts rewrote progress.json `failed` as `running` and
+# `interrupted`, so the workflow retried a deterministic failure as a
+# preemption, and a restart still ran beside the next attempt's job). This
+# job already failed (train/failed-<nonce>.json, written by this job only):
+# exit 1 at once and write nothing. A preemption or a restart after one
+# leaves no such file, and resumes from the checkpoints as before.
+if [ -n "${TRAIN_NONCE:-}" ] && gcloud storage ls "$PIPELINE_BUCKET/runs/$run_id/train/failed-$TRAIN_NONCE.json" >/dev/null 2>&1; then
+  echo "trainer: job ${TRAIN_NONCE} already failed ($PIPELINE_BUCKET/runs/$run_id/train/failed-$TRAIN_NONCE.json): a restart of a failed job, not run again"
+  exit 1
+fi
 
 # A SIGTERM during the self-test (a Spot preemption, a Vertex restart or
 # cancel) is recorded as `interrupted`, like pipeline-train.sh's trap (this

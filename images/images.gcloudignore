@@ -18,6 +18,7 @@ lab/.venv-train/
 lab/.cache/
 lab/unsloth_compiled_cache/
 lab/.pytest_cache/
+lab/.ruff_cache/
 lab/*.egg-info/
 **/__pycache__/
 **/.env

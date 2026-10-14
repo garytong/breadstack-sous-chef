@@ -167,13 +167,14 @@ if [ "$1" = -m ] && [ "$2" = souschef_lab.train ]; then
   while [ $# -gt 0 ]; do case "$1" in --name) name=$2; shift;; --max-steps) max=$2; shift;; --resume) resume=1;; --dry-run) dry=1;; esac; shift; done
   [ $dry = 1 ] && { echo "SFT plan: dry"; exit 0; }
   d=runs/adapters/$name
+  ckpt() { mkdir -p "$1"; for f in adapter_model.safetensors optimizer.pt scheduler.pt trainer_state.json; do echo x > "$1/$f"; done; }
   if [ -n "${STUB_SLEEP:-}" ] && [ "$name" = "${STUB_SLEEP}" ]; then
-    mkdir -p "$d/checkpoints/checkpoint-50"; echo '{}' > "$d/checkpoints/checkpoint-50/state.json"
+    ckpt "$d/checkpoints/checkpoint-50"
     printf '{"step": 50, "loss": 0.5}\n' > "$d/loss.jsonl"
     echo "sleeping $name" >> "$STUB_LOG"; sleep 60; exit 0
   fi
   if [ $resume = 1 ] && [ -d "$d/checkpoints/checkpoint-2" ]; then echo "Resuming from $d/checkpoints/checkpoint-2 (optimizer, scheduler and data position restored)."; fi
-  mkdir -p "$d/checkpoints/checkpoint-2" "$d/adapter"
+  ckpt "$d/checkpoints/checkpoint-2"; mkdir -p "$d/adapter"
   echo '{}' > "$d/adapter/adapter_config.json"
   echo "{\"updates\": ${max:-8}}" > "$d/run.json"
   printf '{"step": 1, "eval_loss": 0.7}\n{"step": 2, "eval_loss": 0.2}\n' > "$d/loss.jsonl"
@@ -183,8 +184,9 @@ fi
 if [ "$1" = -m ] && [ "$2" = souschef_lab.export ]; then
   shift 2; name=
   while [ $# -gt 0 ]; do case "$1" in --name) name=$2; shift;; esac; shift; done
-  e=runs/exports/$name; mkdir -p "$e"
+  e=runs/exports/$name; mkdir -p "$e/gguf" "$e/gguf_gguf"
   printf 'GGUFfake' > "$e/$name-q4_k_m.gguf"
+  printf 'merged' > "$e/gguf/model-00001-of-00004.safetensors"; printf 'mmproj' > "$e/gguf_gguf/mmproj-BF16.gguf"
   printf 'FROM ./%s-q4_k_m.gguf\nPARAMETER temperature 1\nPARAMETER presence_penalty 1.5\nPARAMETER top_k 20\n' "$name" > "$e/Modelfile.q4_k_m"
   echo "exported $name" >> "$STUB_LOG"
   exit 0
@@ -207,6 +209,23 @@ def _train_rows(n: int, follow: bool) -> str:
     return "".join(json.dumps(r) + "\n" for r in rows)
 
 
+def _base_tar(src: Path, tar: Path, hub_prefix: bool = False) -> None:
+    """The base tar's layout in the bucket: a hub-cache folder models--unsloth--Qwen3.5-9B/ at the top (refs/main,
+    blobs/, snapshots/<rev>/ as hard links to the blobs); hub_prefix: the same under hub/."""
+    top = src / "hub" if hub_prefix else src
+    m = top / "models--unsloth--Qwen3.5-9B"
+    rev = "005429cee5cb648998cf2b70eebdd83175989c9a"
+    (m / "refs").mkdir(parents=True)
+    (m / "refs" / "main").write_text(rev)
+    (m / "blobs").mkdir()
+    snap = m / "snapshots" / rev
+    snap.mkdir(parents=True)
+    for name, body in (("config.json", "{}"), ("model.safetensors-00001-of-00004.safetensors", "w")):
+        (m / "blobs" / name).write_text(body)
+        os.link(m / "blobs" / name, snap / name)
+    subprocess.run(["tar", "-C", str(src), "-cf", str(tar), "hub" if hub_prefix else m.name], check=True)
+
+
 @pytest.fixture
 def train_env(tmp_path):
     lab = tmp_path / "lab"
@@ -222,11 +241,8 @@ def train_env(tmp_path):
     (ds / "stats.json").write_text(json.dumps({"block_drift_rows": 0, "preview_claim_kept": 0, "by_family": {"F0": 4}}))
     base = gcs / "bkt" / "base"
     base.mkdir(parents=True)
-    hub = tmp_path / "hub" / "hub" / "models--unsloth--Qwen3.5-9B"
-    hub.mkdir(parents=True)
-    (hub / "config.json").write_text("{}")
     tar = base / "unsloth-qwen3.5-9b-hf.tar"
-    subprocess.run(["tar", "-C", str(tmp_path / "hub"), "-cf", str(tar), "hub"], check=True)
+    _base_tar(tmp_path / "tarsrc", tar)
     sha = subprocess.run(["sha256sum", tar.name], cwd=base, capture_output=True, text=True, check=True).stdout
     (base / "unsloth-qwen3.5-9b-hf.tar.sha256").write_text(sha)
     bindir = tmp_path / "bin"
@@ -253,6 +269,10 @@ def test_pipeline_train_full_run_pushes_adapter_export_stage_and_done(train_env)
     assert (out / "adapter" / "adapter" / "adapter_config.json").is_file()
     assert not (out / "adapter" / "checkpoints").exists()  # trainer state goes to train/checkpoints only
     assert (out / "export" / f"{te['run']}-q4_k_m.gguf").is_file()
+    assert not (out / "export" / "gguf").exists() and not (out / "export" / "gguf_gguf").exists()
+    assert "base snapshot: " in r.stdout and "models--unsloth--Qwen3.5-9B/snapshots/005429ce" in r.stdout
+    assert (te["tmp"] / "hf" / "hub" / "models--unsloth--Qwen3.5-9B" / "refs" / "main").is_file()
+    assert (out / "checkpoints" / "checkpoint-2" / "trainer_state.json").is_file()
     modelfile = (out / "stage" / "Modelfile").read_text()
     assert "PARAMETER temperature 0.3" in modelfile and "PARAMETER presence_penalty 0" in modelfile
     assert "PARAMETER num_ctx 65536" in modelfile and "PARAMETER top_k 20" in modelfile
@@ -266,11 +286,16 @@ def test_pipeline_train_full_run_pushes_adapter_export_stage_and_done(train_env)
     assert r2.returncode == 0 and "nothing to do" in r2.stdout
 
 
+def _complete(ck: Path) -> None:
+    ck.mkdir(parents=True)
+    for f in ("adapter_model.safetensors", "optimizer.pt", "scheduler.pt", "trainer_state.json"):
+        (ck / f).write_text("x")
+
+
 def test_pipeline_train_resumes_from_pushed_checkpoints_and_skips_the_resume_smoke(train_env):
     te = train_env
     ck = te["gcs"] / "bkt" / "runs" / te["run"] / "train" / "checkpoints" / "checkpoint-2"
-    ck.mkdir(parents=True)
-    (ck / "state.json").write_text("{}")
+    _complete(ck)
     r = _train(te)
     assert r.returncode == 0, r.stdout[-3000:]
     stub = (te["tmp"] / "stub.log").read_text()
@@ -280,13 +305,42 @@ def test_pipeline_train_resumes_from_pushed_checkpoints_and_skips_the_resume_smo
 
 def test_pipeline_train_fails_on_a_bad_base_tar_and_records_the_step(train_env):
     te = train_env
+    te["env"]["TRAIN_NONCE"] = "8a0cc8ec-1791000000000"
     (te["gcs"] / "bkt" / "base" / "unsloth-qwen3.5-9b-hf.tar.sha256").write_text("0" * 64 + "  unsloth-qwen3.5-9b-hf.tar\n")
     r = _train(te)
     assert r.returncode == 1
     out = te["gcs"] / "bkt" / "runs" / te["run"] / "train"
     prog = json.loads((out / "progress.json").read_text())
     assert prog["status"] == "failed" and "sha256" in prog["error"] and prog["updated_at"]
+    assert prog["nonce"] == "8a0cc8ec-1791000000000"
+    # the sticky failure no restart of this job rewrites (entrypoint.sh exits on it; the workflow reads it first)
+    assert json.loads((out / "failed-8a0cc8ec-1791000000000.json").read_text())["status"] == "failed"
     assert (out / "train.log").is_file() and not (out / "DONE").exists()
+
+
+def _retar(base: Path, build) -> None:
+    build(base / "unsloth-qwen3.5-9b-hf.tar")
+    sha = subprocess.run(["sha256sum", "unsloth-qwen3.5-9b-hf.tar"], cwd=base, capture_output=True, text=True, check=True).stdout
+    (base / "unsloth-qwen3.5-9b-hf.tar.sha256").write_text(sha)
+
+
+def test_pipeline_train_takes_a_hub_prefixed_tar_and_refuses_a_flat_one(train_env, tmp_path):
+    import shutil
+    te = train_env
+    base = te["gcs"] / "bkt" / "base"
+    _retar(base, lambda t: _base_tar(tmp_path / "pre", t, hub_prefix=True))
+    r = _train(te, "smoke")
+    assert r.returncode == 0, r.stdout[-3000:]
+    assert (te["tmp"] / "hf" / "hub" / "models--unsloth--Qwen3.5-9B" / "refs" / "main").is_file()
+    # not a hub cache (no refs/main): refused at the base, before any training
+    flat = tmp_path / "flat" / "models--unsloth--Qwen3.5-9B"
+    flat.mkdir(parents=True)
+    (flat / "config.json").write_text("{}")
+    _retar(base, lambda t: subprocess.run(["tar", "-C", str(tmp_path / "flat"), "-cf", str(t), flat.name], check=True))
+    shutil.rmtree(te["tmp"] / "hf")
+    shutil.rmtree(te["gcs"] / "bkt" / "runs" / te["run"] / "train")
+    r = _train(te, "smoke")
+    assert r.returncode == 1 and "base cache layout" in r.stdout, r.stdout[-2000:]
 
 
 def test_pipeline_train_smoke_mode(train_env):
@@ -307,8 +361,8 @@ def test_pipeline_train_sigterm_pushes_checkpoints_and_records_interrupted(train
     te = train_env
     env = {**te["env"], "STUB_SLEEP": f"{te['run']}-sft"}
     ck = te["gcs"] / "bkt" / "runs" / te["run"] / "train" / "checkpoints" / "checkpoint-2"
-    ck.mkdir(parents=True)  # a resume: no resume smoke, straight to the (sleeping) SFT
-    (ck / "state.json").write_text("{}")
+    # a resume: no resume smoke, straight to the (sleeping) SFT
+    _complete(ck)
     out_f = (te["tmp"] / "train.out").open("w")
     proc = subprocess.Popen(["bash", str(LAB / "tools" / "pipeline-train.sh"), te["run"], "full"], env=env, cwd=te["tmp"],
                             stdout=out_f, stderr=subprocess.STDOUT, text=True)
@@ -327,7 +381,7 @@ def test_pipeline_train_sigterm_pushes_checkpoints_and_records_interrupted(train
     train = te["gcs"] / "bkt" / "runs" / te["run"] / "train"
     prog = json.loads((train / "progress.json").read_text())
     assert prog["status"] == "interrupted" and prog["step"].startswith("SFT")
-    assert (train / "checkpoints" / "checkpoint-50" / "state.json").is_file()
+    assert (train / "checkpoints" / "checkpoint-50" / "trainer_state.json").is_file()
     assert not (train / "DONE").exists()
 
 
@@ -347,8 +401,7 @@ def test_pipeline_train_sigterm_writes_interrupted_before_the_slow_part_and_hear
     env = {**te["env"], "STUB_SLEEP": f"{te['run']}-sft", "PIPELINE_SYNC_EVERY_S": "1", "FAKE_GCLOUD_LOG": str(glog),
            "TRAIN_ATTEMPT": "3", "CLOUD_ML_TRIAL_ID": "9"}
     ck = te["gcs"] / "bkt" / "runs" / te["run"] / "train" / "checkpoints" / "checkpoint-2"
-    ck.mkdir(parents=True)
-    (ck / "state.json").write_text("{}")
+    _complete(ck)
     out_f = (te["tmp"] / "train.out").open("w")
     proc = subprocess.Popen(["bash", str(LAB / "tools" / "pipeline-train.sh"), te["run"], "full"], env=env, cwd=te["tmp"],
                             stdout=out_f, stderr=subprocess.STDOUT, text=True)
@@ -371,9 +424,31 @@ def test_pipeline_train_sigterm_writes_interrupted_before_the_slow_part_and_hear
     first_int = next(i for i in prog_ups if log[i][-4] == "status=interrupted")
     # after `interrupted`: the checkpoint push and the log, and never another progress write
     after = [ln[1] + ":" + ln[-1] for ln in log[first_int + 1:]]
-    assert any(a.startswith("rsync:") and a.endswith("/checkpoints") for a in after), after
+    assert any(a.startswith("cp:") and a.endswith("/train.log") for a in after), after
+    # checkpoint-50: pushed once, complete, trainer_state.json after the rest of it (a resume needs all of it)
+    ck = [i for i, ln in enumerate(log) if "/checkpoints/checkpoint-50" in ln[-1]]
+    assert [log[i][1] for i in ck] == ["rsync", "cp"] and log[ck[1]][-1].endswith("checkpoint-50/trainer_state.json"), ck
     assert all(i < first_int for i in prog_ups if log[i][-4] != "status=interrupted")
     assert all(log[i][-1] == "attempt=3" for i in prog_ups)
     prog = json.loads((te["gcs"] / "bkt" / "runs" / te["run"] / "train" / "progress.json").read_text())
     assert prog["status"] == "interrupted" and prog["last_step"] == 50 and prog["attempt"] == "3"
 
+
+
+def test_trainer_entrypoint_never_reruns_a_failed_job(train_env):
+    """Vertex restarts a container that exited 1, even after the job is FAILED (the first SMOKE, 2026-10-14): a
+    restart of a job whose trainer failed (train/failed-<nonce>.json) exits 1 at once and writes nothing."""
+    te = train_env
+    glog = te["tmp"] / "gcloud.log"
+    train = te["gcs"] / "bkt" / "runs" / te["run"] / "train"
+    train.mkdir(parents=True, exist_ok=True)
+    (train / "failed-ab12-1.json").write_text('{"status": "failed"}')
+    (train / "progress.json").write_text('{"status": "failed", "nonce": "ab12-1"}')
+    (te["tmp"] / "bin" / "gcloud").chmod(0o755)
+    env = {**te["env"], "PATH": f"{te['tmp'] / 'bin'}:{os.environ['PATH']}", "FAKE_GCLOUD_LOG": str(glog),
+           "TRAIN_NONCE": "ab12-1", "TRAIN_RUNG": "h100-spot-usc1", "TRAIN_ATTEMPT": "1"}
+    r = subprocess.run(["bash", str(LAB.parent / "images" / "trainer" / "entrypoint.sh"), te["run"], "smoke"], env=env,
+                       cwd=te["tmp"], capture_output=True, text=True, timeout=60, check=False)
+    assert r.returncode == 1 and "already failed" in r.stdout, r.stdout + r.stderr
+    assert [ln[1] for ln in _gcloud_log(glog)] == ["ls"]  # one look, no write
+    assert json.loads((train / "progress.json").read_text()) == {"status": "failed", "nonce": "ab12-1"}

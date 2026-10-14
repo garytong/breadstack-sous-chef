@@ -67,10 +67,23 @@ class Arms:
     """Where the arms' turns go: the harness (one local service, a route per arm) or, DRY, a fake per arm."""
 
     def __init__(self, *, harness=None, dry: bool = False, engine_path: str | None = None, workers: int = 2,
-                 progress: Callable[[str], None] = print):
+                 progress: Callable[[str], None] = print, tolerate_errors: frozenset[str] = frozenset()):
         self.harness, self.dry, self.engine_path = harness, dry, engine_path
         self.workers = max(1, workers)
         self.progress = progress
+        # arms whose error rows are recorded (self.tolerated, eval/info.json), not fatal: SMOKE's candidate, a few
+        # updates from the base, may well fail rows; the current arm's errors still mean harness or GPU trouble
+        self.tolerate_errors = frozenset(tolerate_errors)
+        self.tolerated: list[dict] = []
+
+    def check_errors(self, arm: str, out: list[dict], what: str) -> None:
+        try:
+            _check_errors(out, what)
+        except StageError as e:
+            if arm not in self.tolerate_errors:
+                raise
+            self.tolerated.append({"what": what, "error": str(e)})
+            self.progress(f"eval: {e} (tolerated: SMOKE candidate)")
 
     @contextmanager
     def endpoint(self, arm: str, m: Manifest, scripts: dict[str, list]) -> Iterator[tuple[str, str]]:
@@ -149,7 +162,7 @@ class Arms:
                 pe.close()
         if errors:
             raise StageError(f"{arm}/{set_name}: {errors[0]}", reason="eval")
-        _check_errors(out, f"{arm}/{set_name}#{sample}")
+        self.check_errors(arm, out, f"{arm}/{set_name}#{sample}")
         self.progress(f"eval: {arm} {set_name}#{sample}: {sum(r['pass'] for r in out)}/{len(out)}")
         return out
 
@@ -187,7 +200,7 @@ class Arms:
                         "pass": int(r.get("status") == "ok" and r.get("verdict") in PASSING),
                         "seen": bool((c.get("meta") or {}).get("key_seen")), "flags": r.get("flags"), "ghost": 0,
                         "where_ok": 0})
-        _check_errors(out, f"{arm}/{set_name}#{sample}")
+        self.check_errors(arm, out, f"{arm}/{set_name}#{sample}")
         self.progress(f"eval: {arm} {set_name}#{sample}: {sum(r['pass'] for r in out)}/{len(out)}")
         return out
 
@@ -361,7 +374,8 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
             harness = (harness_factory or Harness)({"current": current_url, "candidate": candidate_url}, run_id=f"ev{tag}",
                                                    workdir=local / "harness")
             harness.__enter__()
-        arms = Arms(harness=harness, dry=dry, engine_path=engine_path, workers=workers, progress=progress)
+        arms = Arms(harness=harness, dry=dry, engine_path=engine_path, workers=workers, progress=progress,
+                    tolerate_errors=frozenset({"candidate"}) if smoke else frozenset())
         errs: list[BaseException] = []
 
         def guarded(arm: str) -> None:
@@ -437,6 +451,6 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
                  "newest_manifest": (sets.get("newest") or {}).get("hash"),
                  "probe_coverage": sets.get("probe_coverage"), "renames": sets["renames"],
                  "harness": harness.describe() if harness is not None else {"dry": True},
-                 "candidate_baseline_digest": cand_digest}
+                 "candidate_baseline_digest": cand_digest, "tolerated_errors": arms.tolerated}
     store.write_json(f"{pre}/eval/info.json", eval_info)
     return REP.build(store, run_id, mode=mode, bar=bar, eval_info=eval_info)

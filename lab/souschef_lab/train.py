@@ -189,6 +189,22 @@ def validation_loss(model, rows, torch, bf16: bool = False) -> float | None:
     return weighted_loss(parts)
 
 
+# what transformers' Trainer._save_checkpoint writes (trainer_state.json last); a LoRA checkpoint's weights are
+# adapter_model.safetensors
+CHECKPOINT_FILES = ("adapter_model.safetensors", "optimizer.pt", "scheduler.pt", "trainer_state.json")
+
+
+def resumable_checkpoints(ckpt_dir: Path) -> tuple[list[Path], list[Path]]:
+    """(complete checkpoint-N folders oldest first, incomplete ones). A checkpoint cut off mid-write or mid-upload (a
+    Spot VM switched off while pipeline-train.sh pushed it) lacks a file, and resuming from it would raise."""
+    if not Path(ckpt_dir).is_dir():
+        return [], []
+    found = [d for d in Path(ckpt_dir).glob("checkpoint-*") if d.is_dir() and d.name.split("-")[-1].isdigit()]
+    found.sort(key=lambda d: int(d.name.split("-")[-1]))
+    ok = [d for d in found if all((d / f).is_file() for f in CHECKPOINT_FILES)]
+    return ok, [d for d in found if d not in ok]
+
+
 def run_name(args) -> str:
     return args.name or re.sub(r"[^a-z0-9._-]+", "-", f"{args.base.split('/')[-1]}-{utc_stamp()}".lower())
 
@@ -471,8 +487,10 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
 
     trainer.train_dataset = mask_followups(trainer.train_dataset, train_kept, "training")
     trainer.eval_dataset = mask_followups(trainer.eval_dataset, val_kept, "validation")
-    ckpts = sorted((out / "checkpoints").glob("checkpoint-*"), key=lambda d: int(d.name.split("-")[-1])) \
-        if args.resume and (out / "checkpoints").is_dir() else []
+    ckpts, partial = resumable_checkpoints(out / "checkpoints") if args.resume else ([], [])
+    if partial:
+        say("--resume: skipping incomplete checkpoint(s) " + ", ".join(d.name for d in partial)
+            + f" (each needs {', '.join(CHECKPOINT_FILES)})")
     resume_from = str(ckpts[-1]) if ckpts else None
     if resume_from:
         say(f"Resuming from {trainkit.rel(Path(resume_from))} (optimizer, scheduler and data position restored).")

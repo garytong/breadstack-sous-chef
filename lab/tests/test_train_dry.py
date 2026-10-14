@@ -599,3 +599,63 @@ def test_render_plan_lists_the_ordered_keys_first_then_the_rest():
     text = trainkit.render_plan("T", {"b": 1, "a": {"x": 1}, "c": "s"}, ("c", "a"))
     assert text.splitlines() == ["T", "  c  s", '  a  {"x": 1}', "  b  1"]
     assert trainkit.rel(trainkit.LAB_DIR / "runs" / "x") == "runs/x"
+
+
+# --- the offline export's base and the resumable checkpoints (the first SMOKE, 2026-10-14) ----------------------------
+
+
+def a_hub_cache(root: Path, repo: str = "unsloth/Qwen3.5-9B", rev: str = "005429ce") -> Path:
+    """huggingface_hub's cache layout: models--<org>--<name>/{refs/main, snapshots/<rev>/…}."""
+    m = root / ("models--" + repo.replace("/", "--"))
+    (m / "refs").mkdir(parents=True)
+    (m / "refs" / "main").write_text(rev, encoding="utf-8")
+    snap = m / "snapshots" / rev
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text('{"model_type": "qwen3_5"}', encoding="utf-8")
+    (snap / "model.safetensors-00001-of-00004.safetensors").write_bytes(b"x")
+    return snap
+
+
+def test_the_cached_snapshot_follows_refs_main(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    assert export.hf_hub_cache() == tmp_path / "hf" / "hub"
+    assert export.cached_snapshot("unsloth/Qwen3.5-9B") is None
+    snap = a_hub_cache(tmp_path / "hf" / "hub")
+    assert export.cached_snapshot("unsloth/Qwen3.5-9B") == snap
+    (snap / "model.safetensors-00001-of-00004.safetensors").unlink()
+    assert export.cached_snapshot("unsloth/Qwen3.5-9B") is None, "no weights: not a base the merge can read"
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "other"))
+    assert export.hf_hub_cache() == tmp_path / "other"
+
+
+def test_the_export_merges_into_the_cached_snapshot(sft_adapter, tmp_path, monkeypatch):
+    # Unsloth's merge never looks in the HF cache: offline, the Hub id fails; the copy names the snapshot folder
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    cfg = json.loads((sft_adapter / "adapter_config.json").read_text())
+    cfg["base_model_name_or_path"] = "unsloth/Qwen3.5-9B"
+    (sft_adapter / "adapter_config.json").write_text(json.dumps(cfg))
+    with pytest.raises(trainkit.Die):
+        export.local_base_adapter(sft_adapter, tmp_path / "copy")  # offline and not cached: refused up front
+    snap = a_hub_cache(tmp_path / "hub")
+    got, s = export.local_base_adapter(sft_adapter, tmp_path / "copy")
+    assert (got, s) == (tmp_path / "copy", snap)
+    assert json.loads((got / "adapter_config.json").read_text())["base_model_name_or_path"] == str(snap)
+    assert json.loads((sft_adapter / "adapter_config.json").read_text())["base_model_name_or_path"] == "unsloth/Qwen3.5-9B"
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty"))
+    assert export.local_base_adapter(sft_adapter, tmp_path / "copy2") == (sft_adapter, None)  # online, not cached: as is
+
+
+def test_only_complete_checkpoints_are_resumed(tmp_path):
+    ck = tmp_path / "checkpoints"
+    assert train.resumable_checkpoints(ck) == ([], [])
+    for n, files in ((2, train.CHECKPOINT_FILES), (10, train.CHECKPOINT_FILES), (12, train.CHECKPOINT_FILES[:-1])):
+        d = ck / f"checkpoint-{n}"
+        d.mkdir(parents=True)
+        for f in files:
+            (d / f).write_bytes(b"x")
+    ok, partial = train.resumable_checkpoints(ck)
+    assert [d.name for d in ok] == ["checkpoint-2", "checkpoint-10"]  # numeric order, not text order
+    assert [d.name for d in partial] == ["checkpoint-12"]  # cut off before trainer_state.json

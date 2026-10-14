@@ -99,3 +99,18 @@ def test_the_harness_gets_both_routes(tmp_path, monkeypatch):
         EV.run(s, RUN, mode="smoke", current_url="https://eval.run.app", candidate_url="https://cand.run.app",
                workdir=tmp_path / "w", harness_factory=FakeHarness, progress=lambda m: None)
     assert got["routes"] == {"current": "https://eval.run.app", "candidate": "https://cand.run.app"}
+
+
+def test_smoke_tolerates_the_candidates_error_rows_only():
+    # a SMOKE candidate is a few updates from the base: its error rows are recorded, not fatal; the current arm's
+    # errors (harness or GPU trouble) still fail the stage
+    rows = [{"status": "ok"}] * 5 + [{"status": "error", "code": "timeout"}] * 5
+    seen = []
+    arms = EV.Arms(dry=True, progress=seen.append, tolerate_errors=frozenset({"candidate"}))
+    arms.check_errors("candidate", rows, "candidate/paraphrase#1")
+    assert arms.tolerated and "5/10 rows errored" in arms.tolerated[0]["error"] and seen
+    with pytest.raises(EV.StageError) as e:
+        arms.check_errors("current", rows, "current/paraphrase#1")
+    assert e.value.reason == "eval_errors"
+    with pytest.raises(EV.StageError):
+        EV.Arms(dry=True, progress=seen.append).check_errors("candidate", rows, "candidate/paraphrase#1")

@@ -284,6 +284,13 @@ trainer images from the revision that serves (the previous tag): the
 `p-$T` preview at 0 % is the latest ready revision but not the serving one
 (§2), so a round never starts on a preview's images.
 
+**Plan Terraform only after the traffic switch.** `--no-traffic` pins the
+service's traffic to the old revision, the module leaves traffic to whoever
+set it last, and an apply sends the traffic its plan saw: a plan made
+between step 5's deploy and its switch puts the stale traffic back
+(2026-10-13: the switch to `e5a8e05` was undone 28 s later by such an
+apply). Re-plan after the switch, or switch again after the apply.
+
 If the CI trigger is created later, merging to `main` does steps 2 to 5 on
 its own (migrate job, service, retention job, lab and trainer images).
 

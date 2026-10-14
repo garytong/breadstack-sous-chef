@@ -223,6 +223,66 @@ def adapter_base(adapter: Path) -> str | None:
     return cfg.get("base_model_name_or_path")
 
 
+def hf_hub_cache() -> Path:
+    """The Hugging Face hub cache: $HF_HUB_CACHE, else $HF_HOME/hub, else
+    ~/.cache/huggingface/hub (huggingface_hub's environment-variable docs)."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    home = os.environ.get("HF_HOME") or os.path.join(os.environ.get("XDG_CACHE_HOME") or "~/.cache", "huggingface")
+    return Path(home).expanduser() / "hub"
+
+
+def cached_snapshot(repo_id: str, cache: Path | None = None) -> Path | None:
+    """The snapshot folder of `repo_id` at refs/main in the hub cache
+    (models--<org>--<name>/refs/main holds the commit, snapshots/<commit>/ the
+    files: huggingface_hub's cache layout), when it holds a config.json and
+    safetensors weights; else None."""
+    if not repo_id or "/" not in repo_id or Path(repo_id).is_dir():
+        return None
+    root = (cache or hf_hub_cache()) / ("models--" + repo_id.replace("/", "--"))
+    try:
+        rev = (root / "refs" / "main").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    snap = root / "snapshots" / rev
+    if rev and (snap / "config.json").is_file() and any(snap.glob("*.safetensors")):
+        return snap
+    return None
+
+
+def hub_offline() -> bool:
+    return any(os.environ.get(k, "").strip().upper() in ("1", "ON", "YES", "TRUE")
+               for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"))
+
+
+def local_base_adapter(adapter: Path, work: Path) -> tuple[Path, Path | None]:
+    """(the adapter folder to load, the base snapshot it now names). Unsloth's
+    merge (unsloth_zoo determine_base_model_source) looks for the base as a
+    directory relative to the working directory, then on the Hub — never in
+    the Hugging Face cache — so under HF_HUB_OFFLINE a Hub id fails ("could
+    not reach the Hugging Face Hub", the trainer image, 2026-10-14), and
+    online it merges into whatever the repo's main is then, not the revision
+    trained on. When the cache holds the base, `work` gets a copy of the
+    adapter whose base_model_name_or_path is that snapshot folder (the adapter
+    itself keeps the Hub id); otherwise the adapter as it is (offline: refused
+    before minutes of loading)."""
+    base = adapter_base(adapter)
+    snap = cached_snapshot(base) if base else None
+    if snap is None:
+        if base and hub_offline() and not Path(base).is_dir():
+            die(f"the base {base} is not in the Hugging Face cache ({hf_hub_cache()}) and the Hub is offline: "
+                "the merge cannot read it")
+        return adapter, None
+    if work.exists():
+        shutil.rmtree(work)
+    shutil.copytree(adapter, work)
+    cfg_path = work / "adapter_config.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["base_model_name_or_path"] = str(snap)
+    cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    return work, snap
+
+
 def adapter_run(adapter: Path) -> dict:
     """The run.json beside the adapter folder ({} when there is none)."""
     return trainkit.read_json(Path(adapter).parent / "run.json", {}) or {}
@@ -366,13 +426,24 @@ def export(args, p: dict, base_text: str) -> int:
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
     args.adapter = args.adapter.resolve()
+    # beside `out`, never in it (the pipeline pushes `out` whole)
+    load_from, snap = local_base_adapter(args.adapter, out.resolve().parent / f".{out.name}-adapter")
+    if snap is not None:
+        say(f"Merging into the cached base snapshot {snap} (the revision trained on), not the Hub's {p['base']}.")
+    try:
+        return _export(args, p, base_text, out, t0, load_from, snap)
+    finally:
+        if load_from != args.adapter:
+            shutil.rmtree(load_from, ignore_errors=True)
 
+
+def _export(args, p: dict, base_text: str, out: Path, t0: float, load_from: Path, snap: Path | None) -> int:
     def load_merged_source():
         import unsloth  # noqa: F401  (before transformers, as in train.py)
         from unsloth import FastModel
 
         say(f"Loading {p['base']} with the adapter from {trainkit.rel(args.adapter)} …")
-        model, processor = FastModel.from_pretrained(model_name=str(args.adapter), max_seq_length=args.num_ctx,
+        model, processor = FastModel.from_pretrained(model_name=str(load_from), max_seq_length=args.num_ctx,
                                                      load_in_4bit=False, load_in_16bit=True)
         return model, getattr(processor, "tokenizer", processor)
 
@@ -416,7 +487,8 @@ def export(args, p: dict, base_text: str) -> int:
         ggufs = {q: out / f"{args.name}-{q}.gguf" for q in args.quant_list}
 
     record = {"at": utc_now(), **{k: p[k] for k in ("adapter", "adapter_run", "adapter_kind", "base", "base_ollama_tag",
-                                                    "method", "num_ctx")}, "quants": {}}
+                                                    "method", "num_ctx")},
+              "base_snapshot": str(snap) if snap else None, "quants": {}}
     for q, g in ggufs.items():
         mf = out / f"Modelfile.{q}"
         try:

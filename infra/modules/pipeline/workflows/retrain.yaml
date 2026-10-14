@@ -142,6 +142,13 @@ main:
                 args:
                   cfg: '${cfg}'
                 result: imgs
+            - images_same:
+                call: images_unchanged
+                args:
+                  run: '${ident.run}'
+                  imgs: '${imgs}'
+                  resume_from: '${resume_from}'
+                  start_at: '${start_at}'
             - label:
                 assign:
                   - smoke_label: ""
@@ -793,6 +800,30 @@ require_images:
     - done:
         return: '${imgs}'
 
+images_unchanged:
+  # A resume re-resolves the images from the service's serving tag: after a
+  # switch to another tag, train / build / candidate / eval would run another
+  # lab and trainer than the ones that built the round's dataset. The same tag
+  # re-pointed at a rebuilt image passes (make trainer-image TAG=<the round's
+  # tag>); a resume from decide only waits for the decision and passes too.
+  params: [run, imgs, resume_from, start_at]
+  steps:
+    - was:
+        assign:
+          - empty: {}
+          - t0: '${default(map.get(default(run, empty), ["images", "tag"]), imgs.tag)}'
+    - same:
+        switch:
+          - condition: '${resume_from != "" and start_at >= 3 and start_at <= 6 and t0 != imgs.tag}'
+            raise:
+              pipeline_stage: "images"
+              error_class: "images_changed"
+              message: '${"cannot resume from " + resume_from + ": the round was built with the images of tag " + t0 + " and the service now serves " + imgs.tag + ". Start a new round, or point " + t0 + " at the image to run (make trainer-image TAG=" + t0 + ") while " + t0 + " serves."}'
+              attempt: 1
+              attempts: 1
+    - done:
+        return: true
+
 point_jobs:
   params: [cfg, imgs]
   steps:
@@ -813,6 +844,11 @@ point_jobs:
 run_record:
   params: [cfg, ctx, existing, resume_from]
   steps:
+    - url:
+        # the console page of THIS execution (report.json links.execution,
+        # the decision page's "Workflow execution" link)
+        assign:
+          - exec_url: '${"https://console.cloud.google.com/workflows/workflow/" + cfg.workflows_region + "/" + default(map.get(cfg, ["workflows", "retrain"]), "souschef-retrain") + "/execution/" + default(sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID"), "") + "?project=" + cfg.project}'
     - fresh:
         switch:
           - condition: '${existing == null}'
@@ -829,6 +865,7 @@ run_record:
                         started_at: '${time.format(sys.now())}'
                         updated_at: '${time.format(sys.now())}'
                         execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+                        execution_url: '${exec_url}'
                         images: '${ctx.imgs}'
                         status: running
                         stages: {}
@@ -847,11 +884,17 @@ run_record:
           - rec.status: running
           - rec.updated_at: '${time.format(sys.now())}'
           - rec.images: '${ctx.imgs}'
+          - rec.execution_url: '${exec_url}'
           - resume_entry:
               at: '${time.format(sys.now())}'
               from: '${resume_from}'
               execution: '${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}'
+              # the failure this resume answers moves here: a running round
+              # carries no `failed` block
+              previous_failure: '${map.get(existing, "failed")}'
+              previous_images: '${map.get(existing, "images")}'
           - rec.resumes: '${list.concat(default(map.get(existing, "resumes"), []), resume_entry)}'
+          - rec: '${map.delete(rec, "failed")}'
     - write:
         call: gcs_write
         args:
@@ -1372,14 +1415,17 @@ vertex_attempt:
               - scheduling.maxWaitDuration: '${string(wait_s) + "s"}'
     - body:
         assign:
+          # one per create: finds a job whose create answer was lost, and the
+          # trainer's TRAIN_NONCE (progress.json and train/failed-<nonce>.json
+          # name the job that wrote them)
+          - nonce: '${text.to_lower(text.substring(text.replace_all(default(sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID"), "x"), "-", ""), 0, 8)) + "-" + string(int(sys.now() * 1000))}'
           - job:
               displayName: '${"souschef-train-" + ctx.run_id + "-" + rung.name + "-" + string(try_n)}'
               labels:
                 purpose: sous-chef-pipeline
                 run: '${ctx.run_id}'
                 rung: '${rung.name}'
-                # one per create: finds a job whose create answer was lost
-                create: '${text.to_lower(text.substring(text.replace_all(default(sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID"), "x"), "-", ""), 0, 8)) + "-" + string(int(sys.now() * 1000))}'
+                create: '${nonce}'
               jobSpec:
                 workerPoolSpecs:
                   - machineSpec:
@@ -1402,6 +1448,10 @@ vertex_attempt:
                           value: '${rung.name}'
                         - name: TRAIN_ATTEMPT
                           value: '${string(try_n)}'
+                        - name: TRAIN_NONCE
+                          value: '${nonce}'
+                        - name: TRAIN_IMAGE
+                          value: '${ctx.imgs.trainer}'
                 scheduling: '${scheduling}'
                 serviceAccount: '${cfg.trainer.service_account}'
     - before:
@@ -1593,29 +1643,60 @@ vertex_attempt:
           # startTime: "Time when the CustomJob for the first time entered the
           # JOB_STATE_RUNNING state" (customJobs reference)
           - vx_started: '${map.get(cj, "startTime") != null}'
+          - vx_code: '${default(map.get(cj, ["error", "code"]), 0)}'
+          # this job's TRAIN_NONCE (its `create` label; an adopted job keeps its own)
+          - jnonce: '${default(map.get(cj, ["labels", "create"]), "")}'
+          - sticky: null
     - progress:
         call: gcs_read
         args:
           bucket: '${cfg.bucket}'
           name: '${ctx.prefix + "train/progress.json"}'
         result: prog
+    - sticky_read:
+        # train/failed-<nonce>.json: this job's trainer failed. Vertex restarts
+        # a container that exited 1, even after the job is FAILED, and the
+        # restart rewrote progress.json (2026-10-14: `failed` read back as
+        # `running` and `interrupted`); this object no restart rewrites
+        switch:
+          - condition: '${jnonce != ""}'
+            steps:
+              - sticky_get:
+                  call: gcs_read
+                  args:
+                    bucket: '${cfg.bucket}'
+                    name: '${ctx.prefix + "train/failed-" + jnonce + ".json"}'
+                  result: sticky
     - prog_fields:
         assign:
           - pst: '${default(map.get(default(prog, empty), "status"), "")}'
           - pat: '${map.get(default(prog, empty), "updated_at")}'
+          - pnonce: '${map.get(default(prog, empty), "nonce")}'
           - pnew: false
           - step0: '${default(map.get(default(prog0, empty), "last_step"), 0)}'
           - step1: '${default(map.get(default(prog, empty), "last_step"), 0)}'
     - prog_new:
-        # written during this attempt (time.parse only on a string; a minute
-        # of slack for a stamp at whole seconds or a skewed clock — the
-        # previous attempt's last write is at least one 5-minute poll older)
+        # written by THIS job: its nonce when the trainer writes one (another
+        # job's leftover container, or an earlier execution's, never counts);
+        # else (an older trainer image) written during this attempt
+        # (time.parse only on a string; a minute of slack for a stamp at whole
+        # seconds or a skewed clock — the previous attempt's last write is at
+        # least one 5-minute poll older)
         switch:
+          - condition: '${get_type(pnonce) == "string" and pnonce != ""}'
+            assign:
+              - pnew: '${pnonce == jnonce}'
           - condition: '${get_type(pat) == "string"}'
             assign:
               - pnew: '${time.parse(pat) >= started - 60}'
     - classify_failed:
         switch:
+          # the trainer failed in this job (its sticky record), whatever a
+          # restart wrote to progress.json since: never retried
+          - condition: '${get_type(sticky) == "map"}'
+            assign:
+              - entry.state: fatal
+              - entry.message: '${msg + " | trainer: " + json.encode_to_string(default(map.get(sticky, "error"), sticky))}'
           # the trainer's SIGTERM trap (pipeline-train.sh): a preemption or a
           # restart, checkpoints pushed — resume, never fatal
           - condition: '${pnew and pst == "interrupted"}'
@@ -1629,6 +1710,13 @@ vertex_attempt:
           # attempt: no capacity, whatever the text (Flex-start's
           # maxWaitDuration failure message is not documented)
           - condition: '${not(vx_started) and not(pnew) and (cj.state == "JOB_STATE_FAILED" or cj.state == "JOB_STATE_EXPIRED")}'
+            assign:
+              - entry.state: capacity
+          # Flex-start's wait ran out: error code 14 (UNAVAILABLE), and the job
+          # HAS a startTime though it never got a machine (2026-10-14, job
+          # 463589157793431552: "The maximum wait duration of 30m has been
+          # reached without resources being provisioned")
+          - condition: '${rung.strategy == "FLEX_START" and vx_code == 14 and not(pnew)}'
             assign:
               - entry.state: capacity
           - condition: '${text.match_regex(msg, "(?i)stockout|resource.?exhausted|zone_resource_pool|insufficient|not enough resources|capacity|quota|max.?wait|unavailable|could not be scheduled")}'
@@ -2044,6 +2132,9 @@ stage_build:
             digest: '${digest}'
             build_id: '${build_id}'
             log_url: '${default(map.get(b, "logUrl"), null)}'
+            # the worker the build ran on (output only; "2026.09" = Docker
+            # Engine 29, the one with named build contexts)
+            worker_release: '${map.get(b, ["options", "resolvedWorkerRelease"])}'
             at: '${time.format(sys.now())}'
     - done:
         return: '${digest}'

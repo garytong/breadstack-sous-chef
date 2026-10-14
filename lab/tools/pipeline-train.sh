@@ -51,6 +51,10 @@ LOG=$W/train.log
 # the workflow sends TRAIN_ATTEMPT (vertex_attempt's try number); CLOUD_ML_TRIAL_ID is a hyperparameter-tuning
 # variable a CustomJob never sets
 ATTEMPT=${TRAIN_ATTEMPT:-${PIPELINE_ATTEMPT:-1}}
+# TRAIN_NONCE: the job's one-off `create` label (vertex_attempt). progress.json carries it, so the workflow reads only
+# what THIS job wrote; a failure also leaves train/failed-<nonce>.json, which nothing overwrites (Vertex restarts a
+# container that exited 1, even after it has marked the job FAILED: the restart used to rewrite `failed`)
+NONCE=${TRAIN_NONCE:-}
 SYNC_EVERY=${PIPELINE_SYNC_EVERY_S:-120}
 FLAGS=(--data "$DATA/dataset" --fields-context on --eval-steps "${EVAL_STEPS:-150}" --val-max-rows "${VAL_MAX_ROWS:-150}")
 mkdir -p "$W" "$HF_HOME"
@@ -68,13 +72,13 @@ progress() {  # progress STATUS [ERROR] — the step, the status and what the ad
   # be writing `interrupted`)
   local pj="$W/progress.$BASHPID.json"
   rm -f "$pj"
-  "$PY" - "$pj" "$CUR_STEP" "$1" "$ATTEMPT" "$MODE" "$ADAPTER_DIR" "${2:-}" "${TRAIN_RUNG:-}" <<'EOF' >/dev/null 2>&1 || true
+  "$PY" - "$pj" "$CUR_STEP" "$1" "$ATTEMPT" "$MODE" "$ADAPTER_DIR" "${2:-}" "${TRAIN_RUNG:-}" "$NONCE" <<'EOF' >/dev/null 2>&1 || true
 import json, sys, time
 from pathlib import Path
-out, step, status, attempt, mode, adir, error, rung = sys.argv[1:9]
+out, step, status, attempt, mode, adir, error, rung, nonce = sys.argv[1:10]
 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 p = {"status": status, "step": step, "error": error or None, "attempt": attempt, "rung": rung or None, "mode": mode,
-     "updated_at": now, "at": now}
+     "nonce": nonce or None, "updated_at": now, "at": now}
 ad = Path(adir)
 run = ad / "run.json"
 if run.is_file():
@@ -104,8 +108,8 @@ Path(out).write_text(json.dumps(p, indent=1))
 EOF
   if [ ! -s "$pj" ]; then
     # no python (or it failed): the status the workflow reads must still be there
-    printf '{"status":"%s","step":"%s","error":"%s","attempt":"%s","updated_at":"%s"}\n' \
-      "$1" "$(printf '%s' "$CUR_STEP" | tr -d '"\\')" "$(printf '%s' "${2:-}" | tr -d '"\\')" "$ATTEMPT" \
+    printf '{"status":"%s","step":"%s","error":"%s","attempt":"%s","nonce":"%s","updated_at":"%s"}\n' \
+      "$1" "$(printf '%s' "$CUR_STEP" | tr -d '"\\')" "$(printf '%s' "${2:-}" | tr -d '"\\')" "$ATTEMPT" "$NONCE" \
       "$(date -u +%FT%TZ)" > "$pj"
   fi
   gs cp "$pj" "$R/progress.json" --content-type=application/json >/dev/null 2>&1 || true
@@ -129,6 +133,8 @@ fail() {
   stop_sync
   push_checkpoints
   progress failed "$CUR_STEP: $*"
+  # sticky: a restart of this job never rewrites it (entrypoint.sh exits at once on it; the workflow reads it first)
+  [ -n "$NONCE" ] && gs cp "$W/progress.json" "$R/failed-$NONCE.json" --content-type=application/json >/dev/null 2>&1
   gs cp "$LOG" "$R/train.log" >/dev/null 2>&1 || true
   exit 1
 }
@@ -153,8 +159,18 @@ interrupted() {  # SIGTERM / SIGINT: a preemption or a cancel — say so first, 
   exit 143
 }
 trap interrupted TERM INT
-push_checkpoints() {
-  [ -d "$ADAPTER_DIR/checkpoints" ] && gs rsync --recursive "$ADAPTER_DIR/checkpoints" "$R/checkpoints" >/dev/null 2>&1
+push_checkpoints() {  # complete checkpoints only, trainer_state.json last (train.py resumes only from a checkpoint
+  # that has it): the Trainer writes it last (transformers _save_checkpoint), so a checkpoint still being written
+  # waits for the next pass, and one cut off mid-upload (a Spot VM switched off) is never resumed from
+  local c n
+  [ -d "$ADAPTER_DIR/checkpoints" ] || return 0
+  mkdir -p "$W/pushed"
+  for c in "$ADAPTER_DIR"/checkpoints/checkpoint-*; do
+    n=${c##*/}
+    [ -f "$c/trainer_state.json" ] && [ ! -e "$W/pushed/$n" ] || continue
+    gs rsync --recursive --exclude='^trainer_state\.json$' "$c" "$R/checkpoints/$n" >/dev/null 2>&1 || continue
+    gs cp "$c/trainer_state.json" "$R/checkpoints/$n/trainer_state.json" >/dev/null 2>&1 && touch "$W/pushed/$n"
+  done
   return 0
 }
 sync_loop() {  # every SYNC_EVERY s: the checkpoints, then progress `running` (last_step from loss.jsonl moves on)
@@ -178,7 +194,7 @@ stop_sync() {  # the loop and whatever it is running (a gcloud upload), then wai
 
 if gs_exists "$R/DONE"; then echo "pipeline-train: $R/DONE exists — nothing to do"; exit 0; fi
 
-step "kit"; run cat KIT-VERSION 2>/dev/null; run "$PY" --version
+step "kit"; echo "trainer image: ${TRAIN_IMAGE:-unknown} (nonce ${NONCE:-none})" | tee -a "$LOG"; run "$PY" --version
 step "pull dataset"
 mkdir -p "$DATA"
 run gs rsync --recursive "$B/runs/$RUN/dataset" "$DATA" || fail "pull dataset"
@@ -186,10 +202,22 @@ step "pull base"
 if [ ! -f "$HF_HOME/.base-ok" ]; then
   run gs cp "$B/base/$BASE_TAR" "$B/base/$BASE_TAR.sha256" "$W/" || fail "pull base"
   run bash -c 'cd "$1" && sha256sum -c "$2"' _ "$W" "$BASE_TAR.sha256" || fail "base tar sha256"
-  run tar -x -C "$HF_HOME" -f "$W/$BASE_TAR" || fail "untar base"
+  # The tar holds a Hugging Face hub cache folder (models--unsloth--Qwen3.5-9B/…),
+  # which belongs under $HF_HOME/hub: unpacked into $HF_HOME itself, the offline
+  # loader finds nothing (2026-10-14: the first SMOKE failed at model load with
+  # LocalEntryNotFoundError). A tar that already starts with hub/ goes to $HF_HOME.
+  first=$(tar -tf "$W/$BASE_TAR" 2>/dev/null | head -n 1 || true)
+  case "$first" in hub/*) dest="$HF_HOME" ;; *) dest="$HF_HOME/hub" ;; esac
+  mkdir -p "$dest"
+  run tar -x -C "$dest" -f "$W/$BASE_TAR" || fail "untar base"
   rm -f "$W/$BASE_TAR"
+  [ -f "$HF_HOME/hub/models--unsloth--Qwen3.5-9B/refs/main" ] || fail "base cache layout: no $HF_HOME/hub/models--unsloth--Qwen3.5-9B/refs/main after unpacking"
   touch "$HF_HOME/.base-ok"
 fi
+# the export merges into this snapshot folder (export.py local_base_adapter: offline, Unsloth's merge cannot resolve
+# the Hub id): proved here, before the SFT, not after it
+run "$PY" -c 'import sys; from souschef_lab.export import cached_snapshot; s = cached_snapshot("unsloth/Qwen3.5-9B"); print("base snapshot:", s); sys.exit(0 if s else 1)' \
+  || fail "base snapshot: no unsloth/Qwen3.5-9B snapshot with config.json and safetensors under $HF_HOME/hub"
 step "pull checkpoints"
 RESUMED=0
 if gs_exists "$R/checkpoints"; then
@@ -253,12 +281,16 @@ fi
 step "export q4_k_m"
 run "$PY" -m souschef_lab.export --adapter "$ADAPTER_DIR/adapter" --name "$NAME" --quants q4_k_m \
   --base-modelfile "$BASE_MODELFILE" || fail "export"
+# Unsloth's intermediates: gguf/ (the merged 16-bit model, ~18 GB, kept when the disk is not tight) and gguf_gguf/
+# (the mmproj and Unsloth's own Modelfile). Only <name>-q4_k_m.gguf, Modelfile.q4_k_m and export.json go up (r4's push
+# excluded gguf/ too)
+rm -rf "runs/exports/$NAME/gguf" "runs/exports/$NAME/gguf_gguf"
 step "stage"
 run make --no-print-directory model-stage NAME="$NAME" MODEL_STAGE="runs/model-image/$NAME" \
   MODEL_TEMPERATURE=0.3 MODEL_PRESENCE_PENALTY=0 || fail "model-stage"
 step "push"
 run gs rsync --recursive --exclude='^checkpoints/.*' "$ADAPTER_DIR" "$R/adapter" || fail "push adapter"
-run gs rsync --recursive "runs/exports/$NAME" "$R/export" || fail "push export"
+run gs rsync --recursive --exclude='^gguf(_gguf)?/.*' "runs/exports/$NAME" "$R/export" || fail "push export"
 run gs rsync --recursive "runs/model-image/$NAME" "$R/stage" || fail "push stage"
 CUR_STEP=DONE
 progress done
