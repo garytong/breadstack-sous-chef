@@ -27,28 +27,55 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import LAB_DIR
-from .common import ConfigError, Store, notification, read_jsonl, run_prefix, write_result
+from .common import ConfigError, Store, notification, read_jsonl, run_prefix, write_jsonl, write_result
 
 TRAIN_FLAGS = ["--fields-context", "on", "--eval-steps", "150", "--val-max-rows", "150", "--checkpoint-steps", "50"]
 
 
+def _where_ok(r: dict) -> bool:
+    """A `where` row teaches the deep link only when its answer calls report_unsupported with `where`."""
+    if (r.get("meta") or {}).get("mode") != "where":
+        return True
+    for m in r.get("messages") or []:
+        for c in m.get("tool_calls") or []:
+            fn = c.get("function") or {}
+            if fn.get("name") == "report_unsupported":
+                try:
+                    if json.loads(fn.get("arguments") or "{}").get("where"):
+                        return True
+                except ValueError:
+                    pass
+    return False
+
+
 def where_missing(rows: list[dict]) -> int:
     """Kept `where` rows whose answer has no report_unsupported call carrying `where`."""
-    n = 0
-    for r in rows:
-        if (r.get("meta") or {}).get("mode") != "where":
-            continue
-        ok = False
-        for m in r.get("messages") or []:
-            for c in m.get("tool_calls") or []:
-                fn = c.get("function") or {}
-                if fn.get("name") == "report_unsupported":
-                    try:
-                        ok = ok or bool(json.loads(fn.get("arguments") or "{}").get("where"))
-                    except ValueError:
-                        pass
-        n += 0 if ok else 1
-    return n
+    return sum(1 for r in rows if not _where_ok(r))
+
+
+def drop_where_missing(data: Path) -> dict[str, int]:
+    """Move kept `where` rows without a `where` into rejects.jsonl (reason where_missing).
+
+    r4score flags a report_unsupported whose `where` is invalid, but a teacher answer that
+    passes without calling report_unsupported at all used to stay in the set, and the row
+    gate (row_checks) then refused the whole dataset (2026-10-14, the first full round:
+    10 of 2,465 train rows). Dropping them here keeps the gate strict for anything else.
+    """
+    dropped: dict[str, int] = {}
+    rejects = read_jsonl(data / "rejects.jsonl")
+    for split in ("train", "val"):
+        rows = read_jsonl(data / f"{split}.jsonl")
+        keep = [r for r in rows if _where_ok(r)]
+        gone = [r for r in rows if not _where_ok(r)]
+        dropped[split] = len(gone)
+        if gone:
+            write_jsonl(data / f"{split}.jsonl", keep)
+            rejects += [{"id": r.get("id"), "case_id": (r.get("meta") or {}).get("case_id"),
+                         "family": (r.get("meta") or {}).get("family"), "verdict": "pass",
+                         "reasons": ["where_missing"]} for r in gone]
+    if any(dropped.values()):
+        write_jsonl(data / "rejects.jsonl", rejects)
+    return dropped
 
 
 def row_checks(data: Path, *, need_followups: bool) -> dict:
@@ -155,6 +182,17 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
                          engine_fp=engine_fp, progress=progress)
     if not caps:
         st["val_moved"] = ensure_val(out / "dataset")
+    dropped = drop_where_missing(out / "dataset")
+    if any(dropped.values()):
+        n = sum(dropped.values())
+        progress(f"dataset: dropped {n} where row(s) without `where` (train {dropped['train']}, val {dropped['val']})")
+        st["where_missing_dropped"] = dropped
+        st["rows"] = (st.get("rows") or 0) - n
+        st["train"] = (st.get("train") or 0) - dropped["train"]
+        st["val"] = (st.get("val") or 0) - dropped["val"]
+        first = dict(st.get("rejects_first_reason") or {})
+        first["where_missing"] = first.get("where_missing", 0) + n
+        st["rejects_first_reason"] = first
     gates: dict[str, Any] = {}
     problems: list[str] = []
     # 1. render parity

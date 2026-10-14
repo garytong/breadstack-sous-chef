@@ -108,3 +108,33 @@ def test_parity_gate_against_the_real_binary(tmp_path):
     rep = PG.run(FIXTURES_DIR / "exam" / "manifest-real.json", tmp_path, binary=Path(exe))
     assert rep["ok"], rep["failures"]
     assert rep["calls_checked"] == 7
+
+
+def test_drop_where_missing_moves_unlinked_refusals_to_rejects(tmp_path):
+    # 2026-10-14: a teacher answer can pass without calling report_unsupported at all; the row
+    # gate then refused the whole first full round. The dataset stage now drops those rows first.
+    import json as _json
+    from souschef_lab.retrain import dataset_stage as DS
+
+    def row(i, mode, call=None):
+        msgs = [{"role": "user", "content": "connect my domain"}]
+        if call is not None:
+            msgs.append({"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "report_unsupported", "arguments": _json.dumps(call)}}]})
+        msgs.append({"role": "assistant", "content": "I can't do that here."})
+        return {"id": f"r{i}", "meta": {"mode": mode, "case_id": f"c{i}", "family": "F7"}, "messages": msgs}
+
+    d = tmp_path / "dataset"
+    DS.write_jsonl(d / "train.jsonl", [row(1, "edit"), row(2, "where", {"reason": "x", "where": "domain"}), row(3, "where")])
+    DS.write_jsonl(d / "val.jsonl", [row(4, "where", {"reason": "x"})])
+    DS.write_jsonl(d / "rejects.jsonl", [{"id": "r0", "case_id": "c0", "family": "F1", "verdict": "fail", "reasons": ["not_pass"]}])
+
+    dropped = DS.drop_where_missing(d)
+
+    assert dropped == {"train": 1, "val": 1}
+    train, val, rej = (DS.read_jsonl(d / f) for f in ("train.jsonl", "val.jsonl", "rejects.jsonl"))
+    assert [r["id"] for r in train] == ["r1", "r2"] and val == []
+    assert [r["id"] for r in rej] == ["r0", "r3", "r4"] and rej[1]["reasons"] == ["where_missing"]
+    assert DS.where_missing(train) == 0
+    assert not [p for p in DS.row_checks(d, need_followups=False)["problems"] if "where" in p]
+    assert DS.drop_where_missing(d) == {"train": 0, "val": 0}  # idempotent
