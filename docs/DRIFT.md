@@ -97,6 +97,36 @@ an object at `$PIPE/config/thresholds.json` overrides it without a rebuild.
 | `notice` (post, no retrain) | Δ_total > 2 σ_Δ · any R3 change · `engine_status = stale` · one dodged key |
 | **`retrain`** | **(a)** Δ_total > 3 σ_Δ **and** ≥ 4 points · **(b)** on a set with n ≥ 12, Δ_set > 3 σ_Δ,set **and** ≥ 15 points · **(c)** `out_of_scope` + `out_of_scope_holdout` drop ≥ 3 rows **and** > 3 σ_Δ of the two sets combined · **(d)** ≥ 2 dodged keys, or every probed key of a new container dodged · **(e)** `stale_training_rows` ≥ 3 % of the dataset, or `stale_exam_rows` ≥ 5 % of the exam · **(f)** arm D has ≥ 3 more ghost writes than arm T · **(g)** ≥ 90 days since training **and** any R2/R3 change |
 
+**Re-keyed rows.** An exam row whose answer key a product decision changed
+gets a new id `<id>.k2` (`exam.AMENDMENTS`): a baseline scored on the old key
+never pairs with it, so it is left out of every Δ until the live model is
+re-calibrated (`drift calibrate --fresh-baseline`, or the approved candidate's
+eval baseline). Twenty rows today: the 19 font and vague-request rows of
+2026-10-15 and p137.k2 ("create a new page for events": create_page since
+2026-10-15, or — on the exam's state, which already has an Events page — the
+reply that the page exists; RETRAIN.md R2a). p137.k2 stays in the
+`out_of_scope` set although it is no longer out of scope: after the
+re-calibration a lost p137.k2 counts toward rule (c) like any row of that set.
+(The retrain eval's paired bar leaves it out — its report-only `capability`
+set, RETRAIN.md R6 — because the current model there was never offered the
+tool; drift compares a model with itself, so it stays in. The candidate
+baseline records it under `out_of_scope:p137.k2`.)
+
+**Option lists in the re-derived contexts (2026-10-16).** Arms T and D ask
+the exam with contexts re-derived by `state.context_of`, which now mirrors
+the launcher's turn context from 1d4193e2 on: `tags` and `brands` (the lab
+fixture's lists, by name) whenever the viewed page, a page the request names
+or the open section has a product carousel, or the request says tag / brand /
+carousel — 222 of the 252 rows, since the exam's vintage home has a
+carousel — and categories carry their id as text (`fixtures/context.json`
+gives ids since 2026-10-16, as every live context has them). Both arms get
+the same bytes, so Δ is fair; a baseline
+calibrated before this change was asked without the lists, which is one more
+reason the re-calibration after r6 is due. The engine ctx of every replay
+(`verify.ctx_of`, also the collector's) now carries the fixture's tag and
+brand ids, so a tagSlug / brandSlug write also writes its tagId / brandId,
+as in the editor.
+
 **Two replicates, up front.** Every check and weekly run asks arm D twice
 (`arm_d_replicates` = 2, about 50 minutes more than one): a rule from (a), (b)
 or (c) is judged on both, so it is confirmed in the same run instead of a

@@ -16,6 +16,18 @@ same rows and contexts:
   new keys)
   the NEWEST deployed manifest, when it moved during     rederived 1           reported (stale_round)
   the round with an R3 change
+  capability: exam rows a tool round re-keyed to a NEW   rederived 2           reported (never bar)
+  tool (exam.page_spec: p137.k2 create_page), taken out
+  of their set — the live model was never offered the
+  tool, so a candidate trained on it wins them for free
+  capability:built — contrast.capability_report_cases:   built     2           reported (never bar)
+  ~15 create_page / dropdown-list cases (creates,
+  declines, listings short … unknown) on the deployed
+  manifest: shows a candidate that over-creates pages
+  or invents list names (no exam row measures either)
+
+The capability rows keep their set's row key (out_of_scope:p137.k2) in the candidate
+baseline, so drift keeps measuring them; only the paired bar leaves them out.
 
 Outputs: runs/<id>/eval/<arm>/<set>-k<k>.jsonl (trimmed rows), eval/bar.json,
 eval/candidate-baseline.json (the candidate's rows on its own training manifest
@@ -45,7 +57,15 @@ from .common import ConfigError, StageError, Store, load_run, model_state, run8,
 ARMS = ("current", "candidate")
 EXAM_SETS = ("paraphrase", "holdout", "real", "followup", "out_of_scope", "out_of_scope_holdout")
 SET_CODE = {"paraphrase": "pa", "holdout": "ho", "real": "re", "followup": "fu", "out_of_scope": "oo",
-            "out_of_scope_holdout": "oh", "F9H": "f9", "probe": "pr", "F0H": "f0", "newest": "nw"}
+            "out_of_scope_holdout": "oh", "F9H": "f9", "probe": "pr", "F0H": "f0", "newest": "nw", "capability": "cp", "capability:built": "cb"}
+CAPABILITY_SET = "capability"
+
+
+def is_capability_row(row: dict) -> bool:
+    """An exam row whose answer key is a tool the deployed (current) model was never trained on: exam.page_spec
+    (p137.k2, create_page since 2026-10-15). Scored in the report-only `capability` set, never paired in the bar."""
+    from ..exam import page_spec
+    return bool(page_spec(row))
 
 
 def row_key(set_name: str, row_id: Any) -> str:
@@ -259,8 +279,10 @@ def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, pr
         rows = rows[:lim] if lim else rows
         rb, stale, rep = rebase_exam(rows, dep_m, sd.get("renames"), old_manifest=exam_m)
         DR.rederive(rb, dep_path, DR.home_context(rows) or DR.home_context(raw_rows["paraphrase"]))
-        out["sets"][s] = by_font(rb)
-        out["recorded"][s] = by_font([r for r in rows if r["id"] not in {x["id"] for x in stale}])
+        cap = [dict(r, _origin_set=s) for r in rb if is_capability_row(r)]
+        out.setdefault("capability", []).extend(by_font(cap))
+        out["sets"][s] = by_font([r for r in rb if not is_capability_row(r)])
+        out["recorded"][s] = by_font([r for r in rows if r["id"] not in {x["id"] for x in stale} and not is_capability_row(r)])
         out["stale"] += [row_key(s, r["id"]) for r in stale]
     cases_path = local / "cases.jsonl"
     if not store.download(f"{pre}/prepare/cases.jsonl", cases_path):
@@ -271,6 +293,8 @@ def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, pr
     f9h = [c for c in hold if (c.get("meta") or {}).get("family") == "F9H"]
     out["f0h"] = f0h[:lim] if lim else f0h
     out["f9h"] = f9h[:lim] if lim else f9h
+    from ..contrast import capability_report_cases
+    out["capability_built"] = capability_report_cases(dep_m, limit=lim) if th.get("capability_report", True) else []
     # the new-key probe on the drift run's new keys
     run = load_run(store, run_id)
     drift_run = (run.get("trigger") or {}).get("drift_run")
@@ -319,7 +343,8 @@ def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, pr
                     r["set"] = "newest"
                 out["newest"] = {"path": npath, "m": nm, "rows": rb, "hash": nm.hash}
     progress(f"eval: rows {', '.join(f'{s} {len(v)}' for s, v in out['sets'].items())}; stale {len(out['stale'])}; "
-             f"F0H {len(out['f0h'])}; F9H {len(out['f9h'])}; probe {len(out['probe'])}; stale_round {out['stale_round']}")
+             f"F0H {len(out['f0h'])}; F9H {len(out['f9h'])}; probe {len(out['probe'])}; capability {len(out.get('capability') or [])} + {len(out.get('capability_built') or [])} built; "
+             f"stale_round {out['stale_round']}")
     return out
 
 
@@ -376,6 +401,17 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
                     wk.update({r["key"]: int(r["where_ok"]) for r in tr if r.get("status") == "ok"})
             ghosts[arm].append(g)
             where_by[arm].append(wk)
+            if sets.get("capability"):  # report-only (bar.REPORT_ONLY): the rows a new tool re-keyed
+                tr = arms.exam(arm, CAPABILITY_SET, sets["capability"], dep_path, dep_m, sample=k,
+                               prefix=p(k, CAPABILITY_SET), script_rows=sets["capability"] if arm == "current" else None,
+                               script_m=cur_m if arm == "current" else None)
+                rows_out[arm] += tr
+                results_by[arm].setdefault(CAPABILITY_SET, []).append(results(tr))
+            if sets.get("capability_built"):
+                s_ = f"{CAPABILITY_SET}:built"
+                tr = arms.generated(arm, s_, sets["capability_built"], dep_path, dep_m, sample=k, prefix=p(k, s_), logdir=logdir)
+                rows_out[arm] += tr
+                results_by[arm].setdefault(s_, []).append(results(tr))
             if sets["f9h"]:
                 tr = arms.generated(arm, "F9H", sets["f9h"], dep_path, dep_m, sample=k, prefix=p(k, "f9"), logdir=logdir)
                 rows_out[arm] += tr
@@ -452,8 +488,11 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
                 for i, d in enumerate(reps_a):
                     if i < len(probe_by_key[pk][a]):
                         probe_by_key[pk][a][i].update(d)
+    from ..exam import is_out_of_scope
+    oos_keys = [row_key("out_of_scope", c.get("id")) for c in sets["sets"].get("out_of_scope") or [] if is_out_of_scope(c)]
     bar = BAR.evaluate(results_by, baseline=base_cur, th=th, trigger_rules=sets["trigger_rules"], ghosts=ghosts,
-                       oos_where=where_by, dodged_keys=sets["dodged_keys"], probe_by_key=probe_by_key)
+                       oos_where=where_by, dodged_keys=sets["dodged_keys"], probe_by_key=probe_by_key,
+                       oos_keys=oos_keys)
     if sets.get("newest"):
         nb = BAR.set_row("newest", "rederived", newest_by["current"], newest_by["candidate"], base_cur, th, bar=False)
         nb.pop("_keys", None)
@@ -469,11 +508,14 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
     # drift's F0H addressing: "F0H:<case id>" (the unseen / seen split is ours)
     f0h_c = {f"F0H:{k.split(':', 2)[2]}": v for part in ("F0H:unseen", "F0H:seen")
              for k, v in ((results_by["candidate"].get(part) or [{}])[0]).items()}
+    origin = {row_key(CAPABILITY_SET, r.get("id")): row_key(r["_origin_set"], r.get("id")) for r in sets.get("capability") or []}
     for k in range(reps):
         rows_k: dict[str, int] = {}
         for s in EXAM_SETS:
             if k < len(results_by["candidate"].get(s) or []):
                 rows_k.update(results_by["candidate"][s][k])
+        if k < len(results_by["candidate"].get(CAPABILITY_SET) or []):  # under their own set's key (drift's address)
+            rows_k.update({origin.get(key, key): v for key, v in results_by["candidate"][CAPABILITY_SET][k].items()})
         BL.add_replicate(cb, rows_k, run=run_id, at=PC.iso(), ghost_writes=ghosts["candidate"][k] if k < len(ghosts["candidate"]) else None,
                          f0h=f0h_c if k == 0 else None)
     cb["calibrated"] = len(cb["replicates"]) >= 2
@@ -490,6 +532,7 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
                  "newest_manifest": (sets.get("newest") or {}).get("hash"),
                  "probe_coverage": sets.get("probe_coverage"), "probe_dropped": sets.get("probe_dropped"),
                  "renames": sets["renames"], "font_policy": sets.get("font_policy"),
+                 "capability_rows": [row_key(r["_origin_set"], r.get("id")) for r in sets.get("capability") or []],
                  "score_policy": {**R4S.policy_of(), "version": R4S.POLICY_VERSION},
                  "harness": harness.describe() if harness is not None else {"dry": True},
                  "candidate_baseline_digest": cand_digest, "tolerated_errors": arms.tolerated,

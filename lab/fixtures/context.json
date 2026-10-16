@@ -1,22 +1,22 @@
 {
   "_source": "lab fixture: the merchant-side lists the turn context carries (service README §1.2) and the slugs/ids `ref` and `keyed_by` fields take their values from",
   "categories": [
-    {"slug": "flower", "name": "Flower"},
-    {"slug": "pre-rolls", "name": "Pre-Rolls"},
-    {"slug": "edibles", "name": "Edibles"},
-    {"slug": "vapes", "name": "Vapes"},
-    {"slug": "concentrates", "name": "Concentrates"},
-    {"slug": "accessories", "name": "Accessories"}
+    {"id": 301, "slug": "flower", "name": "Flower"},
+    {"id": 302, "slug": "pre-rolls", "name": "Pre-Rolls"},
+    {"id": 303, "slug": "edibles", "name": "Edibles"},
+    {"id": 304, "slug": "vapes", "name": "Vapes"},
+    {"id": 305, "slug": "concentrates", "name": "Concentrates"},
+    {"id": 306, "slug": "accessories", "name": "Accessories"}
   ],
   "tags": [
-    {"slug": "staff-picks", "name": "Staff Picks"},
-    {"slug": "new", "name": "New"},
-    {"slug": "sale", "name": "Sale"}
+    {"id": 101, "slug": "staff-picks", "name": "Staff Picks"},
+    {"id": 102, "slug": "new", "name": "New"},
+    {"id": 103, "slug": "sale", "name": "Sale"}
   ],
   "brands": [
-    {"slug": "pure-sunfarms", "name": "Pure Sunfarms"},
-    {"slug": "redecan", "name": "Redecan"},
-    {"slug": "good-supply", "name": "Good Supply"}
+    {"id": 201, "slug": "pure-sunfarms", "name": "Pure Sunfarms"},
+    {"id": 202, "slug": "redecan", "name": "Redecan"},
+    {"id": 203, "slug": "good-supply", "name": "Good Supply"}
   ],
   "locations": [
     {"id": "loc-main", "name": "Main Street"},

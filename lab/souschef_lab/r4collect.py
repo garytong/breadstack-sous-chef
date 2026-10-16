@@ -51,7 +51,8 @@ from typing import Any, Iterable
 
 from . import collect as C
 from . import render
-from .r4score import PASSING, RULE_VERSION, excuse_divergences, score
+from .createpage import run_engine_result
+from .r4score import PASSING, RULE_VERSION, excuse_divergences, oracle_turn, score
 
 ROUTE_MODELS = {"default": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
 ID_RE = re.compile(r'^\{"id": "([^"]+)"')
@@ -197,6 +198,8 @@ def run_r4_case(case: dict, client: Any, engine: Any, *, route: str | None, fiel
     from .state import context_of
     from .verify import ctx_of
 
+    from .r4cases import with_case_extras
+    extras = with_case_extras(extras, case)  # the case's option lists / context members on every derived context
     dict_engine = C.DictEngine(engine)
     tap = StateTap(dict_engine)
     state = copy.deepcopy(case.get("site_state") or {})
@@ -234,7 +237,7 @@ def run_r4_case(case: dict, client: Any, engine: Any, *, route: str | None, fiel
                                           extras, manifest, view=view, text=case.get("request") or "")
         if final["score"]["mode"] == "exact":
             ops = [o for o in (final["expected"].get("ops") or []) if o.get("op") != "pick_asset"]
-            r = engine.run(state, ops, ctx_of(final))
+            r = run_engine_result(engine, state, ops, ctx_of(final))
             if r.ok and r.diff():
                 final["expected"]["diff"] = r.diff()
                 info.append("exact_remeasured_on_live_state")
@@ -359,6 +362,9 @@ def oracle_scripts(cases: list[dict], site_prefix: str) -> dict:
             turns.append([[("text.delta", {"text": "Your options include " + ", ".join(map(str, (exp.get("reply_any") or [])[:3])) + "."}), done()]])
         elif mode == "ask":
             turns.append([[("text.delta", {"text": "Happy to change that — what would you like instead?"}), done()]])
+        elif mode in ("page", "list"):  # r4score.oracle_turn: the create (+ its sections), the decline, the listing
+            o = oracle_turn(c) or {"ops": [], "text": "Done."}
+            turns.append(write_turn(o["ops"], o["text"]))
         else:
             ops = c["meta"].get("oracle_ops") or exp.get("ops") or []
             turns.append(write_turn(ops, "Done — that's changed. Save when you're happy with it."))

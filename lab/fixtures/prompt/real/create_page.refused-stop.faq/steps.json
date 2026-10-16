@@ -1,0 +1,54 @@
+[
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "Creating an FAQ page with a hero."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_1",
+     "name": "create_page",
+     "input": {
+      "title": "FAQ"
+     }
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_lab_2",
+     "name": "edit_list",
+     "input": {
+      "target": {
+       "kind": "page",
+       "page": "faq"
+      },
+      "list": "sections",
+      "action": "add",
+      "item": {
+       "id": "heroBanner"
+      }
+     }
+    }
+   ],
+   "usage": {
+    "input_tokens": 120,
+    "output_tokens": 30
+   }
+  }
+ },
+ {
+  "message": {
+   "content": [
+    {
+     "type": "text",
+     "text": "There is already a built-in FAQ page, so I did not create another one. Want me to add the hero to it?"
+    }
+   ],
+   "usage": {
+    "input_tokens": 220,
+    "output_tokens": 26
+   }
+  }
+ }
+]

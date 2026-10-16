@@ -16,7 +16,9 @@ Sets (`fixtures/exam/<set>.jsonl`; `souschef-lab exam sets` lists them):
                         unnamed, selected, relative, compound, followup)
   holdout                62 more, written after the study froze its prototype's tables
   real                   14 of the user's real turns with a known right key
-  out_of_scope           13 requests the editor cannot do (products, prices, domain…)
+  out_of_scope           13 requests the editor cannot do (products, prices, domain…); since
+                        2026-10-15 one of them, p137.k2 "create a new page for events", is a
+                        create_page row (AMENDMENTS, score_page)
   out_of_scope_holdout    4 more, written with the holdout
   followup               12 multi-turn follow-ups ("6", "yes please", "okay, lora"):
                         the paraphrase rows of class followup, with their history
@@ -90,6 +92,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import FIXTURES_DIR, LAB_DIR, RUNS_DIR
+from .createpage import slugify  # pageSlug.js slugify: the one copy (createpage), re-exported for the page rules
 
 EXAM_DIR = FIXTURES_DIR / "exam"
 MANIFEST_FILE = EXAM_DIR / "manifest-real.json"
@@ -129,13 +132,14 @@ WHERE_VALUES = ("domain", "sites", "pages", "assets", "seo", "themes", "products
 # An out-of-scope row's `expected_where` from its reason + request, first rule that matches; else `support`
 # ("billing, payments, orders, refunds, tax, anything else"). The meanings are the rules' (prompt/rules.go
 # "What Sous Chef cannot change"): domain = custom domain / web address / site slug, themes = switch template,
-# pages = create/rename/duplicate/delete pages, categories = create/delete product categories, products =
-# products, prices, inventory, descriptions; payments, discounts, loyalty, messaging, locations, analytics and
-# external listings are `support`.
+# pages = rename/duplicate/delete pages (CREATING one is supported since 2026-10-15: create_page — the pages rule
+# fires only for a page-MANAGING request, page_request(request) == "manage"; a create request falls through),
+# categories = create/delete product categories, products = products, prices, inventory, descriptions; payments,
+# discounts, loyalty, messaging, locations, analytics and external listings are `support`.
 EXPECTED_WHERE_RULES = (
     (("template", "theme"), "themes"),
     (("domain", "slug", "url of my site", "web address"), "domain"),
-    (("custompages", "new page", "page for"), "pages"),
+    (("page",), "pages"),  # page_request(request) == "manage" only (expected_where_for)
     (("categor",), "categories"),
     (("sitemap", "search console"), "seo"),
     (("asset library", "upload"), "assets"),
@@ -336,9 +340,15 @@ def where_for(reason: str) -> list[str]:
 def expected_where_for(reason: str, request: str = "") -> list[str]:
     """The `where` values that pass an out-of-scope row (contract 1 keys):
     the first EXPECTED_WHERE_RULES entry whose word is in the reason or the
-    request, else `support`."""
+    request, else `support`. The `pages` rule reads the request alone:
+    renaming, duplicating or deleting a page is `pages`; creating one is not
+    out of scope at all (create_page), so it never maps to `pages`."""
     low = f"{reason}\n{request}".lower()
     for words, where in EXPECTED_WHERE_RULES:
+        if where == "pages":
+            if page_request(request) == "manage":
+                return [where]
+            continue
         if any(w in low for w in words):
             return [where]
     return ["support"]
@@ -656,6 +666,20 @@ AMENDMENTS: dict[tuple[str, str], dict] = {**{k: {"ask_ok": True} for k in VAGUE
     ("holdout", "h059"): _both_or_all(),                  # change the font | Inter for both
 }}
 
+# create-page (2026-10-15, the create_page tool; the user chose "tools first", so it trains in r6): creating a page is
+# no longer out of scope. p137 "create a new page for events" expects create_page {title "Events"} (score_page: the
+# title without case or spacing, the slug canonical, in_nav and status as asked, nothing else written) — UNLESS the
+# site already has that page, where the rules say never create it again ("edit that page instead"): then the right
+# answer writes nothing and tells the merchant the page exists (`if_exists: decline`). The exam's vintage state DOES
+# hold a custom page "Events" (/events: state.build_state seeds customPages from fixtures/context.json, and the
+# rederived contexts list it), so on today's exam state p137.k2 is scored as that decline. A report_unsupported
+# (the r5 answer) fails either way. Members starting with "_" are the row's own (kind, meta) and its answer key.
+PAGE_CREATE_KEY = "create-page-2026-10-15"
+AMENDMENTS[("out_of_scope", "p137")] = {
+    "page": {"expect": "create", "title": "Events", "in_nav": False, "status": "published", "if_exists": "decline"},
+    "out_of_scope": None, "_row": {"kind": "create_page"}, "_meta": {"class": "create"}, "_answer_key": PAGE_CREATE_KEY}
+EXPECTED_MEMBERS = ("optional", "ask_ok", "site_fonts", "page")  # what an amendment may add (cleared first)
+
 
 def amend(row: dict, set_name: str | None = None) -> dict:
     """The row under today's answer key (AMENDMENTS); unchanged when it has none."""
@@ -663,15 +687,27 @@ def amend(row: dict, set_name: str | None = None) -> dict:
     a = AMENDMENTS.get((s, str(row.get("id"))))
     if a is None:
         return row
+    a = copy.deepcopy(a)
+    row_members, meta_members = a.pop("_row", {}), a.pop("_meta", {})
+    answer_key = a.pop("_answer_key", ANSWER_KEY)
     r = copy.deepcopy(row)
     e = r.setdefault("expected", {})
     meta = r.setdefault("meta", {})
-    meta["superseded"] = {"id": row.get("id"), "keys": copy.deepcopy(e.get("keys") or []),
-                          "alt": copy.deepcopy(e.get("alt") or []), "fields": copy.deepcopy(row.get("fields"))}
-    meta["answer_key"] = ANSWER_KEY
-    for k in ("optional", "ask_ok", "site_fonts"):
+    sup = {"id": row.get("id"), "keys": copy.deepcopy(e.get("keys") or []),
+           "alt": copy.deepcopy(e.get("alt") or []), "fields": copy.deepcopy(row.get("fields"))}
+    for k in row_members:  # what _restore_superseded puts back (r4score)
+        sup.setdefault("row", {})[k] = copy.deepcopy(row.get(k))
+    if "out_of_scope" in a:
+        sup["out_of_scope"] = copy.deepcopy(e.get("out_of_scope"))
+    for k in meta_members:
+        sup.setdefault("meta", {})[k] = copy.deepcopy(meta.get(k))
+    meta["superseded"] = sup
+    meta["answer_key"] = answer_key
+    for k in EXPECTED_MEMBERS:
         e.pop(k, None)
-    e.update(copy.deepcopy(a))
+    e.update(a)
+    r.update(row_members)
+    meta.update(meta_members)
     if "keys" in a:
         r["fields"] = [x["key"] or x["list"] for x in e.get("keys") or []]
     r["id"] = f"{row.get('id')}{AMENDED_ID_SUFFIX}"
@@ -727,7 +763,352 @@ def is_out_of_scope(case: dict) -> bool:
 
 
 def is_labelled(case: dict) -> bool:
-    return is_out_of_scope(case) or bool(expected_sets(case))
+    return is_out_of_scope(case) or bool(expected_sets(case)) or bool(page_spec(case))
+
+
+# --- pages: create_page (2026-10-15) --------------------------------------------------------------------------------------
+#
+# The launcher's slug rules (launcher/client/src/lib/pageSlug.js, sousChef/ops/validate.js validateCreatePage; the
+# service's toolgen.Slugify is the same function): slug = slugify(slug || title); a passed slug must already be
+# canonical; a custom page may not take a built-in page id (lib/pagesMerge.js BUILTIN_PAGE_IDS), a storefront route
+# (api, launcher, menu, test-toast, sitemap…, monitoring…), "seo", an existing custom page's slug or title, or a
+# built-in page's pages.pageSlugs override; only basic templates may create one.
+
+BUILTIN_PAGE_IDS = ("home", "products", "product-details", "cart", "checkout", "locations", "location-details",
+                    "location-selection", "age-gate", "faq", "about", "blog", "blog-detail", "delivery",
+                    "mail-order", "contact", "loyalty", "careers", "privacy-policy", "terms-of-service",
+                    "disclaimer", "return-refund", "eula", "cookie-policy", "login", "account",
+                    "order-confirmation", "order-details")
+STOREFRONT_ROUTE_SLUGS = ("api", "launcher", "menu", "test-toast")
+RESERVED_PREFIX = re.compile(r"^(?:sitemap|monitoring)")
+
+
+def is_reserved_page_slug(slug: str) -> bool:
+    s = str(slug or "")
+    return s in BUILTIN_PAGE_IDS or s in STOREFRONT_ROUTE_SLUGS or s == "seo" or bool(RESERVED_PREFIX.match(s))
+
+
+_PAGE_WORD = re.compile(r"\bpages?\b", re.IGNORECASE)
+# renaming / duplicating / deleting / moving a page's address / unpublishing / protecting: still report_unsupported
+# where=pages (rules.go "pages: rename, duplicate or delete pages")
+_PAGE_MANAGE = re.compile(r"\b(renam\w*|duplicat\w*|cop(?:y|ies|ied)|clon\w*|delet\w*|remov\w*|trash\w*|get rid of|"
+                          r"unpublish\w*|password\w*|url|address|slug)\b", re.IGNORECASE)
+_PAGE_CREATE = re.compile(r"\b(new|create|add|make|build|set up|need|another|blank|landing)\b|\bpage (?:for|about|with)\b|"
+                          r"\bpage:", re.IGNORECASE)
+
+
+def page_request(text: Any) -> str | None:
+    """"manage" (rename / duplicate / delete … a page: report_unsupported where=pages), "create" (a new page:
+    create_page), or None (the text is not about a page as such)."""
+    t = str(text or "")
+    if not _PAGE_WORD.search(t):
+        return None
+    if _PAGE_MANAGE.search(t):
+        return "manage"
+    if _PAGE_CREATE.search(t):
+        return "create"
+    return None
+
+
+_TITLE_STOP = frozenset("a an the my our your new another second brand blank landing page pages for about with of on "
+                        "and to i we me us please can you just some info".split())
+
+
+def page_title_of(text: Any) -> dict | None:
+    """What a free-text page CREATE request names the page (a relabelled pool row has no authored title):
+    {"title", "match": "exact"} for a quoted name, "called / named / titled X" or "page: X"; {"words", "match":
+    "words"} (the title must hold one of them) for "a X page" / "a page for X"; None when it names nothing ("add a
+    blank page" — the rules: ask)."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    q = re.search(r"['\"“‘]([^'\"”’]{2,60})['\"”’]", t)
+    if q:
+        return {"title": q.group(1).strip(), "match": "contains"}
+    n = re.search(r"\b(?:called|named|titled)\s+(.+?)(?=\s+(?:page|with|and|to|that|for|so)\b|[.,!?;]|$)", t, re.IGNORECASE) \
+        or re.search(r"\bpage:\s*(.+?)(?=[.,!?;]|$)", t, re.IGNORECASE)
+    if n and n.group(1).strip():
+        return {"title": n.group(1).strip(), "match": "exact"}
+    words: list[str] = []
+    for pat in (r"\b(?:a|an|another|new)\s+(.+?)\s+page\b", r"\bpage\s+(?:for|about|with)\s+(.+?)(?=[.,!?;]|$)"):
+        mm = re.search(pat, t, re.IGNORECASE)
+        if mm:
+            words += [w for w in re.findall(r"[a-z0-9/]+", mm.group(1).lower()) if w not in _TITLE_STOP and len(w) > 1]
+    words = list(dict.fromkeys(w.replace("/", "") for w in words if w.replace("/", "")))
+    return {"words": words, "match": "words"} if words else None
+
+
+def page_spec(case: dict) -> dict | None:
+    """expected.page: {expect: create | decline, title?, title_match? (exact | contains | words), words?, slug?, slugs?,
+    in_nav, status, sections: [section type…], why? (decline: exists | reserved | template), if_exists?: decline}."""
+    p = (case.get("expected") or {}).get("page")
+    return p if isinstance(p, dict) and p.get("expect") in ("create", "decline") else None
+
+
+def _norm_title(s: Any) -> str:
+    return re.sub(r"\s+", "", str(s or "")).casefold()
+
+
+def _context_of_turn(case: dict, row: dict | None) -> dict:
+    ctx = (row or {}).get("context")
+    return ctx if isinstance(ctx, dict) else (case.get("context") if isinstance(case.get("context"), dict) else {})
+
+
+def existing_page(case: dict, row: dict | None, title: Any = None, slugs: Iterable[str] = ()) -> dict | None:
+    """The page that already holds `title` or one of `slugs` on the case's site — a custom page of the turn's context
+    or of the state (by slug or title), a built-in page id, or a built-in page's pages.pageSlugs override — as
+    {slug, title, kind: custom | builtin | override, in_context}, else None."""
+    ctx = _context_of_turn(case, row)
+    state = case.get("site_state") if isinstance(case.get("site_state"), dict) else {}
+    want = {s for s in slugs if s}
+    nt = _norm_title(title) if title else None
+    ctx_pages = [p for p in ctx.get("customPages") or [] if isinstance(p, dict)]
+    for src, in_ctx in ((ctx_pages, True), ([p for p in state.get("customPages") or [] if isinstance(p, dict)], False)):
+        for p in src:
+            if p.get("slug") in want or (nt and _norm_title(p.get("title")) == nt):
+                return {"slug": p.get("slug"), "title": p.get("title"), "kind": "custom",
+                        "in_context": in_ctx or any(q.get("slug") == p.get("slug") for q in ctx_pages)}
+    for s in sorted(want):
+        if s in BUILTIN_PAGE_IDS:
+            return {"slug": s, "title": None, "kind": "builtin", "in_context": False}
+    overrides = {}
+    for src in (ctx.get("pageSlugs"), case.get("page_slugs"),
+                ((state.get("pages") or {}) if isinstance(state.get("pages"), dict) else {}).get("pageSlugs")):
+        if isinstance(src, dict):
+            overrides.update({v: k for k, v in src.items() if isinstance(v, str) and v})
+    for s in sorted(want):
+        if s in overrides:
+            return {"slug": s, "title": None, "kind": "override", "page": overrides[s], "in_context": False}
+    return None
+
+
+def page_expectation(case: dict, row: dict | None = None) -> dict | None:
+    """The case's page expectation for THIS turn: a create whose page already exists on the site (`if_exists:
+    decline`) is the decline "exists" (rules.go: never create a page the site already has; edit it instead)."""
+    spec = page_spec(case)
+    if spec is None:
+        return None
+    spec = dict(spec)
+    if spec["expect"] == "create" and spec.get("if_exists") == "decline":
+        slugs = list(spec.get("slugs") or []) + [spec.get("slug") or "", slugify(spec.get("title") or "")]
+        ex = existing_page(case, row, spec.get("title"), slugs)
+        if ex is not None:
+            spec.update(expect="decline", why="exists", existing=ex)
+    return spec
+
+
+def _created_slug(op: dict, result: dict | None) -> str:
+    s = (result or {}).get("slug")
+    return str(s) if s else slugify(op.get("slug") or op.get("title") or "")
+
+
+def _op_page(op: dict) -> str | None:
+    """The page an op writes on (a page or section target's page; edit_list on {kind: page})."""
+    t = op.get("target") if isinstance(op.get("target"), dict) else {}
+    if t.get("kind") in ("page", "section"):
+        return str(t.get("page") or "") or None
+    if op.get("op") in ("set_page_layout", "reset_pinned_section"):
+        return str(op.get("page") or "") or None
+    return None
+
+
+def _section_type(item: Any) -> str:
+    sid = str((item or {}).get("id") or (item or {}).get("type") or "") if isinstance(item, dict) else str(item or "")
+    return re.sub(r"-\d+$", "", sid)
+
+
+def title_ok(spec: dict, title: Any) -> bool:
+    """create_page's title against the spec: exact (case and spacing aside), contains (the named text inside it), or
+    words (one of the request's words in it, at most six words long)."""
+    how = spec.get("title_match") or "exact"
+    if how == "words":
+        words = set(re.findall(r"[a-z0-9]+", str(title or "").lower()))
+        fold = {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words}
+        want = {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in spec.get("words") or []}
+        return bool(fold & want) and 0 < len(str(title or "").split()) <= 6
+    if how == "contains":
+        return _norm_title(spec.get("title")) in _norm_title(title)
+    return _norm_title(title) == _norm_title(spec.get("title"))
+
+
+# A decline "exists" must SAY the page is already there, not merely mention its name ("Sorry, I can't make an events
+# page" / "What would you like on the events page?" name it and explain nothing).
+EXISTS_SAID = re.compile(r"\balready\b|\bexist(?:s|ing)?\b|\byou(?:'ve|\u2019ve| have)(?: got)? (?:an?|one)\b|"
+                         r"\b(?:taken|in use)\b|\binstead\b", re.IGNORECASE)
+
+
+def is_asked_section_add(op: dict, spec: dict, existing: dict) -> bool:
+    """`op` adds one of the spec's asked section types to the EXISTING page (its slug, or the built-in page id a
+    pageSlugs override stands for) — the rules' "edit that page instead" for a create whose page exists."""
+    if op.get("op") != "edit_list" or str(op.get("list") or "") != "sections" or op.get("action") != "add":
+        return False
+    pages = {x for x in (existing.get("slug"), existing.get("page")) if x}
+    return _op_page(op) in pages and _section_type(op.get("item")) in set(spec.get("sections") or [])
+
+
+def edits_instead(row: dict, spec: dict, existing: dict) -> list[dict]:
+    """The accepted ops of a row that edit the existing page as asked (is_asked_section_add) ON PURPOSE: not a
+    follow-up of a create_page earlier in the SAME batch aimed at that page (the batch stop blocks those; one that got
+    through landed on the existing page by accident, not as "edit that page instead")."""
+    from .createpage import create_page_slugs
+    out: list[dict] = []
+    ops = list(row.get("ops") or [])
+    i = 0
+    for b in row.get("engine_results") or []:
+        rs = list(b.get("results") or [])
+        aimed: set[str] = set()
+        for r in rs:
+            op = ops[i] if i < len(ops) else None
+            i += 1
+            if not isinstance(op, dict):
+                continue
+            if op.get("op") == "create_page":
+                aimed |= set(create_page_slugs(op))
+            elif r.get("ok") and is_asked_section_add(op, spec, existing) and _op_page(op) not in aimed:
+                out.append(op)
+    return out
+
+
+def score_page(case: dict, row: dict, *, refused_ok: bool = False) -> dict:
+    """The verdict of a turn on a page case (expected.page; page_expectation resolves `if_exists`). Scored on the
+    create_page op, never on manifest keys or a raw diff (customPages[N] is no manifest key; `modified` is a clock):
+
+      create   exactly one ACCEPTED create_page; its title (title_ok), its slug (the engine's result `slug`, else
+               slugify(slug || title)) one of spec.slugs (default: slugify of the expected or the written title —
+               slugs must be canonical), in_nav and status as asked; every other accepted op writes on the NEW page
+               (a same-turn section add is the page's own write) and the asked section types are added; no refused
+               op (`refused_ok`: r4score's refused_corrected), no report_unsupported
+               — or, when the request names no page title (title_match "words": a relabelled pool row like "set up a
+               page with a dosing guide"), a question with nothing written (the rules: "if they gave none, ask")
+      decline  nothing written (a refused create_page — the engine said why — is fine), no report_unsupported, and
+               the reply explains: why "exists" names the existing page (its title or /slug) AND says it is already
+               there (EXISTS_SAID: already / exists / existing / "you have a" / taken / in use / instead) — the
+               rules' other answer, "edit that page instead", passes too: the only accepted writes are the ASKED
+               section adds on the existing page (its slug or built-in id); "reserved" asks a question (the engine
+               suggests a free slug; the rules: ask before using it), "template" says the template or theme can't
+               show custom pages
+
+    Verdicts: pass, invalid_op, no_answer, wrong_value, missing_writes, extra_writes, reported, wrote, not_explained,
+    no_question. detail: {expect, why?, created?, existing?, stray, create_refused}."""
+    spec = page_expectation(case, row) or {}
+    accepted, refused = accepted_ops(row)
+    results = [r for b in row.get("engine_results") or [] for r in b.get("results") or []]
+    ok_results = [r for r in results if r.get("ok")]
+    called = {c.get("name") for c in row.get("tool_calls") or []}
+    reply = str(row.get("reply") or "")
+    create_refused = sum(1 for o in refused if o.get("op") == "create_page")
+    detail: dict[str, Any] = {"expect": spec.get("expect"), "create_refused": create_refused}
+    if spec.get("why"):
+        detail["why"] = spec["why"]
+    if spec.get("existing"):
+        detail["existing"] = spec["existing"]
+    if spec.get("expect") == "decline":
+        why = spec.get("why")
+        ex = spec.get("existing") or {}
+        edits = edits_instead(row, spec, ex) if why == "exists" else []
+        if len(edits) < len(accepted):
+            written = [f"{o.get('op')}:{_op_page(o) or json.dumps(o.get('target'), sort_keys=True)}" for o in accepted]
+            return {"verdict": "wrote", "reasons": ["wrote_on_a_declined_page"], "written": written, "detail": detail}
+        if "report_unsupported" in called:
+            return {"verdict": "reported", "reasons": ["reported_unsupported"], "detail": detail}
+        if why == "exists":
+            names = [x for x in (ex.get("title"), ex.get("slug")) if x]
+            low = reply.casefold()
+            if not any(str(n).casefold() in low for n in names):
+                return {"verdict": "not_explained", "reasons": ["did_not_name_the_existing_page"], "detail": detail}
+            if not EXISTS_SAID.search(reply):
+                return {"verdict": "not_explained", "reasons": ["did_not_say_the_page_exists"], "detail": detail}
+            if edits:
+                detail["edited_existing"] = len(edits)
+                return {"verdict": "pass", "reasons": [], "info": ["decline:exists:edited"], "detail": detail}
+        elif why == "reserved":
+            if not asks_a_question(reply):
+                return {"verdict": "no_question", "reasons": ["did_not_ask_before_another_slug"], "detail": detail}
+        elif why == "template":
+            if not re.search(r"\b(template|theme)s?\b", reply, re.IGNORECASE):
+                return {"verdict": "not_explained", "reasons": ["did_not_say_the_template"], "detail": detail}
+        return {"verdict": "pass", "reasons": [], "info": [f"decline:{why}"], "detail": detail}
+    if "report_unsupported" in called:
+        return {"verdict": "reported", "reasons": ["reported_unsupported"], "detail": detail}
+    if refused and not refused_ok:
+        return {"verdict": "invalid_op", "reasons": [f"refused:{o.get('op')}" for o in refused][:5], "detail": detail}
+    if spec.get("title_match") == "words" and not accepted and not refused and asks_a_question(reply):
+        return {"verdict": "pass", "reasons": [], "info": ["asked_for_the_name"], "detail": detail}
+    creates = [(o, r) for o, r in zip(accepted, ok_results) if o.get("op") == "create_page"]
+    if not creates:
+        return {"verdict": "no_answer", "reasons": ["no_create_page"], "detail": detail}
+    if len(creates) > 1:
+        return {"verdict": "extra_writes", "reasons": [f"create_page x{len(creates)}"], "detail": detail}
+    op, res = creates[0]
+    slug = _created_slug(op, res)
+    status = op.get("status") or "published"
+    detail["created"] = {"title": op.get("title"), "slug": slug, "in_nav": bool(op.get("in_nav")), "status": status}
+    want_slugs = set(spec.get("slugs") or []) | ({spec["slug"]} if spec.get("slug") else set())
+    if not want_slugs:
+        want_slugs = {slugify(spec.get("title") or ""), slugify(op.get("title") or "")} - {""}
+    wrong = []
+    if not title_ok(spec, op.get("title")):
+        wrong.append(f"title:{op.get('title')!r}")
+    if spec.get("title_match") in (None, "exact") or spec.get("slug") or spec.get("slugs"):
+        if slug not in want_slugs:
+            wrong.append(f"slug:{slug}")
+    elif slug != slugify(op.get("title") or "") and slug not in want_slugs:
+        wrong.append(f"slug:{slug}")
+    if bool(op.get("in_nav")) != bool(spec.get("in_nav")):
+        wrong.append(f"in_nav:{bool(op.get('in_nav'))}")
+    if status != (spec.get("status") or "published"):
+        wrong.append(f"status:{status}")
+    own, stray = [], []
+    for o in accepted:
+        if o is op:
+            continue
+        (own if _op_page(o) == slug else stray).append(o)
+    added = {_section_type(o.get("item")) for o in own
+             if o.get("op") == "edit_list" and str(o.get("list") or "") == "sections" and o.get("action") == "add"}
+    missing = [t for t in spec.get("sections") or [] if t not in added]
+    detail["stray"] = [f"{o.get('op')}:{_op_page(o) or json.dumps(o.get('target'), sort_keys=True)}" for o in stray]
+    detail["own_writes"] = len(own)
+    if wrong:
+        return {"verdict": "wrong_value", "reasons": [f"wrong_value:{w}" for w in wrong], "detail": detail}
+    if missing:
+        return {"verdict": "missing_writes", "reasons": [f"missing_section:{t}" for t in missing], "detail": detail}
+    if stray:
+        return {"verdict": "extra_writes", "reasons": [f"stray:{s}" for s in detail["stray"]][:5], "detail": detail}
+    return {"verdict": "pass", "reasons": [], "info": ["create_page"], "detail": detail}
+
+
+def page_oracle(case: dict, row: dict | None = None) -> tuple[list[dict], str]:
+    """(ops, reply) a right answer gives on a page case (dry runs' scripts; page_expectation on the case's own
+    context and state)."""
+    spec = page_expectation(case, row) or {}
+    if spec.get("expect") == "decline":
+        why = spec.get("why")
+        if why == "exists":
+            ex = spec.get("existing") or {}
+            name = ex.get("title") or ex.get("slug")
+            return [], (f"You already have a {name} page (/{ex.get('slug')}), so I didn't create another one. "
+                        "Want me to add something to it instead?")
+        if why == "reserved":
+            return [], "That address is taken by the storefront. Should I use a different one for the page?"
+        if why == "template":
+            return [], "This template can't show custom pages yet, so I couldn't create the page."
+        return [], "I didn't create the page."
+    ops = [o for o in (case.get("meta") or {}).get("oracle_ops") or (case.get("expected") or {}).get("ops") or []]
+    if not ops and spec.get("expect") == "create":
+        title = spec.get("title") or " ".join(w.title() for w in spec.get("words") or []) or "New Page"
+        op: dict[str, Any] = {"op": "create_page", "title": title}
+        if spec.get("slug"):
+            op["slug"] = spec["slug"]
+        if spec.get("in_nav"):
+            op["in_nav"] = True
+        if (spec.get("status") or "published") != "published":
+            op["status"] = spec["status"]
+        ops = [op]
+        slug = spec.get("slug") or slugify(title)
+        ops += [{"op": "edit_list", "target": {"kind": "page", "page": slug}, "list": "sections", "action": "add",
+                 "item": {"id": t}} for t in spec.get("sections") or []]
+        if spec.get("sections") and "slug" not in op:
+            op["slug"] = slug
+    slug = next((o.get("slug") or slugify(o.get("title")) for o in ops if o.get("op") == "create_page"), "")
+    return ops, (f"Added the page at /{slug}. It goes live when you press Save and Publish." if slug else "Done.")
 
 
 # --- matching targets and keys ---------------------------------------------------------------------------------------------
@@ -989,6 +1370,8 @@ def names_a_place(text: str, extra: Iterable[str] = ()) -> list[str]:
 def score_turn(case: dict, row: dict) -> dict:
     """The exam verdict of one finished turn (collect's verifier contract:
     `{verdict, reasons, …}`; PASS verdicts are `pass` and `unsupported_ok`)."""
+    if page_spec(case):  # create_page (2026-10-15): scored on the op (score_page)
+        return score_page(case, row)
     accepted, refused = accepted_ops(row)
     page = (case.get("context") or {}).get("page")
     touches = []
@@ -1340,6 +1723,15 @@ def oracle_script(case: dict, manifest, mode: str = "where") -> list:
     rule scores it)."""
     if mode not in ORACLE_MODES:
         raise ExamError(f"oracle mode must be one of {ORACLE_MODES}")
+    if page_spec(case):
+        ops, text = page_oracle(case)
+        done = ("turn.done", {"stop": "end_turn", "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 1}})
+        if not ops:
+            return [[("text.delta", {"text": text}), done]]
+        tc = [("tool.call", {"id": f"o{i}", "name": o["op"], "input": {k: v for k, v in o.items() if k != "op"}})
+              for i, o in enumerate(ops)]
+        return [tc + [("turn.waiting", {"toolCallIds": [f"o{i}" for i in range(len(ops))]})],
+                [("text.delta", {"text": text}), done]]
     if is_out_of_scope(case):
         oos = (case.get("expected") or {}).get("out_of_scope") or {}
         done = ("turn.done", {"stop": "end_turn", "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 1}})

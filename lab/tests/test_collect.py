@@ -26,6 +26,7 @@ for _p in (LAB, LAB / "tests"):
 import fake_service as FS  # noqa: E402
 from souschef_lab import cli  # noqa: E402
 from souschef_lab import collect as C  # noqa: E402
+from souschef_lab import state as S  # noqa: E402
 
 SNAPSHOT = LAB.parent / "service" / "testdata" / "manifest.snapshot.json"
 SNAPSHOT_HASH = "727d151b5d6b04cd68b73199ab0b3bdf061263f9623f4f6eda00a79137c06f38"
@@ -243,7 +244,7 @@ def test_happy_path_row_shape(svc, client):
     assert [e["event"] for e in row["events"]] == ["text.delta", "tool.call", "turn.waiting", "tool.result", "text.delta", "turn.done"]
     assert [e["data"]["seq"] for e in row["events"]] == [1, 2, 3, 4, 5, 6]
     assert row["events"][3]["data"] == {"toolCallId": "t1", "ok": True, "written": ["values.title"], "for_seq": 2, "seq": 4,
-                                        "turnId": row["turn_id"]}
+                                        "sectionId": "heroBanner-1", "turnId": row["turn_id"]}  # the call's own target
     assert row["context"] == make_case()["context"] and row["text"] == "Set the hero title to Hi"  # what was sent
     # a fresh conversation per sample: the site's open conversation is ended before the turn starts (README §1.1 continues
     # it otherwise — measured against the real binary, LAB.md §4)
@@ -256,7 +257,7 @@ def test_happy_path_row_shape(svc, client):
     assert len(svc.tool_results) == 1
     posted = svc.tool_results[0]["body"]
     assert posted["siteId"] == "lab-c1" and posted["storeId"] == "lab"
-    assert posted["results"] == [{"toolCallId": "t1", "ok": True, "written": ["values.title"]}]
+    assert posted["results"] == [{"toolCallId": "t1", "ok": True, "written": ["values.title"], "sectionId": "heroBanner-1"}]
     assert svc.tool_results[0]["missing"] == []
 
 
@@ -291,7 +292,8 @@ def test_messages_rebuilt_as_anthropic_blocks(svc, client):
                                {"type": "tool_use", "id": "t1", "name": "set_fields", "input": SET_TITLE}]
     tr = m[2]["content"][0]
     assert tr["type"] == "tool_result" and tr["tool_use_id"] == "t1" and "is_error" not in tr
-    assert tr["content"] == '{"ok":true,"written":["values.title"]}'  # loop.browserResult: Go-compact, sorted keys
+    # loop.browserResult: Go-compact, sorted keys; sectionId = the browser's echo of the call's target (turns.js)
+    assert tr["content"] == '{"ok":true,"sectionId":"heroBanner-1","written":["values.title"]}'
     assert m[3]["content"] == [{"type": "text", "text": "Done."}]
     assert row["reply"] == "Working. Now.\nDone."
     assert not any(b.get("type") == "thinking" for msg in m for b in msg["content"])
@@ -311,7 +313,8 @@ def test_multi_batch_carries_state_between_batches(svc, client):
     assert len(engine.calls) == 2
     assert engine.calls[0][0]["values"] == {"title": "Old"}  # a fresh copy of the case state
     assert engine.calls[1][0]["values"] == {"title": "Hi"} and engine.calls[1][0]["_version"] == 1
-    assert engine.calls[0][2] == {**C.GOLDEN_CTX, "templateId": "editorial", "currentPage": "home"}
+    assert engine.calls[0][2] == {**C.GOLDEN_CTX, "templateId": "editorial", "currentPage": "home", "pageSlugs": {},
+                                  **S.host_lists(make_case())}  # verify.ctx_of: the replay's very ctx
     assert [b["body"]["results"][0]["toolCallId"] for b in svc.tool_results] == ["t1", "t2"]
     assert row["written_paths"] == ["values.title", "values.show"]
     assert [e["data"]["seq"] for e in row["events"]] == list(range(1, 9))
@@ -425,15 +428,28 @@ def test_engine_failures_are_posted_as_errors(svc, client):
     assert row["engine_results"][0]["ok"] is False and "state" not in row["engine_results"][0]
 
 
-def test_tool_results_for_maps_warnings_written_and_claims():
-    calls = [{"id": "a", "name": "edit_list"}, {"id": "b", "name": "set_fields"}, {"id": "c", "name": "reset"}]
-    eng = {"results": [{"ok": True, "warnings": ["W_HIDDEN"], "written": ["x"]},
-                       {"ok": False, "error": "nope"}],
+def test_tool_results_for_maps_warnings_written_and_the_calls_own_section():
+    calls = [{"id": "a", "name": "edit_list", "input": {"target": {"kind": "page", "page": "home"}, "list": "sections"}},
+             {"id": "b", "name": "set_fields", "input": {"target": {"kind": "section", "sectionId": "hero"}}},
+             {"id": "c", "name": "reset"},
+             {"id": "d", "name": "set_fields", "input": {"target": {"kind": "section", "page": "home", "sectionId": "contentBlock-1"}}},
+             {"id": "e", "name": "remove_section", "input": {"sectionId": "gallery-2"}}]
+    eng = {"results": [{"ok": True, "warnings": ["W_HIDDEN"], "written": ["x"], "sectionId": "loyaltyForm"},
+                       {"ok": False, "error": "nope"},
+                       {"ok": False, "error": {"code": "E_ENGINE", "message": "no result"}},
+                       {"ok": True, "written": ["y"]},
+                       {"ok": True, "written": ["z"]}],
            "claims": {"a": "sec-9"}}
     out = C.tool_results_for(calls, eng)
-    assert out[0] == {"toolCallId": "a", "ok": True, "warnings": ["W_HIDDEN"], "written": ["x"], "sectionId": "sec-9"}
+    # turns.js toToolResult: `op.target.sectionId || op.sectionId` of the CALL, ok results only — a page-target section
+    # add posts none (the engine's new id and claims never reach the wire), a refused op none
+    assert out[0] == {"toolCallId": "a", "ok": True, "warnings": ["W_HIDDEN"], "written": ["x"]}
     assert out[1] == {"toolCallId": "b", "ok": False, "error": {"code": "E_OP", "message": "nope"}}
     assert out[2]["ok"] is False and out[2]["error"]["code"] == "E_ENGINE"
+    assert out[3] == {"toolCallId": "d", "ok": True, "written": ["y"], "sectionId": "contentBlock-1"}
+    assert out[4]["sectionId"] == "gallery-2"
+    assert C.call_section_id({"input": {"target": {"sectionId": ""}, "sectionId": "s"}}) == "s"
+    assert C.call_section_id({"input": {"target": {"sectionId": 3}}}) is None
 
 
 def test_pick_asset_for_is_deterministic_and_typed():
@@ -492,7 +508,8 @@ def test_run_case_answers_the_picker_with_the_case_s_named_asset(svc, client):
 
 
 def test_ctx_for_and_user_text():
-    assert C.ctx_for(make_case()) == {**C.GOLDEN_CTX, "templateId": "editorial", "currentPage": "home"}
+    assert C.ctx_for(make_case()) == {**C.GOLDEN_CTX, "templateId": "editorial", "currentPage": "home", "pageSlugs": {},
+                                      **S.host_lists(make_case())}
     assert C.ctx_for({"site_state": {}, "context": {}})["templateId"] == "editorial"
     assert C.user_text({"page": "home"}, "hi") == '<context>\n{"page":"home"}\n</context>\nhi'
 

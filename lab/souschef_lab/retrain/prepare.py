@@ -32,6 +32,16 @@ r4-F6 "site's text → body + heading" shape) expect EVERY site font under the f
 changed expectation makes carry-forward re-ask them. Policy as_authored ($SOUSCHEF_FONT_POLICY / trigger.font_policy)
 leaves them as authored.
 
+Pool cases that ask to CREATE a page and were filed as report_unsupported where=pages (r4-F3-0064 "add a new page
+called Strain Guide", r4-F3-0079, r4-F4-0243 … — before 2026-10-15 creating a page was out of scope) are relabelled
+for the create_page tool (fix_page_creates; report.json `page_creates_fixed`): mode `page` expecting create_page
+with the title the request names (exam.page_title_of: exact for a quoted / "called X" / "page: X" name, otherwise
+one of the request's words), in_nav when it names the menu / header / navigation, draft when it says draft — or
+mode `ask` when it names no page at all ("add a blank page"; the rules: ask for the name). Rename / duplicate /
+delete / address requests stay where=pages (exam.page_request "manage"). The changed expectation makes carry-forward
+re-ask them; a relabelled HOLDOUT gets the id `<id>.k2` (exam.AMENDED_ID_SUFFIX: never paired with a score on its old
+key). Off: trigger.page_relabel "off" or $SOUSCHEF_PAGE_RELABEL=off.
+
 SMOKE: 10 pool cases (at least one per family) rebased and one target × 4 cases authored;
 no contrast family.
 """
@@ -133,6 +143,92 @@ def fix_site_fonts(cases: list[dict], m: Manifest, policy: str = "all") -> dict:
         cases[i] = c2
         ids.append(str(c.get("id")))
     return {"policy": policy, "count": len(ids), "ids": ids[:50]}
+
+
+# "put it in the menu / header / top nav" — the PLACE the page goes, not a page ABOUT the menu ("create a menu page",
+# "a page for our drinks menu" set no in_nav)
+MENU_WORDS = (r"\b(?:in|into|to|on|from)\s+(?:the\s+|my\s+|our\s+)?(?:site'?s?\s+|main\s+|top\s+)?"
+              r"(?:menu|nav(?:igation)?(?:\s+bar)?|navbar|header)\b|\b(?:header|top|main)\s+(?:menu|nav(?:igation)?|bar)\b"
+              r"|\bnavbar\b|\bnavigation\b")
+
+
+def relabel_page_create(c: dict) -> dict | None:
+    """The case relabelled for create_page (fix_page_creates), or None when it is not a page-create request filed
+    as where=pages."""
+    import copy
+    import re
+    from ..exam import AMENDED_ID_SUFFIX, page_request, page_title_of, slugify
+    e = c.get("expected") or {}
+    oos = e.get("out_of_scope") or {}
+    if (c.get("score") or {}).get("mode") != "where" or "pages" not in (oos.get("expected_where") or e.get("where") or []):
+        return None
+    text = str(c.get("request") or "")
+    if page_request(text) != "create":
+        return None
+    c2 = copy.deepcopy(c)
+    meta = c2.setdefault("meta", {})
+    meta["relabelled"] = {"from": {"mode": "where", "kind": c.get("kind"), "out_of_scope": copy.deepcopy(oos)},
+                          "why": "create_page (2026-10-15): creating a page is supported"}
+    meta["capability"] = "create_page"
+    meta["fixed"] = sorted(set(list(meta.get("fixed") or []) + ["create_page"]))
+    e2 = c2["expected"]
+    e2["out_of_scope"] = None
+    e2.pop("where", None)
+    title = page_title_of(text)
+    if title is None:  # no name: the rules say ask for it
+        c2["score"] = {"mode": "ask"}
+        c2["kind"] = "ask"
+        meta["oracle_ops"] = []
+    else:
+        spec = {"expect": "create", "title_match": title["match"], "in_nav": bool(re.search(MENU_WORDS, text, re.I)),
+                "status": "draft" if re.search(r"\bdraft\b", text, re.I) else "published", "sections": [],
+                "if_exists": "decline"}
+        if title.get("title"):
+            spec["title"] = title["title"]
+            name = title["title"]
+        else:
+            spec["words"] = title["words"]
+            name = " ".join(w.capitalize() for w in title["words"][:3])
+        e2["page"] = spec
+        op = {"op": "create_page", "title": name}
+        if spec["in_nav"]:
+            op["in_nav"] = True
+        if spec["status"] != "published":
+            op["status"] = spec["status"]
+        e2["ops"] = [op]
+        meta["oracle_ops"] = [copy.deepcopy(op)]
+        meta.setdefault("oracle_slug", slugify(name))
+        c2["score"] = {"mode": "page"}
+        c2["kind"] = "create_page"
+    if c2.get("holdout") and not str(c2.get("id")).endswith(AMENDED_ID_SUFFIX):
+        meta["superseded"] = {"id": c.get("id")}
+        c2["id"] = f"{c.get('id')}{AMENDED_ID_SUFFIX}"
+    return c2
+
+
+def fix_page_creates(cases: list[dict], policy: str = "on") -> dict:
+    """Relabel the page-create requests filed as where=pages (module docstring) in place; the report. A relabelled
+    case that would teach an exam row's page answer (contrast.page_exam_clash: p137.k2 "Events") is DROPPED
+    (`exam_clash`), as contrast drops its own."""
+    if policy in ("off", "0", "false", "no"):
+        return {"policy": policy, "count": 0, "ids": [], "exam_clash": []}
+    from ..contrast import page_exam_clash
+    ids, modes, clash = [], Counter(), []
+    keep: list[dict] = []
+    for c in cases:
+        c2 = relabel_page_create(c)
+        if c2 is None:
+            keep.append(c)
+            continue
+        if page_exam_clash(c2):
+            clash.append(str(c.get("id")))
+            continue
+        keep.append(c2)
+        ids.append(str(c.get("id")))
+        modes[c2["score"]["mode"]] += 1
+    cases[:] = keep
+    return {"policy": policy, "count": len(ids), "ids": ids[:60], "modes": dict(modes), "exam_clash": clash,
+            "holdouts": sum(1 for c in cases if c.get("holdout") and "create_page" in ((c.get("meta") or {}).get("fixed") or []))}
 
 
 def pool_files(store: Store) -> list[dict]:
@@ -289,6 +385,9 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
     fonts_rep = fix_site_fonts(kept, m_new, switch(run_file, "SOUSCHEF_FONT_POLICY", "font_policy", "all"))
     if fonts_rep["count"]:
         progress(f"prepare: {fonts_rep['count']} generic font case(s) now expect every site font {fonts_rep['ids'][:5]}")
+    pages_rep = fix_page_creates(kept, switch(run_file, "SOUSCHEF_PAGE_RELABEL", "page_relabel", "on"))
+    if pages_rep["count"]:
+        progress(f"prepare: {pages_rep['count']} page-create case(s) now expect create_page {pages_rep['modes']}")
 
     # 2. authoring
     # SMOKE never touches the pool: its authored cases stay in the run's folder
@@ -378,6 +477,7 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
               "engine": engine_info, "pool": pool_rep,
               "rebase": {k: v for k, v in rb.items() if k not in ("dropped", "leak")},
               "hidden_write_dropped": hidden_rep, "mailto_fixed": mailto_rep, "site_fonts_fixed": fonts_rep,
+              "page_creates_fixed": pages_rep,
               "contrast": {k: v for k, v in crep.items() if k not in ("per_side",)},
               "targets": trep, "target_list": targets, "author": {k: v for k, v in arep.items() if k != "per_target"},
               "seen": seen, "families": dict(sorted(fam.items())),
@@ -391,6 +491,7 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
                "rebase_dropped": rb["totals"]["dropped"], "targets": len(targets),
                "authored_trainable": len(authored), "authored_holdout": len(holdout_new),
                "contrast": len(contrast), "hidden_write_dropped": hidden_rep["count"],
+               "page_creates_fixed": pages_rep["count"],
                "anthropic_usd": arep.get("anthropic_usd", 0.0)}
     return write_result(store, run_id, "prepare", "ok", metrics=metrics,
                         artifacts=[f"{pre}/prepare/cases.jsonl", f"{pre}/prepare/report.json", rel_auth])

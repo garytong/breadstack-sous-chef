@@ -17,6 +17,7 @@ if str(LAB) not in sys.path:
     sys.path.insert(0, str(LAB))
 
 from souschef_lab import verify as V  # noqa: E402
+from souschef_lab import state as S  # noqa: E402
 
 FIX = LAB / "fixtures" / "traces"
 RECORDED = FIX / "engine" / "recorded.json"
@@ -68,7 +69,8 @@ def test_the_replay_uses_a_fresh_copy_of_the_case_state_and_the_golden_ctx(engin
     before = copy.deepcopy(case["site_state"])
     V.verify(V.trace_from_fixture(fx), case, engine)
     (call,) = engine.calls
-    assert call["ctx"] == {"templateId": "editorial", **V.GOLDEN_CTX, "currentPage": "home"}  # the case's context.page
+    assert call["ctx"] == {"templateId": "editorial", **V.GOLDEN_CTX, "currentPage": "home",  # the case's context.page
+                           "pageSlugs": {}, **S.host_lists(case)}  # the browser host's buildCtx members
     assert call["state"] == before and case["site_state"] == before
     assert call["ops"] == case["expected"]["ops"]
 

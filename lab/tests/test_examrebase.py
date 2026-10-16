@@ -106,7 +106,8 @@ def test_rebase_without_a_rename_makes_the_renamed_rows_stale():
 def test_out_of_scope_rows_pass_through():
     oos = X.load_set("out_of_scope")
     out, stale, rep = rebase_exam(oos, drifted(), RENAME)
-    assert len(out) == len(oos) and not stale and rep["out_of_scope"] == len(oos)
+    # p137.k2 sits in the set but is a create_page row since 2026-10-15 (exam.AMENDMENTS): kept, not counted out of scope
+    assert len(out) == len(oos) and not stale and rep["out_of_scope"] == sum(1 for r in oos if X.is_out_of_scope(r)) == 12
 
 
 def test_ops_are_renamed_and_checked():

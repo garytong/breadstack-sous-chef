@@ -44,7 +44,8 @@ MIN_NODE_MAJOR = 20
 # golden.test.js CTX: a real BASIC_TEMPLATE_IDS member; `now` makes minted ids deterministic.
 GOLDEN_CTX: dict = {"templateId": "editorial", "cdnUrl": "https://cdn.int.breadstack.io", "galleryFolder": "gal", "now": 1700000000000}
 SERVER_TOOLS = ("lookup_fields", "describe_target", "report_unsupported")
-ENGINE_OPS = ("set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "reset_pinned_section", "pick_asset")
+ENGINE_OPS = ("set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "create_page", "reset_pinned_section",
+              "pick_asset")
 
 
 class EngineError(RuntimeError):

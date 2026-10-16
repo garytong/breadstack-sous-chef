@@ -31,6 +31,7 @@ sys.path.insert(0, str(LAB))
 
 from souschef_lab import FIXTURES_DIR  # noqa: E402
 from souschef_lab import collect as C  # noqa: E402
+from souschef_lab import createpage as CP  # noqa: E402
 from souschef_lab import fields as F  # noqa: E402
 from souschef_lab import r4dataset as D  # noqa: E402
 from souschef_lab import r4collect as RC  # noqa: E402
@@ -90,6 +91,68 @@ def plan(m) -> list[dict]:
     return [(follow, steps_follow, 1), (oos, steps_oos, 0), (single, steps_single, 0)]
 
 
+def capability_plan(m, eng) -> list:
+    """r6 (create_page + option lists, service 160ef91, launcher 1d4193e2+): a create plus a section on its slug in
+    one reply (the model then reads `slug` in the create's tool result), a create the engine refuses with a section
+    add the browser stops (E_SLUG, then E_TARGET "was not created"), and a listing turn whose context carries the
+    carousel's tags cut at 100 (`tags` + `tagsTruncated`). The cases are contrast.py's own, measured as prepare
+    measures them (r4cases.remeasure). Empty on an engine without create_page."""
+    from souschef_lab import contrast as K
+    from souschef_lab import r4score as R4S
+    from souschef_lab.r4cases import remeasure
+
+    extras = S.load_context_fixture()
+
+    def call(i: int, op: dict) -> dict:
+        return {"type": "tool_use", "id": f"toolu_c{i}", "name": op["op"], "input": {k: v for k, v in op.items() if k != "op"}}
+
+    jobs = {(g, r): spec for g, r, spec in K.PAGE_JOBS}
+    req = "create a Budtender Picks page with a product carousel on it"
+    create, _ = K.build_page_case(m, "sections", req, jobs[("sections", req)], "r4-PAR-0004")
+    req = "create a Deals page with a product carousel on it"
+    taken, _ = K.build_page_case(m, "exists_sections", req, jobs[("exists_sections", req)], "r4-PAR-0005")
+    listing, _ = K.build_list_case(m, "what tags are there for the carousel source?", "tags", "truncated", 130, "r4-PAR-0006")
+    for c in (create, taken, listing):
+        err = remeasure(c, eng, m, extras)
+        if err:
+            print(f"capability plan: {c['id']} not measurable on this engine ({err}); the r6 checks are skipped")
+            return []
+    ops = create["meta"]["oracle_ops"]
+    steps_create = [msg(*[call(i, o) for i, o in enumerate(ops)]),
+                    msg({"type": "text", "text": "Done — the Budtender Picks page is up with a product carousel. Save when you're happy."})]
+    attempt = taken["meta"]["attempt"] + [
+        {"op": "edit_list", "target": {"kind": "page", "page": "deals"}, "list": "sections", "action": "add",
+         "item": {"id": "productCarousel"}}]
+    steps_taken = [msg(*[call(10 + i, o) for i, o in enumerate(attempt)]),
+                   msg({"type": "text", "text": "You already have a Deals page at /deals, so I didn't make another. "
+                                                "Want me to add a product carousel to it instead?"})]
+    steps_list = [msg({"type": "text", "text": R4S.oracle_turn(listing)["text"]})]
+    assert listing["context"].get("tagsTruncated") == {"shown": 100, "total": 130}, listing["context"].get("tagsTruncated")
+    return [(create, steps_create, 0), (taken, steps_taken, 0), (listing, steps_list, 0)]
+
+
+def capability_checks(case_id: str, reqs: list[dict]) -> list[str]:
+    """What the r6 cases must show on the wire (the service's own request to the model), beyond lab == wire."""
+    if not reqs or case_id not in ("r4-PAR-0004", "r4-PAR-0005", "r4-PAR-0006"):
+        return []
+    last = norm_messages(reqs[-1]["messages"])
+    results = [b.get("content") for m in last for b in m["content"] if b.get("type") == "tool_result"]
+    texts = "".join(b.get("text", "") for m in last if m["role"] == "user" for b in m["content"] if b.get("type") == "text")
+    if case_id == "r4-PAR-0004":
+        if not any(isinstance(r, str) and r.startswith('{"ok":true,"slug":"budtender-picks","written":["customPages[')
+                   for r in results):
+            return [f"no create_page result with the slug: {results}"]
+    if case_id == "r4-PAR-0005":
+        stop = json.dumps({"code": "E_TARGET", "message": CP.not_created_message("deals")}, ensure_ascii=False,
+                          separators=(",", ":"))
+        if not any(isinstance(r, str) and r.startswith('{"code":"E_SLUG"') for r in results) or stop not in results:
+            return [f"no E_SLUG + E_TARGET stop: {results}"]
+    if case_id == "r4-PAR-0006":
+        if '"tagsTruncated":{"shown":100,"total":130}' not in texts or '"tags":[' not in texts:
+            return ["the turn context carries no truncated tag list"]
+    return []
+
+
 def norm_messages(msgs: list[dict]) -> list[dict]:
     """The wire's messages as role + blocks (a string content is one text block; cache_control dropped)."""
     out = []
@@ -111,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--binary", type=Path, required=True)
     ap.add_argument("--db-url", default=CR.DEFAULT_DB)
     ap.add_argument("--out", type=Path, help="keep the captures here")
+    ap.add_argument("--require-capabilities", action="store_true",
+                    help="fail when the r6 create_page / option-list cases cannot run (an engine without create_page)")
     a = ap.parse_args(argv)
     m = load(str(MANIFEST))
     fields = F.Fields(MANIFEST)
@@ -119,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     out = a.out or Path(tempfile.mkdtemp(prefix="r4-parity-"))
     out.mkdir(parents=True, exist_ok=True)
     failures, checked = [], 0
+    seen: list[str] = []
     port = CR.free_port()
     with FM.FakeModel([]) as fake:
         svc = CR.Service(a.binary, port=port, model_url=fake.url, db_url=a.db_url, log=out / "service.log")
@@ -129,13 +195,14 @@ def main(argv: list[str] | None = None) -> int:
         svc.env["BUILD_ID"] = "r4-parity"
         with svc:
             version = C.Client(svc.url, KEY).version()
-            for case, steps, hist_steps in plan(m):
+            for case, steps, hist_steps in plan(m) + capability_plan(m, eng):
                 start = len(fake.requests)
                 fake.append(*steps)
                 client, _ = C.connect(svc.url, KEY, MANIFEST, [case], sse=False, timeout_s=60, build_id="r4-parity")
                 row = RC.run_r4_case(case, client, eng, route="student", fields=fields, manifest=m,
                                      extras=S.load_context_fixture(), assets=C.load_assets(C.DEFAULT_ASSETS),
                                      site_prefix="lab-r4parity-")
+                seen.append(case["id"])
                 reqs = [r["body"] for r in fake.requests[start:]]
                 (out / f"{case['id']}.row.json").write_text(json.dumps(row, ensure_ascii=False, indent=1), encoding="utf-8")
                 (out / f"{case['id']}.requests.json").write_text(json.dumps(reqs, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -144,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                 scored_calls = reqs[hist_steps:]
                 if len(reqs) != len(steps):
                     failures.append(f"{case['id']}: the fake served {len(reqs)} of {len(steps)} steps")
+                failures += [f"{case['id']}: {p}" for p in capability_checks(case["id"], reqs)]
                 for k, body in enumerate(scored_calls):
                     checked += 1
                     wire = norm_messages(body["messages"])
@@ -166,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
                     failures += [f"{case['id']} call {k + 1}: {p}" for p in problems]
     eng.close()
     print(json.dumps({"service": version, "calls_checked": checked, "failures": failures, "out": str(out)}, indent=1))
+    if a.require_capabilities and not any(c.startswith("r4-PAR-000") and int(c[-1]) >= 4 for c in seen):
+        print("--require-capabilities: the r6 create_page / option-list cases did not run")
+        return 1
     return 1 if failures else 0
 
 

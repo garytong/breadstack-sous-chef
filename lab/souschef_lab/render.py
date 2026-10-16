@@ -22,7 +22,8 @@ What the service does (read-only references):
   text, followed by one newline.
 * `service/internal/loop/pending.go` browserResult — a browser op's
   tool_result is Go ``json.Marshal`` of ``map[string]any{"ok": true,
-  "written"?, "warnings"?, "hidden"?, "sectionId"?}`` (map keys SORTED;
+  "written"?, "warnings"?, "hidden"?, "sectionId"?, "slug"?}`` (map keys SORTED;
+  ``slug`` — the new page's final slug — only for a ``create_page``;
   empty lists omitted; ``hidden`` = the browser's ``[{key, by, byValue}]``
   next to ``W_HIDDEN:<key>`` — shared contract 4 — each entry a sorted map,
   entries without a string key/by dropped, a missing byValue ``null``,
@@ -44,6 +45,7 @@ from typing import Any, Iterable
 
 SERVER_TOOLS = frozenset(("lookup_fields", "describe_target", "report_unsupported"))
 PICK_ASSET = "pick_asset"
+CREATE_PAGE = "create_page"
 E_ASSET_NO_CHOICE = ("E_ASSET", "no asset was chosen")
 E_OP_NO_DETAILS = ("E_OP", "the browser reported a failure without details")
 
@@ -153,8 +155,9 @@ def turn_inputs(row: dict, case: dict | None = None) -> tuple[dict | None, str]:
 
 def tool_result_content(name: str, item: dict) -> tuple[str, bool]:
     """loop.browserResult for one posted tool-results item
-    (``{toolCallId, ok, error?, warnings?, written?, hidden?, sectionId?, asset?}``):
-    the content string the model reads and whether it is an error."""
+    (``{toolCallId, ok, error?, warnings?, written?, hidden?, sectionId?, slug?, asset?}``):
+    the content string the model reads and whether it is an error. ``slug``
+    (create_page's final page slug) is forwarded for ``create_page`` only."""
     if not item.get("ok"):
         err = item.get("error")
         if not isinstance(err, dict) or not err:
@@ -185,6 +188,8 @@ def tool_result_content(name: str, item: dict) -> tuple[str, bool]:
         out["hidden"] = hidden
     if item.get("sectionId"):
         out["sectionId"] = str(item["sectionId"])
+    if name == CREATE_PAGE and item.get("slug"):
+        out["slug"] = str(item["slug"])  # browserResult: `slug` only for create_page (api.ToolResult.Slug)
     return go_marshal(out, sort_keys=True), False
 
 

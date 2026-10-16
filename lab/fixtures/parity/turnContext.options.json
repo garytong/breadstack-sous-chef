@@ -1,0 +1,7225 @@
+{
+ "what": "turnContext.buildTurnContext's own output for the lab's option-list cases (tests/option_lists_golden.py); tests/test_option_lists.py asserts souschef_lab.state.context_of gives the same object, key order included. Regenerate: COOKIE_CUTTER_DIR=<launcher at or after 1d4193e2> .venv/bin/python tests/option_lists_golden.py --write",
+ "source": {
+  "snapshot_of": "1d4193e242ca8f0ee7cf76a454897162cee9e034",
+  "files": {
+   "launcher/client/src/sousChef/turnContext.js": "69261f444164f436dee5a529593f8468c312f9a6275250b0972d329db234fc75",
+   "launcher/client/src/sousChef/optionLists.js": "d5bac39cda4b55caf21d265567c2c063b0a1ae71a5f7bd47689060c7e482e960",
+   "launcher/client/src/components/basicEditor/editors/carouselOptions.js": "abb14eaf66e432436961d23fc9fbcc46d4b351c70f2fb6bb5b42da201974b626"
+  }
+ },
+ "manifest": {
+  "sections": {
+   "productCarousel": {
+    "fields": {
+     "categorySlug": {
+      "type": "ref",
+      "ref": "category"
+     },
+     "tagSlug": {
+      "type": "ref",
+      "ref": "tag"
+     },
+     "brandSlug": {
+      "type": "ref",
+      "ref": "brand"
+     },
+     "tagId": {
+      "type": "ref",
+      "ref": "tag",
+      "derived_from": "tagSlug"
+     },
+     "brandId": {
+      "type": "ref",
+      "ref": "brand",
+      "derived_from": "brandSlug"
+     }
+    }
+   },
+   "contentBlock": {
+    "fields": {
+     "mapLocationIndex": {
+      "type": "ref",
+      "ref": "location"
+     }
+    }
+   },
+   "heroBanner": {
+    "fields": {}
+   }
+  }
+ },
+ "cases": [
+  {
+   "name": "the lab fixture's lists with a carousel on home",
+   "state": {
+    "template": {
+     "id": "editorial"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     },
+     {
+      "id": "productCarousel-1",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "editorial",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "categories": [
+     {
+      "id": 301,
+      "slug": "flower",
+      "name": "Flower"
+     },
+     {
+      "id": 302,
+      "slug": "pre-rolls",
+      "name": "Pre-Rolls"
+     },
+     {
+      "id": 303,
+      "slug": "edibles",
+      "name": "Edibles"
+     },
+     {
+      "id": 304,
+      "slug": "vapes",
+      "name": "Vapes"
+     },
+     {
+      "id": 305,
+      "slug": "concentrates",
+      "name": "Concentrates"
+     },
+     {
+      "id": 306,
+      "slug": "accessories",
+      "name": "Accessories"
+     }
+    ],
+    "tags": [
+     {
+      "id": 101,
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     },
+     {
+      "id": 102,
+      "slug": "new",
+      "name": "New"
+     },
+     {
+      "id": 103,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": 201,
+      "slug": "pure-sunfarms",
+      "name": "Pure Sunfarms"
+     },
+     {
+      "id": 202,
+      "slug": "redecan",
+      "name": "Redecan"
+     },
+     {
+      "id": 203,
+      "slug": "good-supply",
+      "name": "Good Supply"
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "editorial",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     },
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [
+     {
+      "slug": "flower",
+      "name": "Flower",
+      "id": "301"
+     },
+     {
+      "slug": "pre-rolls",
+      "name": "Pre-Rolls",
+      "id": "302"
+     },
+     {
+      "slug": "edibles",
+      "name": "Edibles",
+      "id": "303"
+     },
+     {
+      "slug": "vapes",
+      "name": "Vapes",
+      "id": "304"
+     },
+     {
+      "slug": "concentrates",
+      "name": "Concentrates",
+      "id": "305"
+     },
+     {
+      "slug": "accessories",
+      "name": "Accessories",
+      "id": "306"
+     }
+    ],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "new",
+      "name": "New"
+     },
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "good-supply",
+      "name": "Good Supply"
+     },
+     {
+      "slug": "pure-sunfarms",
+      "name": "Pure Sunfarms"
+     },
+     {
+      "slug": "redecan",
+      "name": "Redecan"
+     }
+    ]
+   }
+  },
+  {
+   "name": "category ids are text; slug falls back to the id; blank ids are left out",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "categories": [
+     {
+      "id": 12,
+      "slug": "flower",
+      "name": "Flower",
+      "parent": 0
+     },
+     {
+      "id": "13",
+      "slug": "pre-rolls",
+      "name": "Pre-Rolls",
+      "parent": 12
+     },
+     {
+      "id": 0,
+      "slug": "",
+      "name": "Zero"
+     },
+     {
+      "id": "",
+      "slug": "no-id",
+      "name": "No id"
+     },
+     {
+      "id": null,
+      "slug": "null-id",
+      "title": "Null id"
+     },
+     {
+      "id": 1.0,
+      "slug": "float",
+      "label": "Float"
+     },
+     {
+      "id": true,
+      "slug": 5,
+      "name": 7
+     },
+     {
+      "id": 14,
+      "slug": "x",
+      "name": "",
+      "title": "",
+      "label": "L"
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [
+     {
+      "slug": "flower",
+      "name": "Flower",
+      "id": "12"
+     },
+     {
+      "slug": "pre-rolls",
+      "name": "Pre-Rolls",
+      "id": "13"
+     },
+     {
+      "slug": "0",
+      "name": "Zero",
+      "id": "0"
+     },
+     {
+      "slug": "no-id",
+      "name": "No id"
+     },
+     {
+      "slug": "null-id",
+      "name": "Null id"
+     },
+     {
+      "slug": "float",
+      "name": "Float",
+      "id": "1"
+     },
+     {
+      "slug": "5",
+      "name": "7",
+      "id": "true"
+     },
+     {
+      "slug": "x",
+      "name": "L",
+      "id": "14"
+     }
+    ],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 00: Which brands can I feature?",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Which brands can I feature?",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "gate 01: Change my brand color to red",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Change my brand color to red",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 02: Make the brand-logo bigger and use the Brand Fonts",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Make the brand-logo bigger and use the Brand Fonts",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 03: Our brand voice and our brand story need work",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Our brand voice and our brand story need work",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 04: Brands colours should match",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Brands colours should match",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 05: Use the brand colour everywhere",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Use the brand colour everywhere",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 06: Edit the tag line",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Edit the tag line",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 07: Make the tag lines shorter",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Make the tag lines shorter",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 08: Change the tagline",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Change the tagline",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 09: Show the tag lineup",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Show the tag lineup",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "gate 10: Show the TAGS please",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Show the TAGS please",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "gate 11: Pick a brand",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Pick a brand",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "gate 12: A brand-new carousel for the home page",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "A brand-new carousel for the home page",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "gate 13: Our brand names are long",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Our brand names are long",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "gate 14: Which brand name sells most",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Which brand name sells most",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 15: Add some hashtags and get tagged",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Add some hashtags and get tagged",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "gate 16: Swap the CAROUSELS around",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Swap the CAROUSELS around",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "an unknown list is left out; a list that loaded empty is sent empty",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     },
+     {
+      "id": "productCarousel-1",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "brands": []
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     },
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "brands": []
+   }
+  },
+  {
+   "name": "a null list is unknown too",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     },
+     {
+      "id": "productCarousel-1",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": null,
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     },
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "both lists unknown: nothing, even with the carousel and the word",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     },
+     {
+      "id": "productCarousel-1",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "categories": []
+   },
+   "text": "Which tags can I use?",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     },
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "sort, labels and filters",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "productCarousel-1",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 1,
+      "slug": "b-2",
+      "name": "banana"
+     },
+     {
+      "id": 2,
+      "slug": "b-1",
+      "name": "Banana"
+     },
+     {
+      "id": 3,
+      "slug": "apple",
+      "name": "apple"
+     },
+     {
+      "id": 4,
+      "slug": "smile",
+      "name": "😀 Smile"
+     },
+     {
+      "id": 5,
+      "slug": "half",
+      "name": "｡ halfwidth"
+     },
+     {
+      "id": 6,
+      "slug": "new-hot",
+      "name": "<b>New</b> &amp; hot"
+     },
+     {
+      "id": 7,
+      "slug": "null-name",
+      "name": null
+     },
+     {
+      "id": 8,
+      "slug": "blank-name",
+      "name": ""
+     },
+     {
+      "id": 9,
+      "slug": "num-name",
+      "name": 42
+     },
+     {
+      "id": 10,
+      "slug": 77,
+      "name": "Numeric slug"
+     },
+     {
+      "id": 11,
+      "slug": "zero-visible",
+      "name": "Zero visible",
+      "visible": 0
+     },
+     {
+      "id": 12,
+      "slug": "gone",
+      "name": "Gone",
+      "visible": false
+     },
+     "a string",
+     null,
+     5,
+     {
+      "id": 13,
+      "slug": "",
+      "name": "Blank slug"
+     },
+     {
+      "id": 14,
+      "name": "No slug"
+     },
+     {
+      "id": 15,
+      "slug": "long",
+      "name": "A very long tag name that goes on and on past the sixty character clip"
+     },
+     {
+      "id": 16,
+      "slug": "spaces",
+      "name": "  \t "
+     }
+    ],
+    "brands": [
+     {
+      "id": "b1",
+      "slug": "zero",
+      "name": 0
+     },
+     {
+      "id": "b2",
+      "slug": "blank",
+      "name": ""
+     },
+     {
+      "id": "b3",
+      "slug": "spaces",
+      "name": "   "
+     },
+     {
+      "id": "b4",
+      "slug": "ok",
+      "name": "Okay & Co"
+     },
+     {
+      "id": "b5",
+      "name": "No slug"
+     },
+     {
+      "id": "b6",
+      "slug": null,
+      "name": "Null slug"
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "num-name",
+      "name": "42"
+     },
+     {
+      "slug": "long",
+      "name": "A very long tag name that goes on and on past the sixty cha…"
+     },
+     {
+      "slug": "apple",
+      "name": "apple"
+     },
+     {
+      "slug": "b-1",
+      "name": "Banana"
+     },
+     {
+      "slug": "b-2",
+      "name": "banana"
+     },
+     {
+      "slug": "blank-name",
+      "name": "blank-name"
+     },
+     {
+      "slug": "new-hot",
+      "name": "New & hot"
+     },
+     {
+      "slug": "null-name",
+      "name": "null-name"
+     },
+     {
+      "slug": "77",
+      "name": "Numeric slug"
+     },
+     {
+      "slug": "spaces",
+      "name": "spaces"
+     },
+     {
+      "slug": "zero-visible",
+      "name": "Zero visible"
+     },
+     {
+      "slug": "smile",
+      "name": "😀 Smile"
+     },
+     {
+      "slug": "half",
+      "name": "｡ halfwidth"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "ok",
+      "name": "Okay & Co"
+     },
+     {
+      "slug": "spaces",
+      "name": "spaces"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a focused prefix-family carousel off home; over 100 the lists are cut and flagged",
+   "state": {
+    "template": {
+     "id": "bold"
+    },
+    "homeSections": []
+   },
+   "ctx": {
+    "currentPage": "products",
+    "templateId": "bold",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": "productCarousel-deals",
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 1130,
+      "slug": "tag-130",
+      "name": "Tag 130"
+     },
+     {
+      "id": 1129,
+      "slug": "tag-129",
+      "name": "Tag 129"
+     },
+     {
+      "id": 1128,
+      "slug": "tag-128",
+      "name": "Tag 128"
+     },
+     {
+      "id": 1127,
+      "slug": "tag-127",
+      "name": "Tag 127"
+     },
+     {
+      "id": 1126,
+      "slug": "tag-126",
+      "name": "Tag 126"
+     },
+     {
+      "id": 1125,
+      "slug": "tag-125",
+      "name": "Tag 125"
+     },
+     {
+      "id": 1124,
+      "slug": "tag-124",
+      "name": "Tag 124"
+     },
+     {
+      "id": 1123,
+      "slug": "tag-123",
+      "name": "Tag 123"
+     },
+     {
+      "id": 1122,
+      "slug": "tag-122",
+      "name": "Tag 122"
+     },
+     {
+      "id": 1121,
+      "slug": "tag-121",
+      "name": "Tag 121"
+     },
+     {
+      "id": 1120,
+      "slug": "tag-120",
+      "name": "Tag 120"
+     },
+     {
+      "id": 1119,
+      "slug": "tag-119",
+      "name": "Tag 119"
+     },
+     {
+      "id": 1118,
+      "slug": "tag-118",
+      "name": "Tag 118"
+     },
+     {
+      "id": 1117,
+      "slug": "tag-117",
+      "name": "Tag 117"
+     },
+     {
+      "id": 1116,
+      "slug": "tag-116",
+      "name": "Tag 116"
+     },
+     {
+      "id": 1115,
+      "slug": "tag-115",
+      "name": "Tag 115"
+     },
+     {
+      "id": 1114,
+      "slug": "tag-114",
+      "name": "Tag 114"
+     },
+     {
+      "id": 1113,
+      "slug": "tag-113",
+      "name": "Tag 113"
+     },
+     {
+      "id": 1112,
+      "slug": "tag-112",
+      "name": "Tag 112"
+     },
+     {
+      "id": 1111,
+      "slug": "tag-111",
+      "name": "Tag 111"
+     },
+     {
+      "id": 1110,
+      "slug": "tag-110",
+      "name": "Tag 110"
+     },
+     {
+      "id": 1109,
+      "slug": "tag-109",
+      "name": "Tag 109"
+     },
+     {
+      "id": 1108,
+      "slug": "tag-108",
+      "name": "Tag 108"
+     },
+     {
+      "id": 1107,
+      "slug": "tag-107",
+      "name": "Tag 107"
+     },
+     {
+      "id": 1106,
+      "slug": "tag-106",
+      "name": "Tag 106"
+     },
+     {
+      "id": 1105,
+      "slug": "tag-105",
+      "name": "Tag 105"
+     },
+     {
+      "id": 1104,
+      "slug": "tag-104",
+      "name": "Tag 104"
+     },
+     {
+      "id": 1103,
+      "slug": "tag-103",
+      "name": "Tag 103"
+     },
+     {
+      "id": 1102,
+      "slug": "tag-102",
+      "name": "Tag 102"
+     },
+     {
+      "id": 1101,
+      "slug": "tag-101",
+      "name": "Tag 101"
+     },
+     {
+      "id": 1100,
+      "slug": "tag-100",
+      "name": "Tag 100"
+     },
+     {
+      "id": 1099,
+      "slug": "tag-099",
+      "name": "Tag 099"
+     },
+     {
+      "id": 1098,
+      "slug": "tag-098",
+      "name": "Tag 098"
+     },
+     {
+      "id": 1097,
+      "slug": "tag-097",
+      "name": "Tag 097"
+     },
+     {
+      "id": 1096,
+      "slug": "tag-096",
+      "name": "Tag 096"
+     },
+     {
+      "id": 1095,
+      "slug": "tag-095",
+      "name": "Tag 095"
+     },
+     {
+      "id": 1094,
+      "slug": "tag-094",
+      "name": "Tag 094"
+     },
+     {
+      "id": 1093,
+      "slug": "tag-093",
+      "name": "Tag 093"
+     },
+     {
+      "id": 1092,
+      "slug": "tag-092",
+      "name": "Tag 092"
+     },
+     {
+      "id": 1091,
+      "slug": "tag-091",
+      "name": "Tag 091"
+     },
+     {
+      "id": 1090,
+      "slug": "tag-090",
+      "name": "Tag 090"
+     },
+     {
+      "id": 1089,
+      "slug": "tag-089",
+      "name": "Tag 089"
+     },
+     {
+      "id": 1088,
+      "slug": "tag-088",
+      "name": "Tag 088"
+     },
+     {
+      "id": 1087,
+      "slug": "tag-087",
+      "name": "Tag 087"
+     },
+     {
+      "id": 1086,
+      "slug": "tag-086",
+      "name": "Tag 086"
+     },
+     {
+      "id": 1085,
+      "slug": "tag-085",
+      "name": "Tag 085"
+     },
+     {
+      "id": 1084,
+      "slug": "tag-084",
+      "name": "Tag 084"
+     },
+     {
+      "id": 1083,
+      "slug": "tag-083",
+      "name": "Tag 083"
+     },
+     {
+      "id": 1082,
+      "slug": "tag-082",
+      "name": "Tag 082"
+     },
+     {
+      "id": 1081,
+      "slug": "tag-081",
+      "name": "Tag 081"
+     },
+     {
+      "id": 1080,
+      "slug": "tag-080",
+      "name": "Tag 080"
+     },
+     {
+      "id": 1079,
+      "slug": "tag-079",
+      "name": "Tag 079"
+     },
+     {
+      "id": 1078,
+      "slug": "tag-078",
+      "name": "Tag 078"
+     },
+     {
+      "id": 1077,
+      "slug": "tag-077",
+      "name": "Tag 077"
+     },
+     {
+      "id": 1076,
+      "slug": "tag-076",
+      "name": "Tag 076"
+     },
+     {
+      "id": 1075,
+      "slug": "tag-075",
+      "name": "Tag 075"
+     },
+     {
+      "id": 1074,
+      "slug": "tag-074",
+      "name": "Tag 074"
+     },
+     {
+      "id": 1073,
+      "slug": "tag-073",
+      "name": "Tag 073"
+     },
+     {
+      "id": 1072,
+      "slug": "tag-072",
+      "name": "Tag 072"
+     },
+     {
+      "id": 1071,
+      "slug": "tag-071",
+      "name": "Tag 071"
+     },
+     {
+      "id": 1070,
+      "slug": "tag-070",
+      "name": "Tag 070"
+     },
+     {
+      "id": 1069,
+      "slug": "tag-069",
+      "name": "Tag 069"
+     },
+     {
+      "id": 1068,
+      "slug": "tag-068",
+      "name": "Tag 068"
+     },
+     {
+      "id": 1067,
+      "slug": "tag-067",
+      "name": "Tag 067"
+     },
+     {
+      "id": 1066,
+      "slug": "tag-066",
+      "name": "Tag 066"
+     },
+     {
+      "id": 1065,
+      "slug": "tag-065",
+      "name": "Tag 065"
+     },
+     {
+      "id": 1064,
+      "slug": "tag-064",
+      "name": "Tag 064"
+     },
+     {
+      "id": 1063,
+      "slug": "tag-063",
+      "name": "Tag 063"
+     },
+     {
+      "id": 1062,
+      "slug": "tag-062",
+      "name": "Tag 062"
+     },
+     {
+      "id": 1061,
+      "slug": "tag-061",
+      "name": "Tag 061"
+     },
+     {
+      "id": 1060,
+      "slug": "tag-060",
+      "name": "Tag 060"
+     },
+     {
+      "id": 1059,
+      "slug": "tag-059",
+      "name": "Tag 059"
+     },
+     {
+      "id": 1058,
+      "slug": "tag-058",
+      "name": "Tag 058"
+     },
+     {
+      "id": 1057,
+      "slug": "tag-057",
+      "name": "Tag 057"
+     },
+     {
+      "id": 1056,
+      "slug": "tag-056",
+      "name": "Tag 056"
+     },
+     {
+      "id": 1055,
+      "slug": "tag-055",
+      "name": "Tag 055"
+     },
+     {
+      "id": 1054,
+      "slug": "tag-054",
+      "name": "Tag 054"
+     },
+     {
+      "id": 1053,
+      "slug": "tag-053",
+      "name": "Tag 053"
+     },
+     {
+      "id": 1052,
+      "slug": "tag-052",
+      "name": "Tag 052"
+     },
+     {
+      "id": 1051,
+      "slug": "tag-051",
+      "name": "Tag 051"
+     },
+     {
+      "id": 1050,
+      "slug": "tag-050",
+      "name": "Tag 050"
+     },
+     {
+      "id": 1049,
+      "slug": "tag-049",
+      "name": "Tag 049"
+     },
+     {
+      "id": 1048,
+      "slug": "tag-048",
+      "name": "Tag 048"
+     },
+     {
+      "id": 1047,
+      "slug": "tag-047",
+      "name": "Tag 047"
+     },
+     {
+      "id": 1046,
+      "slug": "tag-046",
+      "name": "Tag 046"
+     },
+     {
+      "id": 1045,
+      "slug": "tag-045",
+      "name": "Tag 045"
+     },
+     {
+      "id": 1044,
+      "slug": "tag-044",
+      "name": "Tag 044"
+     },
+     {
+      "id": 1043,
+      "slug": "tag-043",
+      "name": "Tag 043"
+     },
+     {
+      "id": 1042,
+      "slug": "tag-042",
+      "name": "Tag 042"
+     },
+     {
+      "id": 1041,
+      "slug": "tag-041",
+      "name": "Tag 041"
+     },
+     {
+      "id": 1040,
+      "slug": "tag-040",
+      "name": "Tag 040"
+     },
+     {
+      "id": 1039,
+      "slug": "tag-039",
+      "name": "Tag 039"
+     },
+     {
+      "id": 1038,
+      "slug": "tag-038",
+      "name": "Tag 038"
+     },
+     {
+      "id": 1037,
+      "slug": "tag-037",
+      "name": "Tag 037"
+     },
+     {
+      "id": 1036,
+      "slug": "tag-036",
+      "name": "Tag 036"
+     },
+     {
+      "id": 1035,
+      "slug": "tag-035",
+      "name": "Tag 035"
+     },
+     {
+      "id": 1034,
+      "slug": "tag-034",
+      "name": "Tag 034"
+     },
+     {
+      "id": 1033,
+      "slug": "tag-033",
+      "name": "Tag 033"
+     },
+     {
+      "id": 1032,
+      "slug": "tag-032",
+      "name": "Tag 032"
+     },
+     {
+      "id": 1031,
+      "slug": "tag-031",
+      "name": "Tag 031"
+     },
+     {
+      "id": 1030,
+      "slug": "tag-030",
+      "name": "Tag 030"
+     },
+     {
+      "id": 1029,
+      "slug": "tag-029",
+      "name": "Tag 029"
+     },
+     {
+      "id": 1028,
+      "slug": "tag-028",
+      "name": "Tag 028"
+     },
+     {
+      "id": 1027,
+      "slug": "tag-027",
+      "name": "Tag 027"
+     },
+     {
+      "id": 1026,
+      "slug": "tag-026",
+      "name": "Tag 026"
+     },
+     {
+      "id": 1025,
+      "slug": "tag-025",
+      "name": "Tag 025"
+     },
+     {
+      "id": 1024,
+      "slug": "tag-024",
+      "name": "Tag 024"
+     },
+     {
+      "id": 1023,
+      "slug": "tag-023",
+      "name": "Tag 023"
+     },
+     {
+      "id": 1022,
+      "slug": "tag-022",
+      "name": "Tag 022"
+     },
+     {
+      "id": 1021,
+      "slug": "tag-021",
+      "name": "Tag 021"
+     },
+     {
+      "id": 1020,
+      "slug": "tag-020",
+      "name": "Tag 020"
+     },
+     {
+      "id": 1019,
+      "slug": "tag-019",
+      "name": "Tag 019"
+     },
+     {
+      "id": 1018,
+      "slug": "tag-018",
+      "name": "Tag 018"
+     },
+     {
+      "id": 1017,
+      "slug": "tag-017",
+      "name": "Tag 017"
+     },
+     {
+      "id": 1016,
+      "slug": "tag-016",
+      "name": "Tag 016"
+     },
+     {
+      "id": 1015,
+      "slug": "tag-015",
+      "name": "Tag 015"
+     },
+     {
+      "id": 1014,
+      "slug": "tag-014",
+      "name": "Tag 014"
+     },
+     {
+      "id": 1013,
+      "slug": "tag-013",
+      "name": "Tag 013"
+     },
+     {
+      "id": 1012,
+      "slug": "tag-012",
+      "name": "Tag 012"
+     },
+     {
+      "id": 1011,
+      "slug": "tag-011",
+      "name": "Tag 011"
+     },
+     {
+      "id": 1010,
+      "slug": "tag-010",
+      "name": "Tag 010"
+     },
+     {
+      "id": 1009,
+      "slug": "tag-009",
+      "name": "Tag 009"
+     },
+     {
+      "id": 1008,
+      "slug": "tag-008",
+      "name": "Tag 008"
+     },
+     {
+      "id": 1007,
+      "slug": "tag-007",
+      "name": "Tag 007"
+     },
+     {
+      "id": 1006,
+      "slug": "tag-006",
+      "name": "Tag 006"
+     },
+     {
+      "id": 1005,
+      "slug": "tag-005",
+      "name": "Tag 005"
+     },
+     {
+      "id": 1004,
+      "slug": "tag-004",
+      "name": "Tag 004"
+     },
+     {
+      "id": 1003,
+      "slug": "tag-003",
+      "name": "Tag 003"
+     },
+     {
+      "id": 1002,
+      "slug": "tag-002",
+      "name": "Tag 002"
+     },
+     {
+      "id": 1001,
+      "slug": "tag-001",
+      "name": "Tag 001"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b0",
+      "slug": "brand-000",
+      "name": "Brand 000"
+     },
+     {
+      "id": "b1",
+      "slug": "brand-001",
+      "name": "Brand 001"
+     },
+     {
+      "id": "b2",
+      "slug": "brand-002",
+      "name": "Brand 002"
+     },
+     {
+      "id": "b3",
+      "slug": "brand-003",
+      "name": "Brand 003"
+     },
+     {
+      "id": "b4",
+      "slug": "brand-004",
+      "name": "Brand 004"
+     },
+     {
+      "id": "b5",
+      "slug": "brand-005",
+      "name": "Brand 005"
+     },
+     {
+      "id": "b6",
+      "slug": "brand-006",
+      "name": "Brand 006"
+     },
+     {
+      "id": "b7",
+      "slug": "brand-007",
+      "name": "Brand 007"
+     },
+     {
+      "id": "b8",
+      "slug": "brand-008",
+      "name": "Brand 008"
+     },
+     {
+      "id": "b9",
+      "slug": "brand-009",
+      "name": "Brand 009"
+     },
+     {
+      "id": "b10",
+      "slug": "brand-010",
+      "name": "Brand 010"
+     },
+     {
+      "id": "b11",
+      "slug": "brand-011",
+      "name": "Brand 011"
+     },
+     {
+      "id": "b12",
+      "slug": "brand-012",
+      "name": "Brand 012"
+     },
+     {
+      "id": "b13",
+      "slug": "brand-013",
+      "name": "Brand 013"
+     },
+     {
+      "id": "b14",
+      "slug": "brand-014",
+      "name": "Brand 014"
+     },
+     {
+      "id": "b15",
+      "slug": "brand-015",
+      "name": "Brand 015"
+     },
+     {
+      "id": "b16",
+      "slug": "brand-016",
+      "name": "Brand 016"
+     },
+     {
+      "id": "b17",
+      "slug": "brand-017",
+      "name": "Brand 017"
+     },
+     {
+      "id": "b18",
+      "slug": "brand-018",
+      "name": "Brand 018"
+     },
+     {
+      "id": "b19",
+      "slug": "brand-019",
+      "name": "Brand 019"
+     },
+     {
+      "id": "b20",
+      "slug": "brand-020",
+      "name": "Brand 020"
+     },
+     {
+      "id": "b21",
+      "slug": "brand-021",
+      "name": "Brand 021"
+     },
+     {
+      "id": "b22",
+      "slug": "brand-022",
+      "name": "Brand 022"
+     },
+     {
+      "id": "b23",
+      "slug": "brand-023",
+      "name": "Brand 023"
+     },
+     {
+      "id": "b24",
+      "slug": "brand-024",
+      "name": "Brand 024"
+     },
+     {
+      "id": "b25",
+      "slug": "brand-025",
+      "name": "Brand 025"
+     },
+     {
+      "id": "b26",
+      "slug": "brand-026",
+      "name": "Brand 026"
+     },
+     {
+      "id": "b27",
+      "slug": "brand-027",
+      "name": "Brand 027"
+     },
+     {
+      "id": "b28",
+      "slug": "brand-028",
+      "name": "Brand 028"
+     },
+     {
+      "id": "b29",
+      "slug": "brand-029",
+      "name": "Brand 029"
+     },
+     {
+      "id": "b30",
+      "slug": "brand-030",
+      "name": "Brand 030"
+     },
+     {
+      "id": "b31",
+      "slug": "brand-031",
+      "name": "Brand 031"
+     },
+     {
+      "id": "b32",
+      "slug": "brand-032",
+      "name": "Brand 032"
+     },
+     {
+      "id": "b33",
+      "slug": "brand-033",
+      "name": "Brand 033"
+     },
+     {
+      "id": "b34",
+      "slug": "brand-034",
+      "name": "Brand 034"
+     },
+     {
+      "id": "b35",
+      "slug": "brand-035",
+      "name": "Brand 035"
+     },
+     {
+      "id": "b36",
+      "slug": "brand-036",
+      "name": "Brand 036"
+     },
+     {
+      "id": "b37",
+      "slug": "brand-037",
+      "name": "Brand 037"
+     },
+     {
+      "id": "b38",
+      "slug": "brand-038",
+      "name": "Brand 038"
+     },
+     {
+      "id": "b39",
+      "slug": "brand-039",
+      "name": "Brand 039"
+     },
+     {
+      "id": "b40",
+      "slug": "brand-040",
+      "name": "Brand 040"
+     },
+     {
+      "id": "b41",
+      "slug": "brand-041",
+      "name": "Brand 041"
+     },
+     {
+      "id": "b42",
+      "slug": "brand-042",
+      "name": "Brand 042"
+     },
+     {
+      "id": "b43",
+      "slug": "brand-043",
+      "name": "Brand 043"
+     },
+     {
+      "id": "b44",
+      "slug": "brand-044",
+      "name": "Brand 044"
+     },
+     {
+      "id": "b45",
+      "slug": "brand-045",
+      "name": "Brand 045"
+     },
+     {
+      "id": "b46",
+      "slug": "brand-046",
+      "name": "Brand 046"
+     },
+     {
+      "id": "b47",
+      "slug": "brand-047",
+      "name": "Brand 047"
+     },
+     {
+      "id": "b48",
+      "slug": "brand-048",
+      "name": "Brand 048"
+     },
+     {
+      "id": "b49",
+      "slug": "brand-049",
+      "name": "Brand 049"
+     },
+     {
+      "id": "b50",
+      "slug": "brand-050",
+      "name": "Brand 050"
+     },
+     {
+      "id": "b51",
+      "slug": "brand-051",
+      "name": "Brand 051"
+     },
+     {
+      "id": "b52",
+      "slug": "brand-052",
+      "name": "Brand 052"
+     },
+     {
+      "id": "b53",
+      "slug": "brand-053",
+      "name": "Brand 053"
+     },
+     {
+      "id": "b54",
+      "slug": "brand-054",
+      "name": "Brand 054"
+     },
+     {
+      "id": "b55",
+      "slug": "brand-055",
+      "name": "Brand 055"
+     },
+     {
+      "id": "b56",
+      "slug": "brand-056",
+      "name": "Brand 056"
+     },
+     {
+      "id": "b57",
+      "slug": "brand-057",
+      "name": "Brand 057"
+     },
+     {
+      "id": "b58",
+      "slug": "brand-058",
+      "name": "Brand 058"
+     },
+     {
+      "id": "b59",
+      "slug": "brand-059",
+      "name": "Brand 059"
+     },
+     {
+      "id": "b60",
+      "slug": "brand-060",
+      "name": "Brand 060"
+     },
+     {
+      "id": "b61",
+      "slug": "brand-061",
+      "name": "Brand 061"
+     },
+     {
+      "id": "b62",
+      "slug": "brand-062",
+      "name": "Brand 062"
+     },
+     {
+      "id": "b63",
+      "slug": "brand-063",
+      "name": "Brand 063"
+     },
+     {
+      "id": "b64",
+      "slug": "brand-064",
+      "name": "Brand 064"
+     },
+     {
+      "id": "b65",
+      "slug": "brand-065",
+      "name": "Brand 065"
+     },
+     {
+      "id": "b66",
+      "slug": "brand-066",
+      "name": "Brand 066"
+     },
+     {
+      "id": "b67",
+      "slug": "brand-067",
+      "name": "Brand 067"
+     },
+     {
+      "id": "b68",
+      "slug": "brand-068",
+      "name": "Brand 068"
+     },
+     {
+      "id": "b69",
+      "slug": "brand-069",
+      "name": "Brand 069"
+     },
+     {
+      "id": "b70",
+      "slug": "brand-070",
+      "name": "Brand 070"
+     },
+     {
+      "id": "b71",
+      "slug": "brand-071",
+      "name": "Brand 071"
+     },
+     {
+      "id": "b72",
+      "slug": "brand-072",
+      "name": "Brand 072"
+     },
+     {
+      "id": "b73",
+      "slug": "brand-073",
+      "name": "Brand 073"
+     },
+     {
+      "id": "b74",
+      "slug": "brand-074",
+      "name": "Brand 074"
+     },
+     {
+      "id": "b75",
+      "slug": "brand-075",
+      "name": "Brand 075"
+     },
+     {
+      "id": "b76",
+      "slug": "brand-076",
+      "name": "Brand 076"
+     },
+     {
+      "id": "b77",
+      "slug": "brand-077",
+      "name": "Brand 077"
+     },
+     {
+      "id": "b78",
+      "slug": "brand-078",
+      "name": "Brand 078"
+     },
+     {
+      "id": "b79",
+      "slug": "brand-079",
+      "name": "Brand 079"
+     },
+     {
+      "id": "b80",
+      "slug": "brand-080",
+      "name": "Brand 080"
+     },
+     {
+      "id": "b81",
+      "slug": "brand-081",
+      "name": "Brand 081"
+     },
+     {
+      "id": "b82",
+      "slug": "brand-082",
+      "name": "Brand 082"
+     },
+     {
+      "id": "b83",
+      "slug": "brand-083",
+      "name": "Brand 083"
+     },
+     {
+      "id": "b84",
+      "slug": "brand-084",
+      "name": "Brand 084"
+     },
+     {
+      "id": "b85",
+      "slug": "brand-085",
+      "name": "Brand 085"
+     },
+     {
+      "id": "b86",
+      "slug": "brand-086",
+      "name": "Brand 086"
+     },
+     {
+      "id": "b87",
+      "slug": "brand-087",
+      "name": "Brand 087"
+     },
+     {
+      "id": "b88",
+      "slug": "brand-088",
+      "name": "Brand 088"
+     },
+     {
+      "id": "b89",
+      "slug": "brand-089",
+      "name": "Brand 089"
+     },
+     {
+      "id": "b90",
+      "slug": "brand-090",
+      "name": "Brand 090"
+     },
+     {
+      "id": "b91",
+      "slug": "brand-091",
+      "name": "Brand 091"
+     },
+     {
+      "id": "b92",
+      "slug": "brand-092",
+      "name": "Brand 092"
+     },
+     {
+      "id": "b93",
+      "slug": "brand-093",
+      "name": "Brand 093"
+     },
+     {
+      "id": "b94",
+      "slug": "brand-094",
+      "name": "Brand 094"
+     },
+     {
+      "id": "b95",
+      "slug": "brand-095",
+      "name": "Brand 095"
+     },
+     {
+      "id": "b96",
+      "slug": "brand-096",
+      "name": "Brand 096"
+     },
+     {
+      "id": "b97",
+      "slug": "brand-097",
+      "name": "Brand 097"
+     },
+     {
+      "id": "b98",
+      "slug": "brand-098",
+      "name": "Brand 098"
+     },
+     {
+      "id": "b99",
+      "slug": "brand-099",
+      "name": "Brand 099"
+     },
+     {
+      "id": "b100",
+      "slug": "brand-100",
+      "name": "Brand 100"
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "products",
+    "template": "bold",
+    "layout": "",
+    "sections": [],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "productCarousel-deals",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "tag-001",
+      "name": "Tag 001"
+     },
+     {
+      "slug": "tag-002",
+      "name": "Tag 002"
+     },
+     {
+      "slug": "tag-003",
+      "name": "Tag 003"
+     },
+     {
+      "slug": "tag-004",
+      "name": "Tag 004"
+     },
+     {
+      "slug": "tag-005",
+      "name": "Tag 005"
+     },
+     {
+      "slug": "tag-006",
+      "name": "Tag 006"
+     },
+     {
+      "slug": "tag-007",
+      "name": "Tag 007"
+     },
+     {
+      "slug": "tag-008",
+      "name": "Tag 008"
+     },
+     {
+      "slug": "tag-009",
+      "name": "Tag 009"
+     },
+     {
+      "slug": "tag-010",
+      "name": "Tag 010"
+     },
+     {
+      "slug": "tag-011",
+      "name": "Tag 011"
+     },
+     {
+      "slug": "tag-012",
+      "name": "Tag 012"
+     },
+     {
+      "slug": "tag-013",
+      "name": "Tag 013"
+     },
+     {
+      "slug": "tag-014",
+      "name": "Tag 014"
+     },
+     {
+      "slug": "tag-015",
+      "name": "Tag 015"
+     },
+     {
+      "slug": "tag-016",
+      "name": "Tag 016"
+     },
+     {
+      "slug": "tag-017",
+      "name": "Tag 017"
+     },
+     {
+      "slug": "tag-018",
+      "name": "Tag 018"
+     },
+     {
+      "slug": "tag-019",
+      "name": "Tag 019"
+     },
+     {
+      "slug": "tag-020",
+      "name": "Tag 020"
+     },
+     {
+      "slug": "tag-021",
+      "name": "Tag 021"
+     },
+     {
+      "slug": "tag-022",
+      "name": "Tag 022"
+     },
+     {
+      "slug": "tag-023",
+      "name": "Tag 023"
+     },
+     {
+      "slug": "tag-024",
+      "name": "Tag 024"
+     },
+     {
+      "slug": "tag-025",
+      "name": "Tag 025"
+     },
+     {
+      "slug": "tag-026",
+      "name": "Tag 026"
+     },
+     {
+      "slug": "tag-027",
+      "name": "Tag 027"
+     },
+     {
+      "slug": "tag-028",
+      "name": "Tag 028"
+     },
+     {
+      "slug": "tag-029",
+      "name": "Tag 029"
+     },
+     {
+      "slug": "tag-030",
+      "name": "Tag 030"
+     },
+     {
+      "slug": "tag-031",
+      "name": "Tag 031"
+     },
+     {
+      "slug": "tag-032",
+      "name": "Tag 032"
+     },
+     {
+      "slug": "tag-033",
+      "name": "Tag 033"
+     },
+     {
+      "slug": "tag-034",
+      "name": "Tag 034"
+     },
+     {
+      "slug": "tag-035",
+      "name": "Tag 035"
+     },
+     {
+      "slug": "tag-036",
+      "name": "Tag 036"
+     },
+     {
+      "slug": "tag-037",
+      "name": "Tag 037"
+     },
+     {
+      "slug": "tag-038",
+      "name": "Tag 038"
+     },
+     {
+      "slug": "tag-039",
+      "name": "Tag 039"
+     },
+     {
+      "slug": "tag-040",
+      "name": "Tag 040"
+     },
+     {
+      "slug": "tag-041",
+      "name": "Tag 041"
+     },
+     {
+      "slug": "tag-042",
+      "name": "Tag 042"
+     },
+     {
+      "slug": "tag-043",
+      "name": "Tag 043"
+     },
+     {
+      "slug": "tag-044",
+      "name": "Tag 044"
+     },
+     {
+      "slug": "tag-045",
+      "name": "Tag 045"
+     },
+     {
+      "slug": "tag-046",
+      "name": "Tag 046"
+     },
+     {
+      "slug": "tag-047",
+      "name": "Tag 047"
+     },
+     {
+      "slug": "tag-048",
+      "name": "Tag 048"
+     },
+     {
+      "slug": "tag-049",
+      "name": "Tag 049"
+     },
+     {
+      "slug": "tag-050",
+      "name": "Tag 050"
+     },
+     {
+      "slug": "tag-051",
+      "name": "Tag 051"
+     },
+     {
+      "slug": "tag-052",
+      "name": "Tag 052"
+     },
+     {
+      "slug": "tag-053",
+      "name": "Tag 053"
+     },
+     {
+      "slug": "tag-054",
+      "name": "Tag 054"
+     },
+     {
+      "slug": "tag-055",
+      "name": "Tag 055"
+     },
+     {
+      "slug": "tag-056",
+      "name": "Tag 056"
+     },
+     {
+      "slug": "tag-057",
+      "name": "Tag 057"
+     },
+     {
+      "slug": "tag-058",
+      "name": "Tag 058"
+     },
+     {
+      "slug": "tag-059",
+      "name": "Tag 059"
+     },
+     {
+      "slug": "tag-060",
+      "name": "Tag 060"
+     },
+     {
+      "slug": "tag-061",
+      "name": "Tag 061"
+     },
+     {
+      "slug": "tag-062",
+      "name": "Tag 062"
+     },
+     {
+      "slug": "tag-063",
+      "name": "Tag 063"
+     },
+     {
+      "slug": "tag-064",
+      "name": "Tag 064"
+     },
+     {
+      "slug": "tag-065",
+      "name": "Tag 065"
+     },
+     {
+      "slug": "tag-066",
+      "name": "Tag 066"
+     },
+     {
+      "slug": "tag-067",
+      "name": "Tag 067"
+     },
+     {
+      "slug": "tag-068",
+      "name": "Tag 068"
+     },
+     {
+      "slug": "tag-069",
+      "name": "Tag 069"
+     },
+     {
+      "slug": "tag-070",
+      "name": "Tag 070"
+     },
+     {
+      "slug": "tag-071",
+      "name": "Tag 071"
+     },
+     {
+      "slug": "tag-072",
+      "name": "Tag 072"
+     },
+     {
+      "slug": "tag-073",
+      "name": "Tag 073"
+     },
+     {
+      "slug": "tag-074",
+      "name": "Tag 074"
+     },
+     {
+      "slug": "tag-075",
+      "name": "Tag 075"
+     },
+     {
+      "slug": "tag-076",
+      "name": "Tag 076"
+     },
+     {
+      "slug": "tag-077",
+      "name": "Tag 077"
+     },
+     {
+      "slug": "tag-078",
+      "name": "Tag 078"
+     },
+     {
+      "slug": "tag-079",
+      "name": "Tag 079"
+     },
+     {
+      "slug": "tag-080",
+      "name": "Tag 080"
+     },
+     {
+      "slug": "tag-081",
+      "name": "Tag 081"
+     },
+     {
+      "slug": "tag-082",
+      "name": "Tag 082"
+     },
+     {
+      "slug": "tag-083",
+      "name": "Tag 083"
+     },
+     {
+      "slug": "tag-084",
+      "name": "Tag 084"
+     },
+     {
+      "slug": "tag-085",
+      "name": "Tag 085"
+     },
+     {
+      "slug": "tag-086",
+      "name": "Tag 086"
+     },
+     {
+      "slug": "tag-087",
+      "name": "Tag 087"
+     },
+     {
+      "slug": "tag-088",
+      "name": "Tag 088"
+     },
+     {
+      "slug": "tag-089",
+      "name": "Tag 089"
+     },
+     {
+      "slug": "tag-090",
+      "name": "Tag 090"
+     },
+     {
+      "slug": "tag-091",
+      "name": "Tag 091"
+     },
+     {
+      "slug": "tag-092",
+      "name": "Tag 092"
+     },
+     {
+      "slug": "tag-093",
+      "name": "Tag 093"
+     },
+     {
+      "slug": "tag-094",
+      "name": "Tag 094"
+     },
+     {
+      "slug": "tag-095",
+      "name": "Tag 095"
+     },
+     {
+      "slug": "tag-096",
+      "name": "Tag 096"
+     },
+     {
+      "slug": "tag-097",
+      "name": "Tag 097"
+     },
+     {
+      "slug": "tag-098",
+      "name": "Tag 098"
+     },
+     {
+      "slug": "tag-099",
+      "name": "Tag 099"
+     },
+     {
+      "slug": "tag-100",
+      "name": "Tag 100"
+     }
+    ],
+    "tagsTruncated": {
+     "shown": 100,
+     "total": 130
+    },
+    "brands": [
+     {
+      "slug": "brand-000",
+      "name": "Brand 000"
+     },
+     {
+      "slug": "brand-001",
+      "name": "Brand 001"
+     },
+     {
+      "slug": "brand-002",
+      "name": "Brand 002"
+     },
+     {
+      "slug": "brand-003",
+      "name": "Brand 003"
+     },
+     {
+      "slug": "brand-004",
+      "name": "Brand 004"
+     },
+     {
+      "slug": "brand-005",
+      "name": "Brand 005"
+     },
+     {
+      "slug": "brand-006",
+      "name": "Brand 006"
+     },
+     {
+      "slug": "brand-007",
+      "name": "Brand 007"
+     },
+     {
+      "slug": "brand-008",
+      "name": "Brand 008"
+     },
+     {
+      "slug": "brand-009",
+      "name": "Brand 009"
+     },
+     {
+      "slug": "brand-010",
+      "name": "Brand 010"
+     },
+     {
+      "slug": "brand-011",
+      "name": "Brand 011"
+     },
+     {
+      "slug": "brand-012",
+      "name": "Brand 012"
+     },
+     {
+      "slug": "brand-013",
+      "name": "Brand 013"
+     },
+     {
+      "slug": "brand-014",
+      "name": "Brand 014"
+     },
+     {
+      "slug": "brand-015",
+      "name": "Brand 015"
+     },
+     {
+      "slug": "brand-016",
+      "name": "Brand 016"
+     },
+     {
+      "slug": "brand-017",
+      "name": "Brand 017"
+     },
+     {
+      "slug": "brand-018",
+      "name": "Brand 018"
+     },
+     {
+      "slug": "brand-019",
+      "name": "Brand 019"
+     },
+     {
+      "slug": "brand-020",
+      "name": "Brand 020"
+     },
+     {
+      "slug": "brand-021",
+      "name": "Brand 021"
+     },
+     {
+      "slug": "brand-022",
+      "name": "Brand 022"
+     },
+     {
+      "slug": "brand-023",
+      "name": "Brand 023"
+     },
+     {
+      "slug": "brand-024",
+      "name": "Brand 024"
+     },
+     {
+      "slug": "brand-025",
+      "name": "Brand 025"
+     },
+     {
+      "slug": "brand-026",
+      "name": "Brand 026"
+     },
+     {
+      "slug": "brand-027",
+      "name": "Brand 027"
+     },
+     {
+      "slug": "brand-028",
+      "name": "Brand 028"
+     },
+     {
+      "slug": "brand-029",
+      "name": "Brand 029"
+     },
+     {
+      "slug": "brand-030",
+      "name": "Brand 030"
+     },
+     {
+      "slug": "brand-031",
+      "name": "Brand 031"
+     },
+     {
+      "slug": "brand-032",
+      "name": "Brand 032"
+     },
+     {
+      "slug": "brand-033",
+      "name": "Brand 033"
+     },
+     {
+      "slug": "brand-034",
+      "name": "Brand 034"
+     },
+     {
+      "slug": "brand-035",
+      "name": "Brand 035"
+     },
+     {
+      "slug": "brand-036",
+      "name": "Brand 036"
+     },
+     {
+      "slug": "brand-037",
+      "name": "Brand 037"
+     },
+     {
+      "slug": "brand-038",
+      "name": "Brand 038"
+     },
+     {
+      "slug": "brand-039",
+      "name": "Brand 039"
+     },
+     {
+      "slug": "brand-040",
+      "name": "Brand 040"
+     },
+     {
+      "slug": "brand-041",
+      "name": "Brand 041"
+     },
+     {
+      "slug": "brand-042",
+      "name": "Brand 042"
+     },
+     {
+      "slug": "brand-043",
+      "name": "Brand 043"
+     },
+     {
+      "slug": "brand-044",
+      "name": "Brand 044"
+     },
+     {
+      "slug": "brand-045",
+      "name": "Brand 045"
+     },
+     {
+      "slug": "brand-046",
+      "name": "Brand 046"
+     },
+     {
+      "slug": "brand-047",
+      "name": "Brand 047"
+     },
+     {
+      "slug": "brand-048",
+      "name": "Brand 048"
+     },
+     {
+      "slug": "brand-049",
+      "name": "Brand 049"
+     },
+     {
+      "slug": "brand-050",
+      "name": "Brand 050"
+     },
+     {
+      "slug": "brand-051",
+      "name": "Brand 051"
+     },
+     {
+      "slug": "brand-052",
+      "name": "Brand 052"
+     },
+     {
+      "slug": "brand-053",
+      "name": "Brand 053"
+     },
+     {
+      "slug": "brand-054",
+      "name": "Brand 054"
+     },
+     {
+      "slug": "brand-055",
+      "name": "Brand 055"
+     },
+     {
+      "slug": "brand-056",
+      "name": "Brand 056"
+     },
+     {
+      "slug": "brand-057",
+      "name": "Brand 057"
+     },
+     {
+      "slug": "brand-058",
+      "name": "Brand 058"
+     },
+     {
+      "slug": "brand-059",
+      "name": "Brand 059"
+     },
+     {
+      "slug": "brand-060",
+      "name": "Brand 060"
+     },
+     {
+      "slug": "brand-061",
+      "name": "Brand 061"
+     },
+     {
+      "slug": "brand-062",
+      "name": "Brand 062"
+     },
+     {
+      "slug": "brand-063",
+      "name": "Brand 063"
+     },
+     {
+      "slug": "brand-064",
+      "name": "Brand 064"
+     },
+     {
+      "slug": "brand-065",
+      "name": "Brand 065"
+     },
+     {
+      "slug": "brand-066",
+      "name": "Brand 066"
+     },
+     {
+      "slug": "brand-067",
+      "name": "Brand 067"
+     },
+     {
+      "slug": "brand-068",
+      "name": "Brand 068"
+     },
+     {
+      "slug": "brand-069",
+      "name": "Brand 069"
+     },
+     {
+      "slug": "brand-070",
+      "name": "Brand 070"
+     },
+     {
+      "slug": "brand-071",
+      "name": "Brand 071"
+     },
+     {
+      "slug": "brand-072",
+      "name": "Brand 072"
+     },
+     {
+      "slug": "brand-073",
+      "name": "Brand 073"
+     },
+     {
+      "slug": "brand-074",
+      "name": "Brand 074"
+     },
+     {
+      "slug": "brand-075",
+      "name": "Brand 075"
+     },
+     {
+      "slug": "brand-076",
+      "name": "Brand 076"
+     },
+     {
+      "slug": "brand-077",
+      "name": "Brand 077"
+     },
+     {
+      "slug": "brand-078",
+      "name": "Brand 078"
+     },
+     {
+      "slug": "brand-079",
+      "name": "Brand 079"
+     },
+     {
+      "slug": "brand-080",
+      "name": "Brand 080"
+     },
+     {
+      "slug": "brand-081",
+      "name": "Brand 081"
+     },
+     {
+      "slug": "brand-082",
+      "name": "Brand 082"
+     },
+     {
+      "slug": "brand-083",
+      "name": "Brand 083"
+     },
+     {
+      "slug": "brand-084",
+      "name": "Brand 084"
+     },
+     {
+      "slug": "brand-085",
+      "name": "Brand 085"
+     },
+     {
+      "slug": "brand-086",
+      "name": "Brand 086"
+     },
+     {
+      "slug": "brand-087",
+      "name": "Brand 087"
+     },
+     {
+      "slug": "brand-088",
+      "name": "Brand 088"
+     },
+     {
+      "slug": "brand-089",
+      "name": "Brand 089"
+     },
+     {
+      "slug": "brand-090",
+      "name": "Brand 090"
+     },
+     {
+      "slug": "brand-091",
+      "name": "Brand 091"
+     },
+     {
+      "slug": "brand-092",
+      "name": "Brand 092"
+     },
+     {
+      "slug": "brand-093",
+      "name": "Brand 093"
+     },
+     {
+      "slug": "brand-094",
+      "name": "Brand 094"
+     },
+     {
+      "slug": "brand-095",
+      "name": "Brand 095"
+     },
+     {
+      "slug": "brand-096",
+      "name": "Brand 096"
+     },
+     {
+      "slug": "brand-097",
+      "name": "Brand 097"
+     },
+     {
+      "slug": "brand-098",
+      "name": "Brand 098"
+     },
+     {
+      "slug": "brand-099",
+      "name": "Brand 099"
+     }
+    ],
+    "brandsTruncated": {
+     "shown": 100,
+     "total": 101
+    }
+   }
+  },
+  {
+   "name": "exactly 100 is not cut",
+   "state": {
+    "template": {
+     "id": "bold"
+    },
+    "homeSections": [
+     {
+      "id": "productCarousel-1",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "bold",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 0,
+      "slug": "t000",
+      "name": "T 000"
+     },
+     {
+      "id": 1,
+      "slug": "t001",
+      "name": "T 001"
+     },
+     {
+      "id": 2,
+      "slug": "t002",
+      "name": "T 002"
+     },
+     {
+      "id": 3,
+      "slug": "t003",
+      "name": "T 003"
+     },
+     {
+      "id": 4,
+      "slug": "t004",
+      "name": "T 004"
+     },
+     {
+      "id": 5,
+      "slug": "t005",
+      "name": "T 005"
+     },
+     {
+      "id": 6,
+      "slug": "t006",
+      "name": "T 006"
+     },
+     {
+      "id": 7,
+      "slug": "t007",
+      "name": "T 007"
+     },
+     {
+      "id": 8,
+      "slug": "t008",
+      "name": "T 008"
+     },
+     {
+      "id": 9,
+      "slug": "t009",
+      "name": "T 009"
+     },
+     {
+      "id": 10,
+      "slug": "t010",
+      "name": "T 010"
+     },
+     {
+      "id": 11,
+      "slug": "t011",
+      "name": "T 011"
+     },
+     {
+      "id": 12,
+      "slug": "t012",
+      "name": "T 012"
+     },
+     {
+      "id": 13,
+      "slug": "t013",
+      "name": "T 013"
+     },
+     {
+      "id": 14,
+      "slug": "t014",
+      "name": "T 014"
+     },
+     {
+      "id": 15,
+      "slug": "t015",
+      "name": "T 015"
+     },
+     {
+      "id": 16,
+      "slug": "t016",
+      "name": "T 016"
+     },
+     {
+      "id": 17,
+      "slug": "t017",
+      "name": "T 017"
+     },
+     {
+      "id": 18,
+      "slug": "t018",
+      "name": "T 018"
+     },
+     {
+      "id": 19,
+      "slug": "t019",
+      "name": "T 019"
+     },
+     {
+      "id": 20,
+      "slug": "t020",
+      "name": "T 020"
+     },
+     {
+      "id": 21,
+      "slug": "t021",
+      "name": "T 021"
+     },
+     {
+      "id": 22,
+      "slug": "t022",
+      "name": "T 022"
+     },
+     {
+      "id": 23,
+      "slug": "t023",
+      "name": "T 023"
+     },
+     {
+      "id": 24,
+      "slug": "t024",
+      "name": "T 024"
+     },
+     {
+      "id": 25,
+      "slug": "t025",
+      "name": "T 025"
+     },
+     {
+      "id": 26,
+      "slug": "t026",
+      "name": "T 026"
+     },
+     {
+      "id": 27,
+      "slug": "t027",
+      "name": "T 027"
+     },
+     {
+      "id": 28,
+      "slug": "t028",
+      "name": "T 028"
+     },
+     {
+      "id": 29,
+      "slug": "t029",
+      "name": "T 029"
+     },
+     {
+      "id": 30,
+      "slug": "t030",
+      "name": "T 030"
+     },
+     {
+      "id": 31,
+      "slug": "t031",
+      "name": "T 031"
+     },
+     {
+      "id": 32,
+      "slug": "t032",
+      "name": "T 032"
+     },
+     {
+      "id": 33,
+      "slug": "t033",
+      "name": "T 033"
+     },
+     {
+      "id": 34,
+      "slug": "t034",
+      "name": "T 034"
+     },
+     {
+      "id": 35,
+      "slug": "t035",
+      "name": "T 035"
+     },
+     {
+      "id": 36,
+      "slug": "t036",
+      "name": "T 036"
+     },
+     {
+      "id": 37,
+      "slug": "t037",
+      "name": "T 037"
+     },
+     {
+      "id": 38,
+      "slug": "t038",
+      "name": "T 038"
+     },
+     {
+      "id": 39,
+      "slug": "t039",
+      "name": "T 039"
+     },
+     {
+      "id": 40,
+      "slug": "t040",
+      "name": "T 040"
+     },
+     {
+      "id": 41,
+      "slug": "t041",
+      "name": "T 041"
+     },
+     {
+      "id": 42,
+      "slug": "t042",
+      "name": "T 042"
+     },
+     {
+      "id": 43,
+      "slug": "t043",
+      "name": "T 043"
+     },
+     {
+      "id": 44,
+      "slug": "t044",
+      "name": "T 044"
+     },
+     {
+      "id": 45,
+      "slug": "t045",
+      "name": "T 045"
+     },
+     {
+      "id": 46,
+      "slug": "t046",
+      "name": "T 046"
+     },
+     {
+      "id": 47,
+      "slug": "t047",
+      "name": "T 047"
+     },
+     {
+      "id": 48,
+      "slug": "t048",
+      "name": "T 048"
+     },
+     {
+      "id": 49,
+      "slug": "t049",
+      "name": "T 049"
+     },
+     {
+      "id": 50,
+      "slug": "t050",
+      "name": "T 050"
+     },
+     {
+      "id": 51,
+      "slug": "t051",
+      "name": "T 051"
+     },
+     {
+      "id": 52,
+      "slug": "t052",
+      "name": "T 052"
+     },
+     {
+      "id": 53,
+      "slug": "t053",
+      "name": "T 053"
+     },
+     {
+      "id": 54,
+      "slug": "t054",
+      "name": "T 054"
+     },
+     {
+      "id": 55,
+      "slug": "t055",
+      "name": "T 055"
+     },
+     {
+      "id": 56,
+      "slug": "t056",
+      "name": "T 056"
+     },
+     {
+      "id": 57,
+      "slug": "t057",
+      "name": "T 057"
+     },
+     {
+      "id": 58,
+      "slug": "t058",
+      "name": "T 058"
+     },
+     {
+      "id": 59,
+      "slug": "t059",
+      "name": "T 059"
+     },
+     {
+      "id": 60,
+      "slug": "t060",
+      "name": "T 060"
+     },
+     {
+      "id": 61,
+      "slug": "t061",
+      "name": "T 061"
+     },
+     {
+      "id": 62,
+      "slug": "t062",
+      "name": "T 062"
+     },
+     {
+      "id": 63,
+      "slug": "t063",
+      "name": "T 063"
+     },
+     {
+      "id": 64,
+      "slug": "t064",
+      "name": "T 064"
+     },
+     {
+      "id": 65,
+      "slug": "t065",
+      "name": "T 065"
+     },
+     {
+      "id": 66,
+      "slug": "t066",
+      "name": "T 066"
+     },
+     {
+      "id": 67,
+      "slug": "t067",
+      "name": "T 067"
+     },
+     {
+      "id": 68,
+      "slug": "t068",
+      "name": "T 068"
+     },
+     {
+      "id": 69,
+      "slug": "t069",
+      "name": "T 069"
+     },
+     {
+      "id": 70,
+      "slug": "t070",
+      "name": "T 070"
+     },
+     {
+      "id": 71,
+      "slug": "t071",
+      "name": "T 071"
+     },
+     {
+      "id": 72,
+      "slug": "t072",
+      "name": "T 072"
+     },
+     {
+      "id": 73,
+      "slug": "t073",
+      "name": "T 073"
+     },
+     {
+      "id": 74,
+      "slug": "t074",
+      "name": "T 074"
+     },
+     {
+      "id": 75,
+      "slug": "t075",
+      "name": "T 075"
+     },
+     {
+      "id": 76,
+      "slug": "t076",
+      "name": "T 076"
+     },
+     {
+      "id": 77,
+      "slug": "t077",
+      "name": "T 077"
+     },
+     {
+      "id": 78,
+      "slug": "t078",
+      "name": "T 078"
+     },
+     {
+      "id": 79,
+      "slug": "t079",
+      "name": "T 079"
+     },
+     {
+      "id": 80,
+      "slug": "t080",
+      "name": "T 080"
+     },
+     {
+      "id": 81,
+      "slug": "t081",
+      "name": "T 081"
+     },
+     {
+      "id": 82,
+      "slug": "t082",
+      "name": "T 082"
+     },
+     {
+      "id": 83,
+      "slug": "t083",
+      "name": "T 083"
+     },
+     {
+      "id": 84,
+      "slug": "t084",
+      "name": "T 084"
+     },
+     {
+      "id": 85,
+      "slug": "t085",
+      "name": "T 085"
+     },
+     {
+      "id": 86,
+      "slug": "t086",
+      "name": "T 086"
+     },
+     {
+      "id": 87,
+      "slug": "t087",
+      "name": "T 087"
+     },
+     {
+      "id": 88,
+      "slug": "t088",
+      "name": "T 088"
+     },
+     {
+      "id": 89,
+      "slug": "t089",
+      "name": "T 089"
+     },
+     {
+      "id": 90,
+      "slug": "t090",
+      "name": "T 090"
+     },
+     {
+      "id": 91,
+      "slug": "t091",
+      "name": "T 091"
+     },
+     {
+      "id": 92,
+      "slug": "t092",
+      "name": "T 092"
+     },
+     {
+      "id": 93,
+      "slug": "t093",
+      "name": "T 093"
+     },
+     {
+      "id": 94,
+      "slug": "t094",
+      "name": "T 094"
+     },
+     {
+      "id": 95,
+      "slug": "t095",
+      "name": "T 095"
+     },
+     {
+      "id": 96,
+      "slug": "t096",
+      "name": "T 096"
+     },
+     {
+      "id": 97,
+      "slug": "t097",
+      "name": "T 097"
+     },
+     {
+      "id": 98,
+      "slug": "t098",
+      "name": "T 098"
+     },
+     {
+      "id": 99,
+      "slug": "t099",
+      "name": "T 099"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "bold",
+    "layout": "",
+    "sections": [
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "t000",
+      "name": "T 000"
+     },
+     {
+      "slug": "t001",
+      "name": "T 001"
+     },
+     {
+      "slug": "t002",
+      "name": "T 002"
+     },
+     {
+      "slug": "t003",
+      "name": "T 003"
+     },
+     {
+      "slug": "t004",
+      "name": "T 004"
+     },
+     {
+      "slug": "t005",
+      "name": "T 005"
+     },
+     {
+      "slug": "t006",
+      "name": "T 006"
+     },
+     {
+      "slug": "t007",
+      "name": "T 007"
+     },
+     {
+      "slug": "t008",
+      "name": "T 008"
+     },
+     {
+      "slug": "t009",
+      "name": "T 009"
+     },
+     {
+      "slug": "t010",
+      "name": "T 010"
+     },
+     {
+      "slug": "t011",
+      "name": "T 011"
+     },
+     {
+      "slug": "t012",
+      "name": "T 012"
+     },
+     {
+      "slug": "t013",
+      "name": "T 013"
+     },
+     {
+      "slug": "t014",
+      "name": "T 014"
+     },
+     {
+      "slug": "t015",
+      "name": "T 015"
+     },
+     {
+      "slug": "t016",
+      "name": "T 016"
+     },
+     {
+      "slug": "t017",
+      "name": "T 017"
+     },
+     {
+      "slug": "t018",
+      "name": "T 018"
+     },
+     {
+      "slug": "t019",
+      "name": "T 019"
+     },
+     {
+      "slug": "t020",
+      "name": "T 020"
+     },
+     {
+      "slug": "t021",
+      "name": "T 021"
+     },
+     {
+      "slug": "t022",
+      "name": "T 022"
+     },
+     {
+      "slug": "t023",
+      "name": "T 023"
+     },
+     {
+      "slug": "t024",
+      "name": "T 024"
+     },
+     {
+      "slug": "t025",
+      "name": "T 025"
+     },
+     {
+      "slug": "t026",
+      "name": "T 026"
+     },
+     {
+      "slug": "t027",
+      "name": "T 027"
+     },
+     {
+      "slug": "t028",
+      "name": "T 028"
+     },
+     {
+      "slug": "t029",
+      "name": "T 029"
+     },
+     {
+      "slug": "t030",
+      "name": "T 030"
+     },
+     {
+      "slug": "t031",
+      "name": "T 031"
+     },
+     {
+      "slug": "t032",
+      "name": "T 032"
+     },
+     {
+      "slug": "t033",
+      "name": "T 033"
+     },
+     {
+      "slug": "t034",
+      "name": "T 034"
+     },
+     {
+      "slug": "t035",
+      "name": "T 035"
+     },
+     {
+      "slug": "t036",
+      "name": "T 036"
+     },
+     {
+      "slug": "t037",
+      "name": "T 037"
+     },
+     {
+      "slug": "t038",
+      "name": "T 038"
+     },
+     {
+      "slug": "t039",
+      "name": "T 039"
+     },
+     {
+      "slug": "t040",
+      "name": "T 040"
+     },
+     {
+      "slug": "t041",
+      "name": "T 041"
+     },
+     {
+      "slug": "t042",
+      "name": "T 042"
+     },
+     {
+      "slug": "t043",
+      "name": "T 043"
+     },
+     {
+      "slug": "t044",
+      "name": "T 044"
+     },
+     {
+      "slug": "t045",
+      "name": "T 045"
+     },
+     {
+      "slug": "t046",
+      "name": "T 046"
+     },
+     {
+      "slug": "t047",
+      "name": "T 047"
+     },
+     {
+      "slug": "t048",
+      "name": "T 048"
+     },
+     {
+      "slug": "t049",
+      "name": "T 049"
+     },
+     {
+      "slug": "t050",
+      "name": "T 050"
+     },
+     {
+      "slug": "t051",
+      "name": "T 051"
+     },
+     {
+      "slug": "t052",
+      "name": "T 052"
+     },
+     {
+      "slug": "t053",
+      "name": "T 053"
+     },
+     {
+      "slug": "t054",
+      "name": "T 054"
+     },
+     {
+      "slug": "t055",
+      "name": "T 055"
+     },
+     {
+      "slug": "t056",
+      "name": "T 056"
+     },
+     {
+      "slug": "t057",
+      "name": "T 057"
+     },
+     {
+      "slug": "t058",
+      "name": "T 058"
+     },
+     {
+      "slug": "t059",
+      "name": "T 059"
+     },
+     {
+      "slug": "t060",
+      "name": "T 060"
+     },
+     {
+      "slug": "t061",
+      "name": "T 061"
+     },
+     {
+      "slug": "t062",
+      "name": "T 062"
+     },
+     {
+      "slug": "t063",
+      "name": "T 063"
+     },
+     {
+      "slug": "t064",
+      "name": "T 064"
+     },
+     {
+      "slug": "t065",
+      "name": "T 065"
+     },
+     {
+      "slug": "t066",
+      "name": "T 066"
+     },
+     {
+      "slug": "t067",
+      "name": "T 067"
+     },
+     {
+      "slug": "t068",
+      "name": "T 068"
+     },
+     {
+      "slug": "t069",
+      "name": "T 069"
+     },
+     {
+      "slug": "t070",
+      "name": "T 070"
+     },
+     {
+      "slug": "t071",
+      "name": "T 071"
+     },
+     {
+      "slug": "t072",
+      "name": "T 072"
+     },
+     {
+      "slug": "t073",
+      "name": "T 073"
+     },
+     {
+      "slug": "t074",
+      "name": "T 074"
+     },
+     {
+      "slug": "t075",
+      "name": "T 075"
+     },
+     {
+      "slug": "t076",
+      "name": "T 076"
+     },
+     {
+      "slug": "t077",
+      "name": "T 077"
+     },
+     {
+      "slug": "t078",
+      "name": "T 078"
+     },
+     {
+      "slug": "t079",
+      "name": "T 079"
+     },
+     {
+      "slug": "t080",
+      "name": "T 080"
+     },
+     {
+      "slug": "t081",
+      "name": "T 081"
+     },
+     {
+      "slug": "t082",
+      "name": "T 082"
+     },
+     {
+      "slug": "t083",
+      "name": "T 083"
+     },
+     {
+      "slug": "t084",
+      "name": "T 084"
+     },
+     {
+      "slug": "t085",
+      "name": "T 085"
+     },
+     {
+      "slug": "t086",
+      "name": "T 086"
+     },
+     {
+      "slug": "t087",
+      "name": "T 087"
+     },
+     {
+      "slug": "t088",
+      "name": "T 088"
+     },
+     {
+      "slug": "t089",
+      "name": "T 089"
+     },
+     {
+      "slug": "t090",
+      "name": "T 090"
+     },
+     {
+      "slug": "t091",
+      "name": "T 091"
+     },
+     {
+      "slug": "t092",
+      "name": "T 092"
+     },
+     {
+      "slug": "t093",
+      "name": "T 093"
+     },
+     {
+      "slug": "t094",
+      "name": "T 094"
+     },
+     {
+      "slug": "t095",
+      "name": "T 095"
+     },
+     {
+      "slug": "t096",
+      "name": "T 096"
+     },
+     {
+      "slug": "t097",
+      "name": "T 097"
+     },
+     {
+      "slug": "t098",
+      "name": "T 098"
+     },
+     {
+      "slug": "t099",
+      "name": "T 099"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a named custom page's carousel brings the lists",
+   "state": {
+    "template": {
+     "id": "sweet"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ],
+    "customPages": [
+     {
+      "slug": "deals",
+      "title": "Deals",
+      "status": "published"
+     }
+    ],
+    "pageSectionsAll": {
+     "deals": [
+      {
+       "id": "productCarousel-1",
+       "enabled": true,
+       "settings": {
+        "title": "On sale"
+       }
+      }
+     ]
+    }
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "sweet",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "Make the Deals page title bigger",
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "sweet",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [
+     {
+      "slug": "deals",
+      "title": "Deals"
+     }
+    ],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [
+     {
+      "page": "deals",
+      "other": true,
+      "sections": [
+       {
+        "id": "productCarousel-1",
+        "type": "productCarousel",
+        "title": "On sale",
+        "enabled": true
+       }
+      ]
+     }
+    ],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a disabled carousel row still counts",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     },
+     {
+      "id": "productCarousel-1",
+      "enabled": false,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     },
+     {
+      "id": "productCarousel-1",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": false
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a location-ref section brings no lists",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "contentBlock-1",
+      "enabled": true,
+      "settings": {}
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": null,
+   "manifest": true,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "contentBlock-1",
+      "type": "contentBlock",
+      "title": "",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": []
+   }
+  },
+  {
+   "name": "without a manifest the productCarousel fallback decides",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     },
+     {
+      "id": "productCarousel-2",
+      "enabled": true,
+      "settings": {
+       "title": "Picks",
+       "subType": "tag",
+       "tagSlug": "new"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": null,
+   "manifest": false,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     },
+     {
+      "id": "productCarousel-2",
+      "type": "productCarousel",
+      "title": "Picks",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "without a manifest a request word still decides",
+   "state": {
+    "template": {
+     "id": "cozy"
+    },
+    "homeSections": [
+     {
+      "id": "heroBanner",
+      "enabled": true,
+      "settings": {
+       "title": "Hi"
+      }
+     }
+    ]
+   },
+   "ctx": {
+    "currentPage": "home",
+    "templateId": "cozy",
+    "editingStoreId": null,
+    "tab": "editor",
+    "activeSectionId": null,
+    "globalSection": null,
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ]
+   },
+   "extras": {
+    "tags": [
+     {
+      "id": 7,
+      "slug": "staff-picks",
+      "name": "Staff Picks",
+      "visible": true,
+      "count": 12
+     },
+     {
+      "id": 3,
+      "slug": "hidden",
+      "name": "Hidden",
+      "visible": false
+     },
+     {
+      "id": 9,
+      "slug": "sale",
+      "name": "Sale"
+     }
+    ],
+    "brands": [
+     {
+      "id": "b2",
+      "slug": "house",
+      "name": "House Brand"
+     },
+     {
+      "id": "b1",
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "id": "b3",
+      "slug": "blank",
+      "name": ""
+     }
+    ]
+   },
+   "text": "what brands are there",
+   "manifest": false,
+   "expected": {
+    "page": "home",
+    "template": "cozy",
+    "layout": "",
+    "sections": [
+     {
+      "id": "heroBanner",
+      "type": "heroBanner",
+      "title": "Hi",
+      "enabled": true
+     }
+    ],
+    "categories": [],
+    "customPages": [],
+    "nav": [
+     {
+      "label": "Shop",
+      "href": "/products"
+     },
+     {
+      "label": "Locations",
+      "href": "/locations"
+     },
+     {
+      "label": "About Us",
+      "href": "/about"
+     },
+     {
+      "label": "FAQ",
+      "href": "/faq"
+     },
+     {
+      "label": "Contact",
+      "href": "/contact"
+     }
+    ],
+    "locations": [
+     {
+      "id": "loc-1",
+      "name": "Main St"
+     }
+    ],
+    "focus": {
+     "area": "editor",
+     "sectionId": "",
+     "panel": ""
+    },
+    "shopMenu": {
+     "style": "classic",
+     "maxItems": 0,
+     "hidden": 0,
+     "inStockOnly": false
+    },
+    "outline": [],
+    "tags": [
+     {
+      "slug": "sale",
+      "name": "Sale"
+     },
+     {
+      "slug": "staff-picks",
+      "name": "Staff Picks"
+     }
+    ],
+    "brands": [
+     {
+      "slug": "acme",
+      "name": "Acme"
+     },
+     {
+      "slug": "house",
+      "name": "House Brand"
+     }
+    ]
+   }
+  }
+ ]
+}

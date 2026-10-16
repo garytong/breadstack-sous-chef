@@ -11,6 +11,7 @@ from souschef_lab import contrast as K
 from souschef_lab import engine as E
 from souschef_lab.leak import ExamIndex
 from souschef_lab.manifest import is_holdout, load
+from souschef_lab import r4score as R4S
 from souschef_lab.r4cases import FAMILY_ORDER, family_of_row, write_ids
 
 EXAM_MANIFEST = FIXTURES_DIR / "exam" / "manifest-real.json"
@@ -101,15 +102,32 @@ def test_contrast_round_end_to_end(m):
     finally:
         eng.close()
     assert rep["template_problems"] == []
-    assert 120 <= rep["kept"] == len(cases) <= 200, rep
-    assert set(rep["pairs"]) == {s.pair for s in K.SIDES} | {"site_fonts", "vague"}
+    assert 120 <= rep["kept"] == len(cases) <= 260, rep
+    # the capability groups ride along; an engine without create_page keeps only their rename/delete, add-a-section
+    # and listing cases (every create and decline is measured on the engine: page_oracle_refused / E_OP)
+    assert set(rep["pairs"]) == {s.pair for s in K.SIDES} | {"site_fonts", "vague", "create_page", "list_options"}
     assert rep["site_fonts"] >= 8 and rep["vague"] >= 12, rep
+    caps = rep["capabilities"]
+    assert caps["list_options"]["cases"] >= 2 and caps["create_page"]["modes"].get("where") == 4, caps
+    if caps["create_page"]["modes"].get("page"):
+        assert caps["create_page"]["modes"]["page"] >= 30, caps  # the engine knows create_page: creates and declines
     ids = [c["id"] for c in cases]
     assert len(set(ids)) == len(ids) and all(re.fullmatch(r"contrast1-F8-\d{4}", i) for i in ids)
     for c in cases:
-        assert c["meta"]["family"] == "F8" and not c["holdout"] and c["score"]["mode"] in ("exact", "keys", "ask")
+        assert c["meta"]["family"] == "F8" and not c["holdout"]
+        assert c["score"]["mode"] in ("exact", "keys", "ask", "page", "where", "list")
         assert not any(is_holdout(k) for k in write_ids(c, m))
         pair = c["meta"]["contrast"]["pair"]
+        if pair in ("create_page", "list_options"):
+            assert c["meta"]["capability"] == pair and c["meta"]["generator"] in (K.PAGE_GENERATOR, K.LIST_GENERATOR)
+            assert "events" not in c["request"].lower()  # exam p137's page: never taught (page_exam_clash)
+            if c["score"]["mode"] == "page" and c["meta"]["oracle_ops"]:
+                assert c["meta"]["measured"]["written"][0].startswith("customPages[")
+            if c["score"]["mode"] == "page" and not c["meta"]["oracle_ops"]:
+                assert c["meta"]["measured"]["refusal"] in ("E_SLUG", "E_TARGET")
+            if c["score"]["mode"] == "list":
+                assert R4S.listing_view(c)["situation"] == c["expected"]["listing"]["situation"]
+            continue
         assert (c["score"]["mode"] == "ask") == (pair == "vague")
         if pair == "vague":  # nothing to write: the answer is a question
             assert c["expected"]["ops"] == [] and c["meta"]["oracle_ops"] == [] and "{" not in c["request"]
@@ -207,3 +225,108 @@ def test_ask_first_cases_from_the_follow_up_familys_vague_first_turns(m):
     assert c["request"] == "the headings look too plain" and c["history"] == [] and c["score"]["mode"] == "ask"
     assert c["meta"]["group"] == "g1" and c["meta"]["family"] == "F2" and c["meta"]["ask_first"]["from"] == "f2-a"
     assert c["context"]["page"] == "home" and c["expected"]["ops"] == []
+
+
+# --- r6-4: the create_page and list_options groups ---------------------------------------------------------------------
+
+def test_page_cases_are_built_from_the_jobs(m):
+    from souschef_lab import exam as X
+    jobs = {g + ":" + r: spec for g, r, spec in K.PAGE_JOBS}
+    assert {g for g, _, _ in K.PAGE_JOBS} == {"create", "slug", "draft", "in_nav", "sections", "exists", "exists_sections",
+                                              "reserved", "noncanonical", "template", "manage", "section_not_page",
+                                              "social_page"}
+    assert 40 <= len(K.PAGE_JOBS) <= 50 and 30 <= len(K.LIST_JOBS) <= 40  # modest: ≈ US$0.03 a case asked
+    c, why = K.build_page_case(m, "sections", "create a Budtender Picks page with a product carousel on it",
+                               jobs["sections:create a Budtender Picks page with a product carousel on it"], "t-F8-1")
+    assert why == "" and c["score"]["mode"] == "page" and c["expected"]["page"]["sections"] == ["productCarousel"]
+    assert c["meta"]["oracle_ops"] == [
+        {"op": "create_page", "title": "Budtender Picks", "slug": "budtender-picks"},  # same batch: the slug passed
+        {"op": "edit_list", "target": {"kind": "page", "page": "budtender-picks"}, "list": "sections", "action": "add",
+         "item": {"id": "productCarousel"}}]
+    deals = jobs["exists:make me a Deals page"]
+    c, _ = K.build_page_case(m, "exists", "make me a Deals page", deals, "t-F8-2")
+    assert c["meta"]["oracle_ops"] == [] and c["meta"]["attempt"] == [{"op": "create_page", "title": "Deals"}]
+    assert any(p["slug"] == "deals" for p in c["site_state"]["customPages"])
+    assert X.page_expectation(c)["expect"] == "decline" and X.page_expectation(c)["existing"]["slug"] == "deals"
+    tpl, _ = K.build_page_case(m, "template", "add a new page called Gift Cards", {"title": "Gift Cards", "why": "template"}, "t3")
+    assert tpl["template"] == K.PREMIUM_TEMPLATE == tpl["site_state"]["template"]["id"] and tpl["expected"]["page"]["why"] == "template"
+    nc, _ = K.build_page_case(m, "noncanonical", "x", {"title": "Wholesale Inquiries", "asked_slug": "Wholesale_Inquiries"}, "t4")
+    assert nc["expected"]["page"]["slugs"] == ["wholesale-inquiries", "wholesaleinquiries"]
+    assert nc["meta"]["oracle_ops"][0]["slug"] == "wholesale-inquiries"
+    mg, _ = K.build_page_case(m, "manage", "delete the Deals page", {"where": "pages", "pages": ["deals"]}, "t5")
+    assert mg["score"]["mode"] == "where" and mg["expected"]["out_of_scope"]["expected_where"] == ["pages"]
+    sp, _ = K.build_page_case(m, "section_not_page", "x", {"section": {"page": "contact", "type": "newsletter"}}, "t6")
+    assert sp["score"]["mode"] == "keys" and sp["expected"]["list_ops"] == [{"list": "sections", "action": "add", "index": None}]
+    # a page case on exam p137's page is a leak of its answer
+    ev, _ = K.build_page_case(m, "create", "make an Events page", {"title": "Events"}, "t7")
+    assert K.page_exam_clash(ev) == "exam_answer:out_of_scope:p137:page" and K.page_exam_clash(c) is None
+
+
+def test_list_cases_carry_their_lists_in_context_extras(m):
+    from souschef_lab.r4cases import with_case_extras
+    jobs: dict = {}
+    for j in K.LIST_JOBS:
+        jobs.setdefault((j[1], j[2]), (j[0], j[3]))  # the first job of each (list, situation)
+    assert {j[2] for j in K.LIST_JOBS} == {"short", "long", "truncated", "empty", "unknown"}
+    from collections import Counter
+    per = Counter(j[2] for j in K.LIST_JOBS)
+    assert min(per.values()) >= 6 and sum(1 for j in K.LIST_JOBS if j[4:] == ("plain",)) >= 10  # every situation, plain asks
+    tag_n, brand_n = len(K.TAG_A) * len(K.TAG_B), len(K.BRAND_A) * len(K.BRAND_B)
+    assert all((j[3] or 0) <= {"tags": tag_n, "brands": brand_n, "categories": len(K.MANY_CATEGORIES)}[j[1]] for j in K.LIST_JOBS)
+    assert len({j[0] for j in K.LIST_JOBS}) == len(K.LIST_JOBS)
+    req, size = jobs[("tags", "truncated")]
+    c, _ = K.build_list_case(m, req, "tags", "truncated", size, "t-F8-1106")
+    assert c["score"]["mode"] == "list" and c["meta"]["view"] == K.CAROUSEL_VIEW and len(c["option_lists"]["tags"]) == 130
+    names = [e["name"] for e in c["option_lists"]["tags"]]
+    assert len(set(names)) == 130 and not any(a != b and f" {a} " in f" {b} " for a in names for b in names)
+    u, _ = K.build_list_case(m, *jobs[("brands", "unknown")][:1], "brands", "unknown", None, "t2")
+    from souschef_lab.state import load_context_fixture
+    fx = load_context_fixture()
+    assert u["option_lists"] == {"brands": None, "tags": fx["tags"]}  # the host's lists: brands not loaded
+    assert with_case_extras({"brands": [1], "tags": [2], "x": 3}, u) == {"brands": None, "tags": fx["tags"], "x": 3}
+    cat, _ = K.build_list_case(m, "x", "categories", "short", None, "t3")
+    assert cat["context_extras"] == {} and "option_lists" not in cat  # the fixture's own categories
+    many, _ = K.build_list_case(m, "x", "categories", "long", 22, "t4")
+    assert len(with_case_extras(fx, many)["categories"]) == 22
+    assert K.capability_counts([c, u, cat])["list_options"] == {
+        "cases": 3, "by_group": {"list:brands": 1, "list:categories": 1, "list:tags": 1}, "modes": {"list": 3}}
+
+
+def test_capability_cases_split_per_case_and_report_their_group(m):
+    """The validation split hashes meta.group: a per-case group, so no behaviour class goes wholly to one side;
+    cap_group keeps the report's grouping."""
+    c, _ = K.build_page_case(m, "exists", "make me a Deals page", {"title": "Deals", "pages": ["deals"]}, "t-F8-1020")
+    assert c["meta"]["group"] == "page:exists:t-F8-1020" and c["meta"]["cap_group"] == "page:exists"
+    lc, _ = K.build_list_case(m, "list my tags", "tags", "unknown", None, "t-F8-1135", "plain")
+    assert lc["meta"]["group"] == "list:tags:t-F8-1135" and lc["meta"]["cap_group"] == "list:tags"
+    assert lc["meta"]["view"] is None and lc["target"] == {"kind": "page", "page": "home"} and lc["meta"]["focus"] == "plain"
+    assert K.capability_counts([c, lc])["create_page"]["by_group"] == {"page:exists": 1}
+
+
+def test_social_page_requests_are_social_links_not_pages(m):
+    from souschef_lab import exam as X
+    socials = [(g, r, sp) for g, r, sp in K.PAGE_JOBS if g == "social_page"]
+    assert 2 <= len(socials) <= 4
+    exam_keys = {k["key"] for s_ in ("paraphrase", "holdout") for row in X.load_set(s_)
+                 for k in (row.get("expected") or {}).get("keys") or [] if str(k.get("key")).startswith("socialLinks.")}
+    assert exam_keys and not exam_keys & {sp["social"]["key"] for _, _, sp in socials}  # the exam's networks left to it
+    g, req, spec = socials[0]
+    c, why = K.build_page_case(m, g, req, spec, "t-F8-soc")
+    assert why == "" and c["score"]["mode"] == "keys"
+    assert c["meta"]["oracle_ops"] == [{"op": "set_fields", "target": {"kind": "global", "panel": "SocialMediaSection"},
+                                        "values": {spec["social"]["key"]: spec["social"]["url"]}}]
+    assert c["expected"]["keys"] == [{"target": {"kind": "global", "panel": "SocialMediaSection"},
+                                      "key": spec["social"]["key"], "list": ""}]
+    assert "example" in spec["social"]["url"]  # a made-up handle, never a store's
+
+
+def test_the_template_family_uses_a_real_premium_template(m):
+    from souschef_lab.browser_defaults import cookie_cutter_dir
+    assert K.PREMIUM_TEMPLATE not in ("bold", "boutique", "cozy", "editorial", "elegant", "playful", "pluto", "retro",
+                                      "sweet", "verdant", "vintage", "default")
+    root = cookie_cutter_dir()
+    sel = root / "launcher" / "client" / "src" / "components" / "ThemeSelector.jsx" if root else None
+    if sel is not None and sel.is_file():  # a template the picker offers (not a hidden legacy one)
+        src = sel.read_text(encoding="utf-8")
+        hidden = src[src.index("const hiddenTemplates"):].split("]", 1)[0]
+        assert f"  {K.PREMIUM_TEMPLATE}: (" in src and f"'{K.PREMIUM_TEMPLATE}'" not in hidden

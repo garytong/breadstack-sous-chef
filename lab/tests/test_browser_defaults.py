@@ -155,6 +155,13 @@ def test_context_of_equals_the_browsers_on_lab_states(m):
         cases.append({"state": st, "ctx": ctx, "extras": {**extras, "manifest": m.doc, **({"text": text} if text else {})}})
         ours.append(S.context_of(st, page, {**extras, "locations": ctx["locations"]}, m, ctx, text=text))
     theirs = B.browser_contexts(cases)
+    root = B.cookie_cutter_dir()
+    tc = root / "launcher" / "client" / "src" / "sousChef" / "turnContext.js" if root else None
+    if tc is None or not tc.is_file() or "cat.id != null" not in tc.read_text(encoding="utf-8"):
+        # a checkout before the category ids (launcher 1d4193e2 sends `id` as text; the lab mirrors that): compare
+        # without them — the fixture's categories have ids since 2026-10-16, as live contexts do
+        ours = [{**o, "categories": [{k: v for k, v in c.items() if k != "id"} for c in o.get("categories") or []]}
+                if "categories" in o else o for o in ours]
     for (template, page, text, _), got, want in zip(plan, ours, theirs):
         assert got == want, (template, page, text)
         assert json.dumps(got, ensure_ascii=False) == json.dumps(want, ensure_ascii=False), (template, page)  # key order too

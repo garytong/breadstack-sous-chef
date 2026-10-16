@@ -1181,6 +1181,163 @@ def _page_rows(state: dict, page: str, template: Any = None) -> list:
     return browser_defaults.page_sections(template, page)
 
 
+# ── option lists (optionLists.js, carouselOptions.js, previewApi.buildCtx) ──
+
+OPTION_LIST_MAX = 100
+OPTION_KINDS = ("tags", "brands")
+OPTION_REF_KINDS = ("tag", "brand")
+OPTION_SECTION_FALLBACK = ("productCarousel",)
+# optionLists.OPTION_TEXT_RE: tag(s) / brand(s) / carousel(s), whole words, any case — except "tag line(s)" and the
+# merchant's own brand ("brand colour / font / logo …"). JavaScript semantics: `\b` and the case folding are ASCII
+# (re.ASCII; `/i` without `u` never folds a non-ASCII character onto an ASCII one), `\s` is JavaScript's set.
+_JSWS = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+OPTION_TEXT_RE = re.compile(
+    "\\b(?:tags?(?![" + _JSWS + "]+lines?\\b)|brands?(?![" + _JSWS + "-]+(?:colou?rs?|fonts?|logos?|identity|kit|guidelines?"
+    "|palette|styles?|voice|assets?|story|name|images?)\\b)|carousels?)\\b", re.IGNORECASE | re.ASCII)
+
+
+def js_str(v: Any) -> str:
+    """JavaScript ``String(v)`` for a JSON value (``null`` → ``"null"``; callers handle null themselves)."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if math.isnan(v):
+            return "NaN"
+        if math.isinf(v):
+            return "Infinity" if v > 0 else "-Infinity"
+        return _js_num_str(v)
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        return ",".join("" if x is None else js_str(x) for x in v)
+    return "[object Object]"
+
+
+def _jstr(v: Any) -> str:
+    """turnContext `str`: ``v == null ? '' : String(v)``."""
+    return "" if v is None else js_str(v)
+
+
+def carousel_tag_options(raw: Any) -> list:
+    """carouselOptions.carouselTagOptions: visible tags only (``visible: false`` is not selectable)."""
+    return [t for t in (raw if isinstance(raw, list) else []) if _truthy(t) and not (isinstance(t, dict) and t.get("visible") is False)]
+
+
+def carousel_brand_options(raw: Any) -> list:
+    """carouselOptions.carouselBrandOptions: named brands only."""
+    return [b for b in (raw if isinstance(raw, list) else []) if _truthy(b) and isinstance(b, dict) and _truthy(b.get("name"))]
+
+
+_OPTION_FILTERS = {"tags": carousel_tag_options, "brands": carousel_brand_options}
+
+
+def _has_slug(x: dict) -> bool:
+    return x.get("slug") is not None and x.get("slug") != ""
+
+
+def id_slug_list(raw: Any) -> list[dict]:
+    """previewApi idSlugList over an already filtered list: ``[{id, slug}]`` for every object with a slug (an
+    absent id stays absent, as JSON.stringify drops ``undefined``)."""
+    out = []
+    for x in raw if isinstance(raw, list) else []:
+        if isinstance(x, dict) and _has_slug(x):
+            out.append({**({"id": x["id"]} if "id" in x else {}), "slug": x["slug"]})
+    return out
+
+
+def option_lists_of(case: dict | None, fixture: dict | None = None) -> dict[str, Any]:
+    """The raw carousel tag / brand lists a case's host holds: the case's ``option_lists`` (``{"tags": [...] |
+    null, "brands": [...] | null}``; a missing or null kind = the list is unknown — not loaded, or its fetch
+    failed) when it has one, else the lab fixture context's (``fixtures/context.json``)."""
+    over = (case or {}).get("option_lists")
+    if isinstance(over, dict):
+        return {k: over.get(k) if isinstance(over.get(k), list) else None for k in OPTION_KINDS}
+    fx = fixture if fixture is not None else load_context_fixture()
+    return {k: fx.get(k) if isinstance(fx.get(k), list) else None for k in OPTION_KINDS}
+
+
+def host_lists(case: dict | None, fixture: dict | None = None) -> dict[str, list[dict]]:
+    """``{tags, brands}`` of the engine ctx (previewApi.buildCtx ``idSlugList(carouselTagOptions(v.tags))``…): an
+    unknown list is ``[]``, as the browser host sends it."""
+    raw = option_lists_of(case, fixture)
+    return {k: id_slug_list(_OPTION_FILTERS[k](raw[k])) for k in OPTION_KINDS}
+
+
+def option_ref_section_types(doc: Any) -> set[str]:
+    """optionLists.optionRefSectionTypes: section types with a writable ``ref: tag|brand`` field, else the
+    fallback (``productCarousel``)."""
+    out: set[str] = set()
+    sections = doc.get("sections") if isinstance(doc, dict) and isinstance(doc.get("sections"), dict) else {}
+    for typ, spec in sections.items():
+        fields = spec.get("fields") if isinstance(spec, dict) and isinstance(spec.get("fields"), dict) else {}
+        if any(isinstance(f, dict) and f.get("type") == "ref" and f.get("ref") in OPTION_REF_KINDS
+               and not _truthy(f.get("derived_from")) for f in fields.values()):
+            out.add(typ)
+    return out or set(OPTION_SECTION_FALLBACK)
+
+
+def wants_option_lists(text: Any, types: list, doc: Any) -> bool:
+    """optionLists.wantsOptionLists: the request names tags / brands / carousels, or one of ``types`` (the viewed
+    page's, the named pages' and the focused section's types) carries a tag / brand ref."""
+    if isinstance(text, str) and OPTION_TEXT_RE.search(text):
+        return True
+    ref_types = option_ref_section_types(doc)
+    for t in types:
+        s = "" if t is None else _jstr(t)
+        if s and any(s == r or s.startswith(f"{r}-") for r in ref_types):
+            return True
+    return False
+
+
+def _utf16(s: str) -> bytes:
+    """A sort key in JavaScript's string order (UTF-16 code units)."""
+    return s.encode("utf-16-be", "surrogatepass")
+
+
+def option_list(kind: str, raw: Any, max_len: int = OPTION_LIST_MAX) -> tuple[list[dict], int]:
+    """optionLists.optionList: the dropdown's options (visible tags / named brands) with a slug, ``name`` =
+    plainLabel(name, else slug) or the slug, sorted by lower-cased name then slug (JavaScript ``<``), cut to
+    ``max_len``; with the count before the cut."""
+    rows = []
+    for x in _OPTION_FILTERS[kind](raw):
+        if not isinstance(x, dict) or not _has_slug(x):
+            continue
+        slug = js_str(x["slug"])
+        name = x.get("name")
+        name = plain_label(slug if name is None or name == "" else name) or slug
+        rows.append({"slug": slug, "name": name})
+    rows.sort(key=lambda r: (_utf16(r["name"].lower()), _utf16(r["slug"])))
+    return rows[:max(0, max_len)], len(rows)
+
+
+def _add_option_lists(out: dict, ex: dict, text: Any, types: list, doc: Any) -> None:
+    """turnContext.addOptionLists: ``tags`` / ``brands`` (each with ``<kind>Truncated: {shown, total}`` when cut)
+    when the host knows the list (an array; absent → left out, ``[]`` → sent empty) and the turn is about them."""
+    kinds = [k for k in OPTION_KINDS if isinstance(ex.get(k), list)]
+    if not kinds or not wants_option_lists(text, types, doc):
+        return
+    for kind in kinds:
+        rows, total = option_list(kind, ex[kind])
+        out[kind] = rows
+        if total > len(rows):
+            out[f"{kind}Truncated"] = {"shown": len(rows), "total": total}
+
+
+def _category_row(c: dict) -> dict:
+    """turnContext categories entry: ``{slug: str(slug || id), name: str(name || title || label), id?}`` — the id
+    as text, only when it is neither null nor ``''``."""
+    slug = c.get("slug") if _truthy(c.get("slug")) else c.get("id")
+    name = next((c.get(k) for k in ("name", "title") if _truthy(c.get(k))), c.get("label"))
+    row = {"slug": _jstr(slug), "name": _jstr(name)}
+    if c.get("id") is not None and c.get("id") != "":
+        row["id"] = _jstr(c["id"])
+    return row
+
+
 def context_of(state: dict, page: str = "home", extras: dict | None = None, manifest: Any = None,
                view: dict | None = None, text: str | None = None) -> dict:
     """The `context` member of POST /v1/turns (README §1.2), as
@@ -1210,8 +1367,7 @@ def context_of(state: dict, page: str = "home", extras: dict | None = None, mani
         "template": _s((state.get("template") or {}).get("id")),
         "layout": _s(layouts.get(page) or ""),
         "sections": section_summaries(sections),
-        "categories": [{"slug": _s(c.get("slug") or c.get("id")), "name": _s(c.get("name") or c.get("title") or c.get("label"))}
-                       for c in ex.get("categories") or [] if isinstance(c, dict)],
+        "categories": [_category_row(c) for c in ex.get("categories") or [] if isinstance(c, dict)],
         "customPages": [{"slug": _s(p.get("slug")), "title": _s(p.get("title") or p.get("name"))}
                         for p in custom_pages if isinstance(p, dict)],
         "nav": nav,
@@ -1223,6 +1379,12 @@ def context_of(state: dict, page: str = "home", extras: dict | None = None, mani
     }
     if truncated:
         out["outlineTruncated"] = True
+    known = set(doc.get("sections") or {}) if isinstance(doc, dict) else set()
+    ids = [r.get("id") if isinstance(r, dict) else None for r in sections]
+    ids += [r.get("id") if isinstance(r, dict) else None for o in others for r in o.get("sections") or []]
+    ids.append(focus["sectionId"])
+    types = [lookup_section_type_id(_jstr(i), known) or section_type_id(_jstr(i)) for i in ids if _truthy(i)]
+    _add_option_lists(out, ex, text, types, doc)
     return out
 
 

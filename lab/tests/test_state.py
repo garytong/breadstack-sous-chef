@@ -201,12 +201,16 @@ def test_every_gated_default_row_field_has_gate_writes(m, st):
 
 def test_context_of_matches_turn_context_shape(st, m):
     ctx = S.context_of(st, "home", S.load_context_fixture(), m)
+    # the home page has a product carousel and the fixture's tag / brand lists are known: both lists come last
+    # (turnContext.addOptionLists, launcher 1d4193e2)
     assert list(ctx) == ["page", "template", "layout", "sections", "categories", "customPages", "nav", "locations",
-                         "focus", "shopMenu", "outline"]
+                         "focus", "shopMenu", "outline", "tags", "brands"]
+    assert ctx["tags"] == [{"slug": "new", "name": "New"}, {"slug": "sale", "name": "Sale"},
+                           {"slug": "staff-picks", "name": "Staff Picks"}]  # by name; never the catalog id
     assert ctx["page"] == "home" and ctx["template"] == "editorial" and ctx["layout"] == ""
     assert ctx["sections"][0] == {"id": "heroBanner", "type": "heroBanner", "title": "Fresh picks every week", "enabled": True}
     assert {"id": "contentBlock-2", "type": "contentBlock", "title": "Our Story", "enabled": True} in ctx["sections"]
-    assert ctx["categories"][0] == {"slug": "flower", "name": "Flower"}
+    assert ctx["categories"][0] == {"slug": "flower", "name": "Flower", "id": "301"}  # the id as text (turnContext.js)
     assert ctx["customPages"][0] == {"slug": "about", "title": "About Us"}
     assert ctx["locations"][0] == {"id": "loc-main", "name": "Main Street"}
     assert ctx["nav"] and all(set(n) == {"label", "href"} for n in ctx["nav"])

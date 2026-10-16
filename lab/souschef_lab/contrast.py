@@ -40,6 +40,31 @@ Two more groups ride along (r6-3, the user's 2026-10-15 decisions), in id spaces
               mode `ask` — the right answer is a question, any write is a guess (r4score.score_ask). One per field
               of the pairs above (its metadata words: the manifest label); a field the generator holds out is skipped
 
+Two capability groups (r6-4, the create_page tool and the dropdown option lists of 2026-10-15; "tools first": they
+train in r6), ids from PAGE_BASE (contrast1-F8-10nn) and LIST_BASE (-11nn), built from PAGE_JOBS / LIST_JOBS:
+
+  create_page   mode `page` (exam.score_page, on the op): create (title only; with a canonical slug; draft;
+                in_nav), create plus sections in the same reply (the section adds on the new page are its own
+                writes), collisions with a page the site has (a custom page in the context, a built-in page —
+                with and without a same-reply section add, which the batch stop must block), reserved and
+                non-canonical slugs, a template that can't show custom pages (declines: nothing written, the reply
+                says why) — plus rename / delete / duplicate still report_unsupported where=pages (mode where),
+                "add a section, not a page" (mode keys: a create_page there is a stray write) and "our LinkedIn
+                page <url>" (mode keys: a social link, not a site page). The oracle measures
+                every case on the round's engine: a create must apply, a decline's attempt must be refused with the
+                expected code (E_SLUG / E_TARGET) — an engine without create_page drops the group
+  list_options  mode `list` (r4score.score_listing): "what tags / brands / categories can I use for this
+                carousel" on a focused product carousel, the case's lists in `option_lists` (tags, brands: the
+                host's lists, also the engine ctx's) or `context_extras` (categories) — short (named in
+                full), over 15 (15 names then "...and N more"), cut at the context's 100 (+ the dropdown), empty
+                (say so), unknown (never say none; point at the dropdown); asked on the carousel or plainly
+                ("which brands do we carry?", focus "plain"). The case is dropped when the derived context does not
+                carry the list as the case means it (state.context_of's mirror)
+
+Each capability case is its own split group (meta.group "<group>:<case id>"; meta.cap_group the report's group):
+r4dataset hashes the group, and one name per behaviour sent a whole behaviour to validation or to train.
+capability_report_cases builds eval's report-only `capability:built` set from CAPH_PAGE_JOBS / CAPH_LIST_JOBS.
+
 and the follow-up family's vague FIRST turns (a pool case's history[0] the author marked `ask` / `offer`) become
 single-turn `ask` cases of their own (ask_first_cases: ids `askfirst1-<family>-<source id>`, the source's state,
 page, view and split group). Collect masks a follow-up's earlier replies out of the loss, so before these the
@@ -282,6 +307,345 @@ PLACE_WORDS = {"ShopMenuSection": "shop menu", "FooterSection": "footer", "Heade
                "SidebarCartSection": "side cart", "TypographyColorsSection": "site's"}
 PAGE_PLACE = {"products": "shop page", "checkout": "checkout"}
 ASK_FIRST_GENERATOR = "askfirst-1"
+
+# --- the capability groups (create_page, dropdown lists) ------------------------------------------------------------------
+
+PAGE_GENERATOR, LIST_GENERATOR = "page-1", "list-1"
+PAGE_BASE, LIST_BASE = 1000, 1100  # id numbers: contrast1-F8-1001…, contrast1-F8-1101…
+# a live premium template (launcher ThemeSelector: plantrepublic is on the premium allowlist; spiritleaf, smokeshow,
+# plantlife and generation are hidden legacy ones; not in BASIC_TEMPLATE_IDS): create_page is refused E_TARGET. Not
+# `default`, which PreviewPage treats as basic although BASIC_TEMPLATE_IDS leaves it out (the engine refuses both)
+PREMIUM_TEMPLATE = "plantrepublic"
+CAROUSEL_VIEW = {"tab": "editor", "activeSectionId": "productCarousel-1"}
+SECTION_WORDS = {"productCarousel": "product carousel", "gallery": "photo gallery", "newsletter": "newsletter sign-up",
+                 "testimonials": "testimonials section"}
+# custom pages a collision / negative case adds to the state (the state already holds About Us /about and Events
+# /events from fixtures/context.json — Events is never asked: exam p137's answer on the exam state)
+EXTRA_PAGES = {"deals": "Deals", "our-team": "Our Team", "community": "Community", "our-partners": "Our Partners"}
+# (group, request, spec): spec {title, slug?, slugs?, in_nav?, status?, sections?, why? (a decline), pages?
+# (EXTRA_PAGES slugs on the state), page?, template?, where? (mode where), section? (mode keys: {page, type})}
+PAGE_JOBS: tuple = (
+    ("create", "add a new page called Strain Library", {"title": "Strain Library"}),
+    ("create", "can you make me a page named 'Lab Results'", {"title": "Lab Results"}),
+    ("create", "new page: Vendor Days", {"title": "Vendor Days"}),
+    ("create", "I need a Wholesale page on the site", {"title": "Wholesale"}),
+    ("create", "set up a page titled First Time Visitors", {"title": "First Time Visitors"}),
+    ("create", "create a Dosing Guide page", {"title": "Dosing Guide"}),
+    ("slug", "create a page called Weekly Specials at /specials", {"title": "Weekly Specials", "slug": "specials"}),
+    ("slug", "add a Terpene Guide page with the address /terpenes", {"title": "Terpene Guide", "slug": "terpenes"}),
+    ("slug", "make a page named Medical Patients at /medical", {"title": "Medical Patients", "slug": "medical"}),
+    ("draft", "add a Holiday Hours page but keep it as a draft for now", {"title": "Holiday Hours", "status": "draft"}),
+    ("draft", "make a draft page called Price Match, don't publish it yet", {"title": "Price Match", "status": "draft"}),
+    ("draft", "create a Store Policies page as a draft", {"title": "Store Policies", "status": "draft"}),
+    ("in_nav", "create a Rewards Club page and put it in the header menu", {"title": "Rewards Club", "in_nav": True}),
+    ("in_nav", "add a page called Gift Guide and link it in the top navigation", {"title": "Gift Guide", "in_nav": True}),
+    ("in_nav", "make an Accessibility page and add it to the header nav", {"title": "Accessibility", "in_nav": True}),
+    ("sections", "create a Budtender Picks page with a product carousel on it",
+     {"title": "Budtender Picks", "sections": ["productCarousel"]}),
+    ("sections", "make a new page called Photo Wall with a photo gallery", {"title": "Photo Wall", "sections": ["gallery"]}),
+    ("sections", "add a Stay In Touch page and put a newsletter sign-up on it",
+     {"title": "Stay In Touch", "sections": ["newsletter"]}),
+    ("sections", "create a Customer Reviews page with a testimonials section",
+     {"title": "Customer Reviews", "sections": ["testimonials"]}),
+    ("exists", "make me a Deals page", {"title": "Deals", "pages": ["deals"]}),
+    ("exists", "set up an Our Team page", {"title": "Our Team", "pages": ["our-team"]}),
+    ("exists", "create a FAQ page", {"title": "FAQ"}),
+    ("exists", "add a Contact page to the site", {"title": "Contact"}),
+    ("exists_sections", "create a Deals page with a product carousel on it",
+     {"title": "Deals", "pages": ["deals"], "sections": ["productCarousel"]}),
+    ("exists_sections", "add a new Contact page with a newsletter sign-up", {"title": "Contact", "sections": ["newsletter"]}),
+    ("exists_sections", "make a FAQ page and put a photo gallery on it", {"title": "FAQ", "sections": ["gallery"]}),
+    ("reserved", "make a page called Menu", {"title": "Menu", "why": "reserved"}),
+    ("reserved", "create a Sitemap page", {"title": "Sitemap", "why": "reserved"}),
+    ("reserved", "add a page named Launcher", {"title": "Launcher", "why": "reserved"}),
+    ("noncanonical", "create a page called Summer Sale at /Summer-Sale", {"title": "Summer Sale", "asked_slug": "Summer-Sale"}),
+    ("noncanonical", "add a Wholesale Inquiries page with the address /Wholesale_Inquiries",
+     {"title": "Wholesale Inquiries", "asked_slug": "Wholesale_Inquiries"}),
+    ("noncanonical", "make a Local Growers page at /Local Growers", {"title": "Local Growers", "asked_slug": "Local Growers"}),
+    ("template", "add a new page called Gift Cards", {"title": "Gift Cards", "why": "template"}),
+    ("template", "create a Lab Results page and put it in the menu", {"title": "Lab Results", "why": "template", "in_nav": True}),
+    ("manage", "delete the Deals page", {"where": "pages", "pages": ["deals"]}),
+    ("manage", "duplicate the About Us page", {"where": "pages"}),
+    ("manage", "change the address of the Our Team page to /crew", {"where": "pages", "pages": ["our-team"]}),
+    ("manage", "rename the Community page to Neighbours", {"where": "pages", "pages": ["community"]}),
+    ("section_not_page", "add a product carousel to the Our Partners page",
+     {"section": {"page": "our-partners", "type": "productCarousel"}, "pages": ["our-partners"]}),
+    ("section_not_page", "put a testimonials section on my Community page",
+     {"section": {"page": "community", "type": "testimonials"}, "pages": ["community"]}),
+    ("section_not_page", "on the Contact page, add a newsletter sign-up", {"section": {"page": "contact", "type": "newsletter"}}),
+    ("section_not_page", "add a photo gallery to the delivery page", {"section": {"page": "delivery", "type": "gallery"}}),
+    # "our <network> page" is a social link (SocialMediaSection), never a new site page (exam h022 "add our weedmaps
+    # page" is one; the exam's own networks — weedmaps, instagram, facebook, tiktok — are left to it)
+    ("social_page", "add our LinkedIn page: https://www.linkedin.com/company/example-dispensary",
+     {"social": {"key": "socialLinks.linkedin", "url": "https://www.linkedin.com/company/example-dispensary"}}),
+    ("social_page", "link our Leafly page https://www.leafly.com/dispensary-info/example-dispensary",
+     {"social": {"key": "socialLinks.leafly", "url": "https://www.leafly.com/dispensary-info/example-dispensary"}}),
+    ("social_page", "put our Google Business page in the footer: https://g.page/example-dispensary",
+     {"social": {"key": "socialLinks.googleBusiness", "url": "https://g.page/example-dispensary"}}),
+    ("social_page", "add our X page too, https://x.com/exampledispensary",
+     {"social": {"key": "socialLinks.twitter", "url": "https://x.com/exampledispensary"}}),
+)
+# (a section add's write_ids — <page>.sections, <page>.sections[].id, <page>.id — must not be a generator hold-out key:
+# home, faq, deals, reviews… are, so the "add a section" pages are ones that are not)
+# tag / brand / category names (made up; never a real store's): A × B, no name a whole-word part of another
+TAG_A = ("Small Batch", "Staff", "Local", "Limited", "Weekend", "Budget", "Premium", "Craft", "Seasonal", "Classic",
+         "Fresh", "Rare", "Mellow", "Bright", "Quiet", "Golden", "Late Night", "Morning", "Holiday", "Sunday")
+TAG_B = ("Picks", "Favourites", "Finds", "Deals", "Drops", "Classics", "Specials", "Essentials")
+BRAND_A = ("Cedar", "Harbor", "Prairie", "Northwind", "Copper", "Juniper", "Maple", "Riverbend", "Stonefield",
+           "Bluebird", "Foxglove", "Lantern", "Meadowlark", "Ironwood", "Silverleaf", "Thistle")
+BRAND_B = ("Growers", "Farms", "Botanicals", "Collective", "Gardens", "Leaf Co", "Craft", "Supply")
+MANY_CATEGORIES = ("Flower", "Pre-Rolls", "Edibles", "Vapes", "Concentrates", "Accessories", "Beverages", "Topicals",
+                   "Capsules", "Oils", "Seeds", "Hash", "Rosin", "Gummies", "Chocolates", "Tinctures", "Papers",
+                   "Grinders", "Lighters", "Storage", "Apparel", "Gift Cards")
+# (request, list, situation, size[, focus]): size = how many the store has (None = the fixture's own list; "unknown" =
+# the browser could not load it: the case's context leaves the member out); focus "plain" = no focused carousel (a
+# general "what brands do we carry" asked on home; the request's own words open the tag / brand gate) — default: a
+# focused product carousel. Sizes straddle the rules' edges: 15 (named in full) / 16 (15 then "...and 1 more"), 99 and
+# 100 (not cut) / 101 (cut, the dropdown named). The made-up banks hold 160 tags and 128 brands
+LIST_JOBS: tuple = (
+    ("which tags can I use for this carousel?", "tags", "short", 6),
+    ("what brands can this carousel show?", "brands", "short", 5),
+    ("what categories can I pick for the carousel?", "categories", "short", None),
+    ("list the tags I can choose from for this product carousel", "tags", "long", 24),
+    ("show me the brand options for this carousel", "brands", "long", 40),
+    ("what tags are there for the carousel source?", "tags", "truncated", 130),
+    ("which brands could I feature in this carousel?", "brands", "truncated", 120),
+    ("what tags can I filter this carousel by?", "tags", "empty", 0),
+    ("can you list the brands for this carousel?", "brands", "empty", 0),
+    ("what are my tag options for this carousel?", "tags", "unknown", None),
+    ("which brands are available for the carousel?", "brands", "unknown", None),
+    ("list every category I could use for this carousel", "categories", "long", 22),
+    # r6-4 review: more of every situation, varied totals, and requests that are not about a carousel
+    ("what tags do I have set up?", "tags", "short", 3, "plain"),
+    ("which brands can I pick from?", "brands", "short", 1, "plain"),
+    ("show me all the tags for this carousel", "tags", "short", 15),
+    ("what brands could this product carousel use?", "brands", "short", 9),
+    ("what product categories does my store have?", "categories", "short", 8, "plain"),
+    ("which categories can this carousel pull from?", "categories", "short", 12),
+    ("list the brands I can use", "brands", "long", 16, "plain"),
+    ("what tags are available for the carousel?", "tags", "long", 33),
+    ("which brands do we carry?", "brands", "long", 57, "plain"),
+    ("give me the tag options for this carousel", "tags", "long", 99),
+    ("what are all my product tags?", "tags", "long", 100, "plain"),
+    ("what categories could I feature here?", "categories", "long", 20),
+    ("which tags can I choose from?", "tags", "truncated", 101, "plain"),
+    ("list every brand for this carousel", "brands", "truncated", 128),
+    ("what tags could this carousel filter on?", "tags", "truncated", 160),
+    ("show me the brands we have", "brands", "truncated", 110, "plain"),
+    ("do I have any brands set up?", "brands", "empty", 0, "plain"),
+    ("what tags exist in my store?", "tags", "empty", 0, "plain"),
+    ("which categories can I use for this carousel?", "categories", "empty", 0),
+    ("are there any tags I could use on this carousel?", "tags", "empty", 0),
+    ("what brands can I pick from?", "brands", "unknown", None, "plain"),
+    ("list my tags", "tags", "unknown", None, "plain"),
+    ("which tags could I feature in this carousel?", "tags", "unknown", None),
+    ("what brand options does this carousel have?", "brands", "unknown", None),
+)
+
+
+def _names(a: tuple, b: tuple, n: int) -> list[str]:
+    """`n` names "<a> <b>", spread over both banks (a fixed hash order)."""
+    return sorted((f"{x} {y}" for x in a for y in b), key=lambda v: (h8("name:" + v), v))[:n]
+
+
+def list_entries(lst: str, n: int, salt: str) -> list[dict]:
+    """`n` made-up entries {slug, name, id} of a tag / brand / category list (deterministic)."""
+    if lst == "categories":
+        names = list(MANY_CATEGORIES[:n])
+    else:
+        names = _names(TAG_A, TAG_B, n) if lst == "tags" else _names(BRAND_A, BRAND_B, n)
+    from .exam import slugify
+    return [{"slug": slugify(x), "name": x, "id": str(100 + i)} for i, x in enumerate(names)]
+
+
+def _with_pages(state: dict, slugs: list[str]) -> None:
+    pages = list(state.get("customPages") or [])
+    for sl in slugs or []:
+        if not any(p.get("slug") == sl for p in pages):
+            pages.append({"slug": sl, "title": EXTRA_PAGES[sl], "sections": [], "settings": {}, "status": "published"})
+    state["customPages"] = pages
+
+
+def _empty_expected() -> dict:
+    return {"ops": [], "diff": [], "keys": [], "alt": [], "alt_exact": [], "out_of_scope": None, "candidates": None,
+            "direction": None, "reply_any": None, "expect_hidden": None, "gate": None}
+
+
+def build_page_case(m, group: str, request: str, spec: dict, case_id: str) -> tuple[dict | None, str]:
+    """One create_page-family case (PAGE_JOBS): state, request, expectation, oracle ops (and, for a decline, the
+    create_page the engine must refuse: meta.attempt). Measured by `validate`."""
+    from .exam import slugify
+    from .state import build_state
+    salt = f"{PAGE_GENERATOR}:{case_id}"
+    tpl = TEMPLATES[h8("tpl:" + salt) % len(TEMPLATES)]
+    state = build_state(m, template=tpl)
+    _with_pages(state, spec.get("pages") or [])
+    if spec.get("why") == "template":
+        tpl = PREMIUM_TEMPLATE
+        state["template"] = {"id": tpl}
+    exp = _empty_expected()
+    meta_extra: dict[str, Any] = {}
+    oracle: list[dict] = []
+    if spec.get("where"):
+        mode, kind = "where", "unsupported"
+        exp["out_of_scope"] = {"reason": "pages are renamed, duplicated and deleted in the Pages tab",
+                               "where": [spec["where"]], "expected_where": [spec["where"]]}
+        exp["where"] = [spec["where"]]
+    elif spec.get("social"):
+        mode, kind = "keys", "contrast"
+        so = spec["social"]
+        tgt = {"kind": "global", "panel": "SocialMediaSection"}
+        oracle = [{"op": "set_fields", "target": tgt, "values": {so["key"]: so["url"]}}]
+        exp["ops"] = copy.deepcopy(oracle)
+        exp["keys"] = [{"target": tgt, "key": so["key"], "list": ""}]
+    elif spec.get("section"):
+        mode, kind = "keys", "contrast"
+        sec = spec["section"]
+        tgt = {"kind": "page", "page": sec["page"]}
+        oracle = [{"op": "edit_list", "target": tgt, "list": "sections", "action": "add", "item": {"id": sec["type"]}}]
+        exp["ops"] = copy.deepcopy(oracle)
+        exp["keys"] = [{"target": tgt, "key": "", "list": "sections"}]
+        exp["list_ops"] = [{"list": "sections", "action": "add", "index": None}]
+    else:
+        mode, kind = "page", "create_page"
+        title = spec["title"]
+        page: dict[str, Any] = {"expect": "decline" if spec.get("why") in ("reserved", "template") else "create",
+                                "title": title, "title_match": "exact", "in_nav": bool(spec.get("in_nav")),
+                                "status": spec.get("status") or "published", "sections": list(spec.get("sections") or [])}
+        if page["expect"] == "decline":
+            page["why"] = spec["why"]
+        else:
+            page["if_exists"] = "decline"
+        asked = spec.get("asked_slug")
+        if spec.get("slug"):
+            page["slug"] = spec["slug"]
+        if asked:
+            page["slugs"] = sorted({slugify(asked), slugify(re.sub(r"[_./]+", " ", asked))} - {""})
+        slug = spec.get("slug") or (page["slugs"][0] if asked else slugify(title))
+        op: dict[str, Any] = {"op": "create_page", "title": title}
+        if spec.get("slug") or asked or page["sections"]:
+            op["slug"] = slug
+        if page["in_nav"]:
+            op["in_nav"] = True
+        if page["status"] != "published":
+            op["status"] = page["status"]
+        adds = [{"op": "edit_list", "target": {"kind": "page", "page": slug}, "list": "sections", "action": "add",
+                 "item": {"id": t}} for t in page["sections"]]
+        exp["page"] = page
+        from .exam import existing_page
+        exists = existing_page({"site_state": state, "context": {}}, None, title, [slug])
+        if page["expect"] == "decline" or exists:
+            meta_extra["attempt"] = [op] + adds  # what the engine must refuse (the create; adds land on nothing)
+        else:
+            oracle = [op] + adds
+            exp["ops"] = copy.deepcopy(oracle)
+    case = {"id": case_id, "kind": kind, "target": {"kind": "page", "page": "home"}, "fields": [], "site_state": state,
+            "context": {"page": "home"}, "request": request, "history": [], "expected": exp, "score": {"mode": mode},
+            "holdout": False, "manifest_hash": m.hash, "engine_fingerprint": None, "template": tpl,
+            "meta": {"family": FAMILY, "style": group, "page": "home", "view": None, "oracle_ops": copy.deepcopy(oracle),
+                     # the split's unit (r4dataset: h100(group) < val_pct → val) is the CASE: a shared group name
+                     # sent a whole behaviour class to one side ("page:exists" all to val); cap_group reports it
+                     "group": f"page:{group}:{case_id}", "cap_group": f"page:{group}", "capability": "create_page",
+                     "generator": PAGE_GENERATOR,
+                     "contrast": {"pair": "create_page", "side": group, "key": None, "page_key": None, "value": None,
+                                  "others": []}, **meta_extra}}
+    return case, ""
+
+
+def build_list_case(m, request: str, lst: str, situation: str, size: int | None, case_id: str,
+                    focus: str = "carousel") -> tuple[dict | None, str]:
+    """One list_options case (LIST_JOBS): a focused product carousel (focus "plain": nothing focused, the home page),
+    the store's list in `option_lists` (tags, brands; the other kind is the fixture's) or `context_extras`
+    (categories)."""
+    from .state import build_state
+    salt = f"{LIST_GENERATOR}:{case_id}"
+    tpl = TEMPLATES[h8("tpl:" + salt) % len(TEMPLATES)]
+    state = build_state(m, template=tpl)
+    from .state import load_context_fixture
+    fx = load_context_fixture()
+    extras: dict[str, Any] = {}
+    option_lists = None
+    mine = None if situation == "unknown" else (list_entries(lst, size, salt) if size is not None else None)
+    if lst in ("tags", "brands"):  # the host's carousel lists (state.option_lists_of): the other kind as the fixture's
+        option_lists = {k: copy.deepcopy(fx.get(k)) for k in ("tags", "brands")}
+        option_lists[lst] = mine
+    elif mine is not None:
+        extras[lst] = mine
+    exp = _empty_expected()
+    exp["listing"] = {"list": lst, "situation": situation}
+    plain = focus == "plain"
+    target = {"kind": "page", "page": "home"} if plain else {"kind": "section", "page": "home", "sectionId": "productCarousel-1"}
+    case = {"id": case_id, "kind": "answer", "target": target,
+            "fields": [], "site_state": state, "context": {"page": "home"}, "request": request, "history": [],
+            "expected": exp, "score": {"mode": "list"}, "holdout": False, "manifest_hash": m.hash,
+            "engine_fingerprint": None, "template": tpl, "context_extras": extras,
+            **({"option_lists": option_lists} if option_lists is not None else {}),
+            "meta": {"family": FAMILY, "style": situation, "page": "home", "view": None if plain else dict(CAROUSEL_VIEW),
+                     "oracle_ops": [], "focus": focus,
+                     "group": f"list:{lst}:{case_id}", "cap_group": f"list:{lst}", "capability": "list_options",
+                     "generator": LIST_GENERATOR,
+                     "contrast": {"pair": "list_options", "side": f"{lst}:{situation}", "key": None, "page_key": None,
+                                  "value": None, "others": []}}}
+    return case, ""
+
+
+# The capability REPORT set (eval_stage `capability:built`, never bar): ~15 cases built the same way in their own id
+# space (caph-F8-nnnn), in phrasings the training jobs do not use, so a candidate that over-creates pages, invents
+# list names or calls an unknown list empty shows in the report. Built at eval time on the deployed manifest, scored by
+# r4score like the training cases; GPU time only. They are no hold-out (the training groups teach the same skills).
+CAPH_PAGE_JOBS: tuple = (
+    ("create", "please add a page called Grower Spotlights", {"title": "Grower Spotlights"}),
+    ("slug", "make a Pet Friendly page at /pets", {"title": "Pet Friendly", "slug": "pets"}),
+    ("draft", "start a draft page called Fall Lineup", {"title": "Fall Lineup", "status": "draft"}),
+    ("in_nav", "add a Neighbourhood News page to the header menu", {"title": "Neighbourhood News", "in_nav": True}),
+    ("sections", "create a Staff Favourites page with a product carousel",
+     {"title": "Staff Favourites", "sections": ["productCarousel"]}),
+    ("exists", "create an About Us page", {"title": "About Us"}),
+    ("exists", "make a Careers page", {"title": "Careers"}),
+    ("reserved", "add a page named API", {"title": "API", "why": "reserved"}),
+    ("template", "create a page called Gift Ideas", {"title": "Gift Ideas", "why": "template"}),
+    ("section_not_page", "add a newsletter sign-up to the About Us page", {"section": {"page": "about", "type": "newsletter"}}),
+)
+CAPH_LIST_JOBS: tuple = (
+    ("what tags have I got?", "tags", "short", 4, "plain"),
+    ("what brands can this carousel use?", "brands", "long", 30),
+    ("list the tags for this carousel", "tags", "truncated", 140),
+    ("do we have any brands?", "brands", "empty", 0, "plain"),
+    ("what tags can I use here?", "tags", "unknown", None),
+)
+
+
+def capability_report_cases(m, *, limit: int | None = None) -> list[dict]:
+    """The capability report set (CAPH_PAGE_JOBS + CAPH_LIST_JOBS) on manifest `m`, unmeasured (eval scores them as
+    built; on an engine without create_page its creates fail on both arms alike)."""
+    out: list[dict] = []
+    for k, (group, request, spec) in enumerate(CAPH_PAGE_JOBS):
+        c, _ = build_page_case(m, group, request, spec, f"caph-{FAMILY}-{PAGE_BASE + k + 1:04d}")
+        if c is not None:
+            out.append(c)
+    for k, job in enumerate(CAPH_LIST_JOBS):
+        c, _ = build_list_case(m, *job[:4], f"caph-{FAMILY}-{LIST_BASE + k + 1:04d}", *job[4:])
+        if c is not None:
+            out.append(c)
+    for c in out:
+        c["meta"]["report_set"] = "capability"
+    return out[:limit] if limit else out
+
+
+def page_exam_clash(c: dict) -> str | None:
+    """A page case that teaches an exam row's page answer (exam.AMENDMENTS page specs: p137 "Events"): its title's
+    slug is the exam row's."""
+    from .exam import AMENDMENTS, slugify
+    page = (c.get("expected") or {}).get("page") or {}
+    meta = c.get("meta") or {}
+    ops = list(meta.get("attempt") or []) + list(meta.get("oracle_ops") or []) + list((c.get("expected") or {}).get("ops") or [])
+    mine = {slugify(page.get("title") or "")} | {slugify(w) for w in page.get("words") or []} \
+        | {o.get("slug") or slugify(o.get("title") or "") for o in ops if isinstance(o, dict) and o.get("op") == "create_page"}
+    for (s, rid), a in AMENDMENTS.items():
+        t = (a.get("page") or {}).get("title")
+        if t and slugify(t) in mine - {""}:
+            return f"exam_answer:{s}:{rid}:page"
+    return None
 
 
 # --- metadata ---------------------------------------------------------------------------------------------------------
@@ -650,6 +1014,23 @@ def ask_first_cases(pool: list[dict], m, engine, extras: dict, *, leak_index=Non
     return out, rep
 
 
+def capability_counts(cases: list[dict]) -> dict:
+    """{capability: {cases, by_group: {group: n}, modes: {mode: n}}} of the cases tagged meta.capability (the
+    create_page and list_options groups, prepare's relabelled page-create rows)."""
+    out: dict[str, dict] = {}
+    for c in cases:
+        meta = c.get("meta") or {}
+        cap = meta.get("capability")
+        if not cap:
+            continue
+        rec = out.setdefault(str(cap), {"cases": 0, "by_group": Counter(), "modes": Counter()})
+        rec["cases"] += 1
+        rec["by_group"][str(meta.get("cap_group") or meta.get("group") or "?")] += 1
+        rec["modes"][str((c.get("score") or {}).get("mode"))] += 1
+    return {k: {"cases": v["cases"], "by_group": dict(sorted(v["by_group"].items())), "modes": dict(v["modes"])}
+            for k, v in sorted(out.items())}
+
+
 PER_PAGE_KEY = re.compile(r"^(pageVisibility|orderTypeText)\.([^.]+)\.(.+)$")
 
 
@@ -731,7 +1112,7 @@ def validate(c: dict, m, engine, extras: dict, *, leak_index=None, seen: set[str
     hk = sorted(k for k in write_ids(probe, m) if is_holdout(k))
     if hk:
         return "holdout_key:" + hk[0]
-    clash = exam_answer_clash(c, answers or [])
+    clash = exam_answer_clash(c, answers or []) or page_exam_clash(c)
     if clash:
         return "leak:" + clash
     if c["score"]["mode"] == "exact":
@@ -751,7 +1132,8 @@ def validate(c: dict, m, engine, extras: dict, *, leak_index=None, seen: set[str
     from .verify import ctx_of
     ops = [o for o in c["meta"].get("oracle_ops") or c["expected"].get("ops") or [] if o.get("op") != "pick_asset"]
     if ops:
-        r = engine.run(copy.deepcopy(c["site_state"]), copy.deepcopy(ops), ctx_of(c))
+        from .createpage import run_engine_result
+        r = run_engine_result(engine, copy.deepcopy(c["site_state"]), copy.deepcopy(ops), ctx_of(c))
         res = r.get("results") if isinstance(r, dict) else getattr(r, "results", [])
         if closed_gate_writes(res or []):
             return "hidden_write"  # a W_HIDDEN alone is not: the engine warns for every gated field, open or closed
@@ -775,6 +1157,7 @@ def validate(c: dict, m, engine, extras: dict, *, leak_index=None, seen: set[str
 def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, pool: list[dict] = (),
                    exam_cases: list[dict] | None = None, sides: tuple[Side, ...] = SIDES,
                    site_font_sides: tuple[Side, ...] = SITE_FONT_SIDES, vague: bool = True, ask_first: bool = True,
+                   page_jobs: tuple = PAGE_JOBS, list_jobs: tuple = LIST_JOBS,
                    progress: Callable[[str], None] = print) -> tuple[list[dict], dict]:
     """(F8 cases + the ask-first cases, report). `pool`: cases already held (dedup; the source of ask_first_cases);
     `exam_cases`: the F0H cases, to report how many of them the family moves from key-unseen to key-seen
@@ -811,11 +1194,22 @@ def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, po
             done_fields.add(k)
             n += 1
             jobs.append((n, s, 0, "vague", VAGUE_TEMPLATES[h8(VAGUE_GENERATOR + s.name) % len(VAGUE_TEMPLATES)]))
+    for k, (group, request, spec) in enumerate(page_jobs or ()):
+        jobs.append((PAGE_BASE + k + 1, None, k, "page:" + group, json.dumps([request, spec])))
+    for k, job in enumerate(list_jobs or ()):
+        jobs.append((LIST_BASE + k + 1, None, k, f"list:{job[1]}:{job[2]}", json.dumps(list(job))))
     for n, s, i, style, template in jobs:
-        name = f"vague:{s.name}" if style == "vague" else s.name
-        rec = per_side.setdefault(name, Counter())
         cid = f"{tag}-{FAMILY}-{n:04d}"
-        case, why = build_vague_case(m, s, template, cid) if style == "vague" else build_case(m, s, i, style, template, cid)
+        if s is None:  # the capability groups
+            name = style
+            rec = per_side.setdefault(name, Counter())
+            args = json.loads(template)
+            case, why = (build_page_case(m, style.split(":", 1)[1], args[0], args[1], cid) if style.startswith("page:")
+                         else build_list_case(m, *args[:4], cid, *args[4:]))
+        else:
+            name = f"vague:{s.name}" if style == "vague" else s.name
+            rec = per_side.setdefault(name, Counter())
+            case, why = build_vague_case(m, s, template, cid) if style == "vague" else build_case(m, s, i, style, template, cid)
         if case is not None:
             why = validate(case, m, engine, extras, leak_index=leak_index, seen=seen, answers=answers) or ""
         if why.startswith("leak:exam_answer"):
@@ -847,6 +1241,9 @@ def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, po
         "keys": dict(Counter(c["meta"]["contrast"]["key"] for c in f8)),
         "site_fonts": sum(1 for c in f8 if c["meta"]["contrast"]["pair"] == "site_fonts"),
         "vague": sum(1 for c in f8 if c["meta"]["contrast"]["pair"] == "vague"),
+        "capabilities": capability_counts(f8),
+        "capability_dropped": {k: dict(v) for k, v in per_side.items() if k.startswith(("page:", "list:"))
+                               and any(x.startswith("dropped:") for x in v)},
         "ask_first": ask_rep,
         "total": len(out),
     }

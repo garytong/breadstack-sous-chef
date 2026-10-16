@@ -65,7 +65,8 @@ DEFAULT_TEMPLATE = "editorial"  # a real BASIC_TEMPLATE_IDS member (headless.mjs
 
 SERVER_TOOLS = ("lookup_fields", "describe_target")
 NON_OPS = ("report_unsupported", "pick_asset") + SERVER_TOOLS
-BROWSER_OPS = ("set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "reset_pinned_section")
+BROWSER_OPS = ("set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "create_page",
+               "reset_pinned_section")
 
 VERDICTS = ("invalid_op", "unsupported_ok", "clarify_ok", "no_answer", "wrong_value", "missing_writes",
             "extra_writes", "pass")
@@ -97,18 +98,27 @@ def run_engine(engine: Engine, state: dict, ops: list[dict], ctx: dict) -> dict:
     Accepts souschef_lab.engine's ``EngineResult`` (``to_dict()`` +
     ``returncode``) and turns its ``EngineError`` (exit 1 / no JSON) into
     ``{exit_code: 1, error}`` so the verdict is ``invalid_op``, never a crash
-    of the whole build."""
-    try:
-        result = engine.run(state, ops, ctx)
-    except Exception as e:  # noqa: BLE001 — only the engine's own error class is swallowed
-        if type(e).__name__ != "EngineError":
-            raise
-        return {"ok": False, "exit_code": 1, "error": str(e), "results": [], "changes": []}
-    if isinstance(result, dict):
-        return result
-    out = result.to_dict() if hasattr(result, "to_dict") else dict(vars(result))
-    out.setdefault("exit_code", getattr(result, "returncode", 0 if out.get("ok") else 2))
-    return out
+    of the whole build. The batch is applied as the browser applies it: a
+    call aimed at the page a refused ``create_page`` of the same batch would
+    have made is stopped (``E_TARGET``, not applied; ``createpage.run_batch``,
+    launcher client/turns.js applyOps) — each run on its own copy of
+    ``state``."""
+    from .createpage import run_batch
+
+    def once(batch: list[dict]) -> dict:
+        try:
+            result = engine.run(copy.deepcopy(state), batch, ctx)
+        except Exception as e:  # noqa: BLE001 — only the engine's own error class is swallowed
+            if type(e).__name__ != "EngineError":
+                raise
+            return {"ok": False, "exit_code": 1, "error": str(e), "results": [], "changes": []}
+        if isinstance(result, dict):
+            return result
+        out = result.to_dict() if hasattr(result, "to_dict") else dict(vars(result))
+        out.setdefault("exit_code", getattr(result, "returncode", 0 if out.get("ok") else 2))
+        return out
+
+    return run_batch(once, ops)
 
 
 def default_engine(manifest: str | Path | None = None) -> Engine:
@@ -395,14 +405,24 @@ def is_clarifying(text: str, candidates: list[tuple[str, ...]], minimum: int = 2
 # --- verdict ----------------------------------------------------------------------------------------------------------
 
 def ctx_of(case: dict) -> dict:
-    """The replay ctx: the case template (``site_state.template.id``, else
-    ``case.template``, else editorial) plus GOLDEN_CTX, the context's
-    locations and — as ``collect.ctx_for`` sends it live — ``currentPage`` =
-    the case's ``context.page``. The engine fills a section/page target that
-    omits ``page`` from ``currentPage`` (headless.mjs, like the browser host,
-    since 2026-10-03); without it here a bare target the collector's engine
-    accepted would be refused E_TARGET on replay and a correct turn would
-    read ``invalid_op``."""
+    """The replay ctx — and the collector's (``collect.ctx_for`` is this): the
+    case template (``site_state.template.id``, else ``case.template``, else
+    editorial — a basic template: ``default`` and the premium ones refuse
+    every create_page, as live) plus GOLDEN_CTX, the context's locations and
+    ``currentPage`` = the case's ``context.page``. The engine fills a
+    section/page target that omits ``page`` from ``currentPage``
+    (headless.mjs, like the browser host, since 2026-10-03); without it here
+    a bare target the collector's engine accepted would be refused E_TARGET
+    on replay and a correct turn would read ``invalid_op``.
+
+    Like the browser host's ctx (host/previewApi.js buildCtx) it also
+    carries ``pageSlugs`` (the case's ``page_slugs``, built-in page id →
+    renamed slug; ``{}``), which create_page must not take, and the
+    carousel ``tags`` / ``brands`` as ``[{id, slug}]`` (``state.host_lists``:
+    the case's ``option_lists``, else the fixture context's lists; an
+    unknown list is ``[]``), from which the engine derives the tagId /
+    brandId a tagSlug / brandSlug write carries (ops/derived.js)."""
+    from .state import host_lists
     state = case.get("site_state") or {}
     tid = ((state.get("template") or {}).get("id")) or case.get("template") or DEFAULT_TEMPLATE
     ctx = {"templateId": tid, **GOLDEN_CTX}
@@ -412,6 +432,9 @@ def ctx_of(case: dict) -> dict:
         ctx["locations"] = [{"id": str(l.get("id"))} for l in locs if isinstance(l, dict) and l.get("id")]
     if context.get("page"):
         ctx["currentPage"] = context["page"]
+    slugs = case.get("page_slugs")
+    ctx["pageSlugs"] = dict(slugs) if isinstance(slugs, dict) else {}
+    ctx.update(host_lists(case))
     return ctx
 
 

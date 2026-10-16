@@ -226,7 +226,9 @@ def _fixture(prefix: str) -> Path:
 def test_real_capture_ok_written_shape():
     case, row, reqs = _capture(_fixture("ok."))
     (res,) = _results(reqs)
-    assert res["is_error"] is False and res["content"][0]["text"] == '{"ok":true,"written":["homeSections[1].settings.title"]}'
+    # sectionId: the browser's echo of the call's own target (turns.js toToolResult; re-captured 2026-10-16)
+    assert res["is_error"] is False and res["content"][0]["text"] == \
+        '{"ok":true,"sectionId":"contentBlock-1","written":["homeSections[1].settings.title"]}'
     assert row["verdict"] == "pass" and len(reqs) == 2 and R.flatten(rebuilt_tail(row, case)) == \
         [("assistant", "text", "Done — the title now reads as asked.")]
 
@@ -241,19 +243,23 @@ def test_real_capture_error_shape():
     err, ok = _results(reqs)
     assert err["is_error"] is True and err["content"][0]["text"] == \
         '{"code":"E_FIELD","message":"unknown field showButton for target","key":"showButton"}'
-    assert ok["is_error"] is False and ok["content"][0]["text"] == '{"ok":true,"written":["homeSections[1].settings.tagline"]}'
+    assert ok["is_error"] is False and ok["content"][0]["text"] == \
+        '{"ok":true,"sectionId":"contentBlock-1","written":["homeSections[1].settings.tagline"]}'
     assert len(reqs) == 3 and row["batches"] == 2 and row["verdict"] == "invalid_op"
     assert [b.get("is_error", False) for m in row["messages"] for b in m["content"] if b["type"] == "tool_result"] == [True, False]
 
 
 def test_real_capture_warnings_and_section_id_shape():
     """Two results in ONE user message, in call order; sorted map keys: (hidden,) ok, sectionId, warnings, written.
-    The engine names the gate of a W_HIDDEN write (`hidden`, re-captured 2026-10-15 on the cc-snapshot-r4 engine)."""
+    The engine names the gate of a W_HIDDEN write (`hidden`). `sectionId` is the browser's echo of the CALL's target
+    (turns.js toToolResult): the page-target section add posts none (not the new section's id), the section-target
+    write posts its own section (re-captured 2026-10-16, 160ef91 binary, launcher 1d4193e2 engine)."""
     case, row, reqs = _capture(_fixture("warnings-sectionid."))
     add, gated = _results(reqs)
-    assert add["content"][0]["text"] == '{"ok":true,"sectionId":"loyaltyForm","written":["homeSections"]}'
+    assert add["content"][0]["text"] == '{"ok":true,"written":["homeSections"]}'
     assert gated["content"][0]["text"] == ('{"hidden":[{"by":"style","byValue":null,"key":"tileBorder"}],'
-                                           '"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":["homeSections[1].settings.tileBorder"]}')
+                                           '"ok":true,"sectionId":"featuredCategories","warnings":["W_HIDDEN:tileBorder"],'
+                                           '"written":["homeSections[1].settings.tileBorder"]}')
     assert len([m for m in reqs[-1]["messages"] if m["role"] == "user"]) == 2  # the context block + one results message
     assert row["batches"] == 1 and row["verdict"] == "extra_writes"  # the gated set_fields is the scripted extra write
 
@@ -269,10 +275,38 @@ def test_real_capture_pick_asset_shape():
     assert asset["content"][0]["text"].startswith(
         '{"public_url":"https://cdn.int.breadstack.io/gal/lab/hero-field-1600x900.webp","alt":"Sunlit field at harvest","srcset":{"800":')
     assert picked["public_url"] == S.fixture_asset_for(S.load_assets_fixture(), case["id"], "image")["public_url"]
-    assert json.loads(written["content"][0]["text"]) == {"ok": True, "written": ["homeSections[7].settings.bgImage",
-                                                                                 "homeSections[7].settings.bgImageSrcSet"]}
+    assert json.loads(written["content"][0]["text"]) == {"ok": True, "sectionId": "gallery",
+                                                         "written": ["homeSections[7].settings.bgImage",
+                                                                     "homeSections[7].settings.bgImageSrcSet"]}
     uses = [b for m in reqs[-1]["messages"] if m["role"] == "assistant" for b in m["content"] if b["type"] == "tool_use"]
     assert uses[0]["name"] == "pick_asset" and uses[0]["input"] == {"asset_type": "image", "purpose": case["expected"]["ops"][0]["purpose"]}
     assert not any(e["event"] == "tool.call" and e["data"]["name"] == "pick_asset" for e in row["events"])  # no tool.call for it
     assert [e["event"] for e in row["events"]][:3] == ["text.delta", "turn.suspended", "tool.result"]
     assert row["verdict"] == "pass" and len(reqs) == 3
+
+
+def test_real_capture_create_page_slug_shape():
+    """create_page's result carries the new page's `slug` (the browser posts it, loop.browserResult forwards it for
+    create_page only, sorted keys); the same batch's section add on that slug applies (1d4193e2 engine, 160ef91 binary)."""
+    case, row, reqs = _capture(_fixture("create_page.slug."))
+    created, added = _results(reqs)
+    assert created["is_error"] is False and created["content"][0]["text"] == \
+        '{"ok":true,"slug":"deals","written":["customPages[0]","pageVisibility.deals.inHeaderNav"]}'
+    assert added["is_error"] is False and added["content"][0]["text"] == '{"ok":true,"written":["pageSectionsAll.deals"]}'
+    # a page-target section add: the live browser posts no sectionId (never the engine's new section id)
+    posted = [e["data"] for e in row["events"] if e["event"] == "tool.result"]
+    assert posted[0]["slug"] == "deals" and "slug" not in posted[1]
+    assert len(reqs) == 2 and row["batches"] == 1
+
+
+def test_real_capture_create_page_refused_stops_the_same_batch():
+    """A refused create_page (the built-in faq: E_SLUG) and the browser's same-batch stop of the call aimed at its
+    slug (client/turns.js applyOps, mirrored by collect via createpage.run_batch): E_TARGET, never applied."""
+    case, row, reqs = _capture(_fixture("create_page.refused-stop."))
+    refused, stopped = _results(reqs)
+    assert refused["is_error"] is True and json.loads(refused["content"][0]["text"])["code"] == "E_SLUG"
+    assert stopped["is_error"] is True and stopped["content"][0]["text"] == (
+        '{"code":"E_TARGET","message":"page \\"faq\\" was not created (create_page was refused earlier in this reply), '
+        'so this op was not applied"}')
+    assert row["verdict"] == "invalid_op" and row["engine_results"][0]["results"][1]["written"] == []
+    assert not any(c.get("written") for c in row["engine_results"][0]["changes"] if str(c.get("slice")) == "pageSectionsAll")

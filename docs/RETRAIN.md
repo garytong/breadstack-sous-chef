@@ -59,6 +59,8 @@ change below says what a person runs and what it costs:
 | the probe runs each row on its own state, checked by the engine, and keeps its conversations | eval (and drift) | none | [R6](#r6-candidate-and-the-paired-eval), [DRIFT.md §3.4](DRIFT.md#34-the-new-key-probe) |
 | a seed-aware bar tolerance, measured by the seed-noise experiment; both models count as seed draws (`2·σ_seed²`) | eval | `config/thresholds.json` `sigma_seed` (`bar.py` reads it; empty by default) | [R6](#r6-candidate-and-the-paired-eval), [R10](#r10-the-seed-noise-experiment) |
 | contrast cases for look-alike fields (F8), generated from field metadata, no model call; a case that writes an exam item's field or its look-alike with the exam's value or page is dropped | prepare (every full round) | on; `"trigger": {"contrast": "off"}` | [R1](#r1-prepare) |
+| **create_page and dropdown choices** (tools first, 2026-10-15: they train in r6): F8 adds 46 `create_page`-family cases (create, slug, draft, `in_nav`, create + sections, collisions, reserved and non-canonical slugs, a template without custom pages, rename / delete still `pages`, "add a section, not a page", "our LinkedIn page" is a social link) and 36 listing cases (short, over 15, cut at 100, empty, unknown list; carousel and plain asks); scored on the op (`page` mode) and on the reply's names (`list` mode); the 17 pool rows that asked to create a page and were filed as `pages` are relabelled; exam p137 is re-keyed `p137.k2` and scored in the eval's report-only `capability` set (with about 15 built create / list cases), never in the bar; carried tag / brand rows written without their derived id are re-asked | prepare, collect, dataset, eval | contrast on/off as above; `"trigger": {"page_relabel": "off"}`; thresholds `capability_report: false` drops the built report cases | [R1](#r1-prepare), [R2a](#r2a-scoring-policy-r4score), [R6](#r6-candidate-and-the-paired-eval) |
+| **tool results and contexts as the live browser sends them** (r6-4 review): a tool result's `sectionId` is the call's own target section (turns.js `toToolResult`), never the engine's new-section id; every lab context's categories carry their id as text (`fixtures/context.json`), as live contexts do | collect, carry, every derived context | none | [R2](#r2-teacher-collection), [DRIFT.md](DRIFT.md) |
 
 Every `trigger` key above goes in the workflow input's `trigger` object (it is
 copied into `run.json`, and a resume reuses the stored trigger: retrain.yaml
@@ -97,9 +99,10 @@ nothing here needs a Terraform apply or a workflow change.
    ("the font" = every site font) and ask-when-vague rules that collect's
    teacher must see, and the live r5 model gets them on deploy. The service
    also adds `create_page`, which the editor's engine must support first
-   (the cookie-cutter launcher change), and which makes exam row p137
-   ("create a new page for events", key: report_unsupported `pages`) out of
-   date. The prompt fixtures (`lab/fixtures/prompt/`, `parity/served.json`)
+   (the cookie-cutter launcher change, and the lab's vendored engine
+   snapshot: prepare measures every create_page case on it, and an engine
+   without the op drops the creates and declines). Exam row p137 ("create a
+   new page for events") is re-keyed `p137.k2` for it (R2a). The prompt fixtures (`lab/fixtures/prompt/`, `parity/served.json`)
    were re-captured from this service tree on 2026-10-15; re-capture again
    (`tests/capture_real.py --from`, then `make -C lab parity-write`) if
    `rules.go` or the tools change before the push.
@@ -141,13 +144,16 @@ nothing here needs a Terraform apply or a workflow change.
    whole dataset, scored on the same validation rows; the best goes to the
    eval and the decision message lists all three (R4). The warm arm is
    second so that a 12 h window cut (which drops the arms not yet started)
-   still leaves one arm of each kind. About US$100–120 and 13–17 h (R9).
+   still leaves one arm of each kind. About **US$165–190** and 13–17 h (R9):
+   r6 carries nothing (the rules changed twice since r5's rows, `rules_changed`;
+   the contexts changed too), so the teacher is asked every case.
    The font and vague-request decisions are the defaults (R2a): no scoring
    key is needed in the trigger.
 8. **Recalibrate drift** after the r6 decision (minutes of L4): `drift
    calibrate --fresh-baseline` on the live model, or let the approved
-   candidate's eval baseline replace it. Until then the 19 re-keyed exam
-   rows (`.k2` ids) are left out of drift comparisons.
+   candidate's eval baseline replace it. Until then the 20 re-keyed exam
+   rows (`.k2` ids: the 19 font and vague rows and p137) are left out of
+   drift comparisons.
 
 Workflow input: `{mode: "full" | "smoke", trigger: {drift_run, reason},
 dry_rollout: bool, resume_from?: "<stage>", run_id?: "<id>"}`.
@@ -413,6 +419,67 @@ thermometer's throwaway MySQL (its README, 127.0.0.1:13399).
      The F0H and F9H hold-outs and the leak check must not drop on a round
      that adds them; the per-key slices of paraphrase and holdout for the
      pairs' keys show whether they helped.
+   - **create_page and dropdown choices (F8, r6-4; contrast.py `PAGE_JOBS`,
+     `LIST_JOBS`).** Two capability groups ride in F8, built the same way (no
+     model call, same validation), ids from `contrast1-F8-1001` (pages) and
+     `-1101` (lists), tagged `meta.capability`:
+     - `create_page` (46): create with a title only (6), with a canonical slug
+       (3), as a draft (3), in the header menu (3), with a section in the same
+       reply (4: the slug is passed and the section added on it); collisions
+       with a page the site has (4: a custom page the context lists, a
+       built-in page) and the same with a section add (3: the batch stop must
+       block the add after the refused create); reserved slugs (3: menu,
+       sitemap, launcher — the engine suggests another, the right answer asks);
+       non-canonical slugs (3: the canonical form of the asked slug); a
+       template that can't show custom pages (2, premium template `plantrepublic`); rename /
+       delete / duplicate / address still report_unsupported `pages` (4); and
+       "add a section, not a page" (4, keys mode: a create_page there is a
+       stray write); "our LinkedIn / Leafly / Google Business / X page" with
+       its URL is a social link (4, keys mode on `socialLinks.*`; the exam's
+       own networks — weedmaps, instagram, facebook, tiktok — are left to it).
+       Every create's oracle must apply on the round's engine and
+       every decline's attempt must be refused with the expected code
+       (`E_SLUG` / `E_TARGET`), so an engine without the op drops those cases
+       (`contrast-report.json` `capability_dropped`). A section add on a page
+       whose `<page>.sections[].id` is a generator hold-out key is dropped like
+       any hold-out write (home and faq are; the jobs use pages that are not).
+       No case names exam p137's page (`page_exam_clash`, which also checks the
+       pool's relabelled creates).
+     - `list_options` (36): "what tags / brands / categories can I use for this
+       carousel" with the carousel focused, or a plain "which brands do we
+       carry?" with nothing focused (`focus: plain`, 14 of them), and the
+       store's list in the case's `option_lists` (tags, brands) or
+       `context_extras` (categories), laid over the context fixture when the
+       context is derived: short (named in full; 1–15 entries), over 15 (15
+       names then "...and N more"; 16–100), cut at the context's 100
+       (`tagsTruncated`: N from the total, and the dropdown named; 101–160),
+       empty (`[]`: say there are none) and unknown (the member left out:
+       never say none; point at the dropdown) — at least 6 of each. A case
+       whose derived context does not carry the list that way is dropped. The
+       names are made up (two word banks), never a real store's.
+     - **Split.** Each capability case is its own split group
+       (`meta.group` = `<group>:<case id>`; `meta.cap_group` keeps
+       `page:exists`, `list:tags` … for the reports): with one group name per
+       behaviour, `h100("page:exists") < 8` sent every plain "page exists"
+       case to validation and every listing case to train.
+     - Cost: 82 cases at about US$0.03–0.06 a case asked (the strict listing
+       and decline cases go to passes 2–3 more often), about **US$3–5** the
+       first round; later rounds carry them while they do not change.
+   - **Page creates filed as `pages` (prepare `fix_page_creates`).** The 34
+     where=`pages` rows of the r4 seed split: 17 ask to rename, duplicate,
+     delete, unpublish or move a page and stay; 17 ask to create one
+     (r4-F3-0064 "add a new page called Strain Guide", r4-F3-0079,
+     r4-F4-0243 …) and are relabelled: mode `page` expecting create_page with
+     the title the request names (exact for a quoted, "called X" or "page: X"
+     name; else one of the request's words, e.g. "4/20 deals"), `in_nav` when
+     the request names the menu, header or navigation; or mode `ask` when it
+     names no page (r4-F3-0073 "add a blank page", r4-F4-0250); `in_nav` only
+     when the request puts the page IN the menu / header / navigation ("a menu
+     page" is a page about a menu); a relabelled create of exam p137's page
+     ("an events page") is dropped (`page_creates_fixed.exam_clash`). The changed
+     expectation makes the carry re-ask them (about US$0.5); a relabelled
+     hold-out gets the id `<id>.k2`. `report.json` `page_creates_fixed`; off:
+     `"trigger": {"page_relabel": "off"}`.
    - Cost: the extra styles make authoring about 1.3–1.6× r5's tokens, still a
      few US$ a round (`prepare/report.json`).
    - **Hold-out**: targets with `sha1(field_key) % 100 < 20` go to
@@ -505,6 +572,7 @@ the case's reason in `carry-report.json`):
 | `target_changed` | no field, list or container the row writes or the case expects changed its spec between the manifests |
 | `server_result_stale` | no `lookup_fields` / `describe_target` result names a container whose spec changed |
 | replay | the row's own calls, replayed through the round's engine and manifest, send the same text and context, get byte-identical tool results, and score usable under r4score on the round's case |
+| `ref_written_changed` | (r6-4) the row's stored tool results never wrote a tag / brand slug without its derived id (`<…>.tagSlug` without `<…>.tagId`, the same for brands), and the replay's results do not differ from the stored ones by those ids alone. Since 2026-10-15 the editor hands the engine the store's tags and brands, so such a write now also writes the id: the old row's tool result is no longer what the model reads. Re-asked |
 | `hidden_write` | no write to a field whose gate is closed after the op (`r4score.closed_gate_writes`, from the engine's `hidden[].byValue`; a bare `W_HIDDEN` comes with every gated write), unless the case lists it. On by default; `"carry_hidden": "keep"` carries them. On r5's inputs 64 of 2,688 carried rows hit it, most of them cases prepare already drops |
 | `excluded` | `meta.no_carry` on the case, or its id in `trigger.carry_exclude` / `COLLECT_CARRY_EXCLUDE` |
 
@@ -540,9 +608,18 @@ wins over a fresh one for the same case.
   inputs: 2,688 of 3,408 carried (79 %); still asked: 258 cases rejected in
   every source (US$28.39, the stable reject core), 451 cases r4's caps cut
   (US$10.02), 11 changed (about US$1); plus the 120 F8 cases (about US$4)
-  and the new authored F7 cases (about US$3–8). **r6 collect: about
-  US$45–50.** From r7 the capped cases are kept in `dataset/capped.jsonl`
-  and carried, so collect falls to about US$30–40. The carry's replay is
+  and the new authored F7 cases (about US$3–8). **That measurement is void
+  for r6:** it was taken with r5's rules, and `rules.go` changed after both
+  sources were collected (5d28c66 the font / ask-when-vague rules, 160ef91
+  create_page and the option lists), so every source is skipped
+  `rules_changed` and r6 carries **nothing**; the lab's contexts changed too
+  (tags / brands lists, category ids, the browser's `sectionId` echo), which
+  would re-ask most rows anyway. `"carry": "required"` does not catch it (the
+  carry runs and carries 0). **r6 collect: about US$110–125** (about 3,750
+  cases at r5's US$0.030 a case, plus more passes 2–3 on the strict listing
+  and decline cases). From r7 (same rules) the carry works again and the
+  capped cases are kept in `dataset/capped.jsonl` and carried, so collect
+  falls to about US$30–40. The carry's replay is
   CPU on the collect job (about a minute; no model, no API).
 
 **By hand** (spends Claude on int; about US$135–175 for a full round). The
@@ -613,7 +690,8 @@ the dataset build) and scores the eval's generated holdouts (F0H, F9H). r6
 adds relaxations for cases that failed on Sonnet, Opus and Sonnet alike
 because the case or the scorer was too strict. Each one only turns a failing
 turn into a passing one, so a `verify-3` pass is still a pass
-(`RULE_VERSION` unchanged, `POLICY_VERSION` `r6-3`); the one that applied is
+(`RULE_VERSION` unchanged, `POLICY_VERSION` `r6-4`: r6-3 plus the `page` and
+`list` modes and exam p137.k2, below); the one that applied is
 named in the row's `info` and `relaxed`. **A relaxation may accept only an
 answer that is right on the site.** The r6 review found the first versions
 accepted wrong ones, so the defaults are narrow:
@@ -680,6 +758,68 @@ through the leak filter). The exam lets 12 value-less rows and p013 be answered
 with a question (`ask_ok`) while a write there still passes, so a good direct
 action is never marked down. `acted_first_turn` stays off.
 
+**create_page and dropdown choices (decided 2026-10-15; tools first: trained in
+r6; `POLICY_VERSION` r6-4).** Two scoring modes:
+
+- `page` (`exam.score_page`): scored on the **op**, not on manifest keys or a
+  raw diff (`customPages[N]` is no manifest key, `modified` is the engine's
+  clock). A create passes with exactly one accepted create_page whose title
+  matches without case or spacing, whose slug (the engine's result, else
+  `slugify(slug || title)`) is the canonical slugify of the asked slug or the
+  title, with `in_nav` and `status` as asked; every other accepted op must
+  write on the new page (a section add in the same reply is the page's own
+  write) and the asked sections must be added; a refused op fails it
+  (`invalid_op`, unless `refused_corrected`). A request that names no title
+  (a relabelled pool row, `title_match: words`: "set up a page with a dosing
+  guide") also passes with a question and nothing written — the rules say ask
+  for the name. A **decline** passes when nothing is written, no
+  report_unsupported, and the reply says why: for a page that exists (a
+  create case whose page the site already has becomes this decline,
+  `if_exists`) it names the page **and** says it is already there
+  (`exam.EXISTS_SAID`: already, exists, existing, "you have a", taken, in use,
+  instead — "Sorry, I can't make an events page" names it and explains
+  nothing); the rules' other answer, "edit that page instead", passes too
+  when the only accepted writes are the asked section adds on the existing
+  page (not a same-batch follow-up of a refused create, which the batch stop
+  blocks); for a reserved slug it asks a question (the engine suggests
+  another, the rules say ask); for a template without custom pages it names
+  the template. A refused create_page on a page the context already listed
+  is flagged `create_refused` (not usable for training: it would teach
+  trying). Every pass is verdict `pass`.
+- `list` (`r4score.score_listing`): no write and no report_unsupported, and
+  the reply, read against the context the turn was **sent**: every bullet that
+  looks like a name is one of the list's names or slugs (`invented_name`);
+  a list of up to 15 is named in full (`missing_names`); a longer one names 1–15
+  then "...and N more" with N = total − named, the total from
+  `<list>Truncated` when the context cut the list (`wrong_more_count`,
+  `no_more_count`), and a cut list names the editor's dropdown
+  (`no_dropdown_pointer`); an empty list (`[]`) is said to be empty
+  (`did_not_say_none`; "no / 0 / none / haven't created any …" count); an
+  unknown list (the member left out) is never said to be empty (`said_none`;
+  a sentence about not being able to see or load the list is no such claim)
+  and the dropdown is named. A name the reply runs on with in prose after one
+  of the list's own names ("Staff Picks, New and Moon Rocks") counts as
+  invented too. Verdict `answer_ok`.
+  The dropdown is required only for a cut or unknown list (the service rules
+  ask no more for a list of 16–100).
+
+**Exam p137 → p137.k2** ("create a new page for events"). Its key was
+report_unsupported `pages`; it now expects create_page `{title: "Events"}`
+(`exam.AMENDMENTS`, answer key `create-page-2026-10-15`) **unless the site
+already has that page**. The exam's vintage state does: `state.build_state`
+seeds the custom pages About Us (/about) and Events (/events) from
+`fixtures/context.json`, and the rederived contexts list them. So on today's
+exam p137.k2 is scored as the decline "exists": nothing written, the reply
+says the Events page is already there; a create_page the engine refuses
+(E_SLUG, title taken) and then explained also passes; the r5 answer
+(report_unsupported) fails. Under font policy `as_authored` it goes back to
+p137 and `pages`. It stays in the `out_of_scope` set file, but the eval runs
+it in the report-only `capability` set (R6): the live model was never offered
+create_page, so pairing it would hand a trained candidate a free row. The
+bar's `oos_where` rule is over the 12 rows still out of scope
+(`exam.is_out_of_scope`, `oos_keys`) and allows two misses
+(`bar.OOS_MISSES`), as r5's 11 of 13 did: 10 of 12 needed.
+
 The dataset stage counts the rows that write both fonts for one request in
 `stats.json` `font_pair` (and `font_pair.site_fonts`, the rows whose case
 expects every font) and keeps them (`SOUSCHEF_FONT_PAIR=keep`, the default);
@@ -724,6 +864,10 @@ final hold-out check. Gates, each of which fails the stage:
    reply mentioning the preview (`r4score.mentions_preview`: preview,
    previews, previewed, previewing).
 4. `train --dry-run`: rows, tokens, updates, none over 32,768 tokens.
+   (Not a gate:) `stats.json` `capabilities` counts the kept train / val rows
+   and the rejected rows of the `create_page` and `list_options` cases (and the
+   relabelled page creates) by group and mode, so a group that collected
+   nothing usable shows as 0.
 5. **New-key positives** (r6). Every new or retyped key of the round
    (`prepare/report.json` targets; F9H holdout keys apart) needs at least 6
    train rows that **write** it on a field the row's state shows. Rows that
@@ -1069,6 +1213,20 @@ or re-run the pipeline's own build for the round:
 | F0H rebased onto deployed, split `:unseen` / `:seen` against this round's training cases | built | 1 | `:unseen` yes |
 | F9H, every round's authored new-key holdout | built | 2 | when n ≥ 10 |
 | the new-key probe | built | 2 | when keys were dodged |
+| `capability`: exam rows re-keyed to a new tool (p137.k2, create_page), taken out of their set | re-derived | 2 | reported only |
+| `capability:built`: about 15 create_page / listing cases (`contrast.capability_report_cases`, phrasings the training jobs do not use) | built | 2 | reported only |
+
+**Capability rows (r6-4).** The live model was never offered `create_page`, so
+on p137.k2 a candidate trained on it wins a row for free: in a bar set that
+row moves the set Δ by +1, McNemar's c by 2 and the exam-drift trigger total.
+Exam rows whose key is a new tool (`exam.page_spec`) therefore run in the
+report-only `capability` set; the candidate baseline keeps them under their
+own set's key (`out_of_scope:p137.k2`), so drift still tracks them. No exam
+row creates a page or lists choices, so `capability:built` adds about 15
+cases that do (creates, declines, a section on an existing page, listings
+short / long / cut / empty / unknown), scored by r4score; a candidate that
+over-creates pages or invents names shows in the report table. GPU time only;
+`capability_report: false` in `config/thresholds.json` leaves them out.
 
 **The probe (r6).** r5's probe could not be passed: 7 of its 17 rows
 targeted sections the shared eval state does not have (contentBlock-2/-3/
@@ -1090,7 +1248,9 @@ current model's baseline. The candidate passes when all hold:
 
 1. on every bar set, candidate − current ≥ −tol_s;
 2. a pooled paired McNemar test does not say the candidate is worse (p < 0.05);
-3. `out_of_scope` ≥ 11/13 with `where`;
+3. `out_of_scope`: every row but two with `where` (`bar.OOS_MISSES`; r5's
+   rule was 11 of 13), over the set's rows that are still out of scope (12
+   since p137.k2 moved to `capability`: 10 needed);
 4. F0H `:unseen`: candidate ≥ current − tol;
 5. a round triggered by dodged keys: ≥ 75 % of their probes pass and more than
    current; a round triggered by exam drift: the deployed-manifest total
@@ -1394,12 +1554,12 @@ Locks are only ever broken by a person, after checking
 | stage | duration | cost |
 |---|---|---|
 | prepare | 30–60 min | Anthropic authoring: a few US$ per round (reported in `prepare/report.json`) |
-| collect | about 1 h with the carry (estimate); 2.2–2.8 h at 6 workers without | r6 with the carry about **US$45–50** (R2: US$39.58 of r5's cases still asked, plus F8 and the new F7); about US$30–40 from r7; without it US$100–175 (r5 asked 3,408 cases for US$101.57) |
+| collect | about 1 h with the carry (estimate); 2.2–2.8 h at 6 workers without | **r6 asks every case: about US$110–125** (R2: the rules changed since r4 and r5 were collected, so the carry carries nothing; about 3,750 cases at r5's rate, including about US$3–5 for the 82 create_page / listing cases and the 17 relabelled page creates); about US$30–40 from r7 with the carry; without it US$100–175 (r5 asked 3,408 cases for US$101.57) |
 | dataset | 15 min | — |
 | train + export | 2.4–2.8 h + 0–4 h Flex-start wait; about 2.2 h more per extra arm, base or warm (three arms: 7–8.5 h of H100, inside the 12 h attempt; an A100 rung trains no extra arm) | about 3 H100-hours, plus 2.0–2.4 a seed. **The rate is not verified**: US$6.57/h is the training VM's Spot rate (TRAIN-REMOTE.md); Vertex bills its own Flex-start / Spot rate. Read r5's job `customJobs/5995030053153406976` in the billing report before quoting a budget |
 | image | 15–25 min | Cloud Build minutes; about US$0.90/month per kept tag |
 | candidate + paired eval | 2–3 h on two L4s | about US$1.05/h each |
-| **round** | **about 9–12 h** (about 13–17 h with three seeds) | **r6 with three seeds: about US$100–120** (about US$50 Claude, US$46–56 H100 at the recorded rate, US$7 L4); one seed about US$70–80; without the carry about US$120–230 |
+| **round** | **about 9–12 h** (about 13–17 h with three seeds) | **r6 with three seeds: about US$165–190** (about US$115–130 Claude — collect plus a few US$ of authoring —, US$46–56 H100 at the recorded rate, US$7 L4); one seed about US$135–150; from r7, with the carry, about US$100–120 |
 | seed-noise experiment (R10, once) | about 10–12 h (training in parallel, evals one at a time) | about US$47–57 for two arms (2.4 H100-hours an arm measured on r5, at the recorded rate; US$11.55 of L4), no Claude spend; each further arm about US$24–29 |
 | SMOKE | 2–6 h (the trainer image pull, the base tar, up to 30 min of Flex-start) | about US$2 of API, 1 H100-hour, 30 L4-minutes (about US$10–15) |
 

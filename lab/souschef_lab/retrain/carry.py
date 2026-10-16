@@ -33,6 +33,11 @@ reported per case in carry-report.json):
                         the order of `written` / `warnings` aside), the stream fully consumed (replay_mismatch), and
                         r4score's verdict usable on the round's case (not_usable:<verdict or flags>);
                         history turns must not diverge
+  ref_written_changed   a tag / brand reference write the row recorded without its derived id: a stored tool result
+                        whose `written` holds <…>.tagSlug (brandSlug) but not <…>.tagId (brandId) — the engine wrote
+                        the id only once the browser handed it the store's tags and brands (the 2026-10-15 engine
+                        context), so the tool result the model reads now differs; also the replay's tool result when
+                        it differs from the stored one ONLY by those derived ids. Re-asked, never carried
   hidden_write          on by default (off: $COLLECT_CARRY_HIDDEN=keep or trigger.carry_hidden "keep"): no write to a
                         field whose gate is closed after the op (r4score.closed_gate_writes; a bare W_HIDDEN comes
                         with every gated write) that the case does not list in expected.expect_hidden — stricter than
@@ -295,6 +300,9 @@ def case_fingerprint(c: dict) -> str:
     doc = {"kind": c.get("kind"), "request": c.get("request"), "history": hist, "target": c.get("target"),
            "site_state": c.get("site_state"), "mode": (c.get("score") or {}).get("mode"), "expected": e,
            "template": c.get("template")}
+    for k in ("context_extras", "option_lists", "page_slugs"):  # a case's own lists (contrast LIST_JOBS, the
+        if c.get(k):                                              # plumbing's host lists): absent on older cases
+            doc[k] = c[k]
     return hashlib.sha256(_canon(doc).encode("utf-8")).hexdigest()
 
 
@@ -382,6 +390,49 @@ def server_containers(turns: list[dict]) -> set[str]:
     return out
 
 
+REF_SLUG_PATH = re.compile(r"^(.*?)(tag|brand)Slug$")
+REF_ID_PATH = re.compile(r"(?:^|\.)(?:tag|brand)Id$")
+
+
+def _written_of(content: str) -> list[str] | None:
+    try:
+        d = json.loads(content or "")
+    except ValueError:
+        return None
+    w = d.get("written") if isinstance(d, dict) else None
+    return [str(x) for x in w] if isinstance(w, list) else None
+
+
+def stale_ref_writes(hf: dict) -> list[str]:
+    """The tag / brand slug paths a row's stored tool results wrote WITHOUT the derived id beside them (module
+    docstring, ref_written_changed)."""
+    out: list[str] = []
+    for m in hf.get("messages") or []:
+        if m.get("role") != "tool":
+            continue
+        written = _written_of(str(m.get("content") or "")) or []
+        have = set(written)
+        for p in written:
+            mm = REF_SLUG_PATH.match(p)
+            if mm and f"{mm.group(1)}{mm.group(2)}Id" not in have:
+                out.append(p)
+    return out
+
+
+def ref_only_change(new: str, old: str) -> bool:
+    """Two tool-result contents that differ only by derived tag / brand id paths in `written`."""
+    try:
+        a, b = json.loads(new), json.loads(old)
+    except ValueError:
+        return False
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return False
+    for d in (a, b):
+        if isinstance(d.get("written"), list):
+            d["written"] = sorted(str(x) for x in d["written"] if not REF_ID_PATH.search(str(x)))
+    return a == b and new != old
+
+
 def same_result(new: str, old: str) -> bool:
     """Two tool-result contents are the same answer: byte-equal, or equal JSON once `written` / `warnings`
     are sorted (the stored conversation keeps a call's input with its keys sorted — Go re-marshals the map —
@@ -452,7 +503,8 @@ class ReplayClient:
             if cid not in t["stored"]:
                 self.problems.append(f"tool_result_changed:{cid} not in the row")
             elif not same_result(content, t["stored"][cid]):
-                self.problems.append(f"tool_result_changed:{t['names'].get(cid)}")
+                why = "ref_written_changed" if ref_only_change(content, t["stored"][cid]) else "tool_result_changed"
+                self.problems.append(f"{why}:{t['names'].get(cid)}")
         self.seq += len(results)
         self.si += 1
         return self._stream()
@@ -512,6 +564,9 @@ def check(case: dict, src_case: dict | None, hf: dict, ctx: Context) -> tuple[di
         return None, "row_unreadable", {"error": str(e)[:200]}
     if len(turns) != 1 + len(case.get("history") or []):
         return None, "turns_changed", {"row": len(turns), "case": 1 + len(case.get("history") or [])}
+    stale_refs = stale_ref_writes(hf)
+    if stale_refs:
+        return None, "ref_written_changed", {"paths": stale_refs[:5]}
     if ctx.fields_old is not None:
         again = ctx.fields_old.block(final["context"], final["text"], final["previous"])
         if render.go_trim_space(again) != render.go_trim_space(final["block"]):

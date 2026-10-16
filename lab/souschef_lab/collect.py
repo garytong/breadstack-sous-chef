@@ -65,9 +65,13 @@ a fresh conversation: the site's open one is ended first (README §1.1 would
 otherwise continue it — see run_case).
 
 Engine contract (engine.py, another module): `engine(state, ops, ctx)`
-returns `{ok, results:[{op, ok, error?, warnings, written, sectionId?}],
+returns `{ok, results:[{op, ok, error?, warnings, written, sectionId?, slug?}],
 changes:[...], state}` — headless.mjs's output with `--print-state`. Any
-callable of that shape works; the tests use a pure-Python one.
+callable of that shape works; the tests use a pure-Python one. A batch is
+applied as the browser applies it (createpage.run_batch): a call aimed at
+the page a refused create_page of the same batch would have made is
+answered E_TARGET and never reaches the engine; a create's `slug` is posted
+with its result (client/turns.js toToolResult).
 
 Verifier contract (verify.py): `verifier(case, row)` returns an object or
 dict with `verdict` and `reasons` (extra keys are copied into the row when
@@ -95,7 +99,7 @@ from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from . import render
+from . import createpage, render
 from .state import case_asset_id
 
 LAB_DIR = Path(__file__).resolve().parent.parent
@@ -104,14 +108,16 @@ DEFAULT_ASSETS = LAB_DIR / "fixtures" / "assets.json"
 DEFAULT_CASES = LAB_DIR / "data" / "cases.jsonl"
 DEFAULT_LOG = LAB_DIR / "runs" / "collect-log.jsonl"
 
-# README §2: the ten tools in the service's fixed order.
-TOOL_NAMES = ("set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "reset_pinned_section",
-              "pick_asset", "lookup_fields", "describe_target", "report_unsupported")
-BROWSER_OPS = frozenset(TOOL_NAMES[:6])
+# README §2: the eleven tools in the service's fixed order (toolgen.Order; fixtures/prompt/tools.json).
+TOOL_NAMES = ("set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "create_page",
+              "reset_pinned_section", "pick_asset", "lookup_fields", "describe_target", "report_unsupported")
 # Answered by the service itself; the browser never posts a result for them
 # (report_unsupported is surfaced as a tool.call for display only).
 SERVER_TOOLS = frozenset(("lookup_fields", "describe_target", "report_unsupported"))
 PICK_ASSET = "pick_asset"
+# The ops the browser applies through its engine (toolgen runsOf = RunsBrowser): every tool that is neither
+# answered by the service nor the suspending pick_asset — by name, never by position in TOOL_NAMES.
+BROWSER_OPS = frozenset(n for n in TOOL_NAMES if n not in SERVER_TOOLS and n != PICK_ASSET)
 MAX_BATCHES = 8  # the service's maxCalls per turn (README §4)
 # The verifier's golden engine context (docs/LAB.md §3, FACTS 2 §1).
 GOLDEN_CTX = {"cdnUrl": "https://cdn.int.breadstack.io", "galleryFolder": "gal", "now": 1700000000000}
@@ -383,16 +389,14 @@ def default_verifier(engine: Any | None = None) -> Callable[[dict, dict], Any]:
 
 
 def ctx_for(case: dict) -> dict:
-    """The engine context for a case: the golden ctx plus the case's template
-    and viewed page (the host fills a missing target.page from currentPage)."""
-    state = case.get("site_state") or {}
-    template = ((state.get("template") or {}).get("id")) or (case.get("template")) or DEFAULT_TEMPLATE
-    ctx = dict(GOLDEN_CTX)
-    ctx["templateId"] = template
-    page = (case.get("context") or {}).get("page")
-    if page:
-        ctx["currentPage"] = page
-    return ctx
+    """The engine context for a case — the very ctx the verifier replays with
+    (``verify.ctx_of``): the golden ctx, the case's template and viewed page
+    (the host fills a missing target.page from currentPage), its locations,
+    and the host's ``pageSlugs`` / carousel ``tags`` / ``brands``
+    (host/previewApi buildCtx: create_page refuses a renamed built-in slug,
+    and a tagSlug / brandSlug write derives tagId / brandId from the lists)."""
+    from .verify import ctx_of  # lazy: verify imports nothing from here
+    return ctx_of(case)
 
 
 # --- what the service says about a route (GET /version, turn.done) -----------------------------------------------------
@@ -517,11 +521,25 @@ def pick_asset_for(assets: Iterable[dict], suspended: dict, case_id: str, asset_
     return out
 
 
+def call_section_id(call: dict) -> str | None:
+    """turns.js toToolResult's `sectionId`: the call input's `target.sectionId || sectionId` (JS truthiness; the
+    service's ToolResult.SectionID is a string, so only a non-empty string is ever posted)."""
+    inp = call.get("input") if isinstance(call.get("input"), dict) else {}
+    tgt = inp.get("target") if isinstance(inp.get("target"), dict) else {}
+    for v in (tgt.get("sectionId"), inp.get("sectionId")):
+        if v:
+            return v if isinstance(v, str) else None
+    return None
+
+
 def tool_results_for(calls: list[dict], engine_result: dict) -> list[dict]:
     """The tool-results items for one batch: the engine's result per op, in
-    the order of the tool calls (one `toolCallId` each, exactly once)."""
+    the order of the tool calls (one `toolCallId` each, exactly once).
+    `sectionId` is the browser's echo of the call's OWN target section
+    (call_section_id; turns.js toToolResult since sous-chef v2, 8a9b6eee), on
+    ok results only — never the engine's `sectionId` / `claims` (a new
+    section's id), which the live browser does not post."""
     results = list(engine_result.get("results") or [])
-    claims = engine_result.get("claims") or {}
     out = []
     for i, call in enumerate(calls):
         r = results[i] if i < len(results) else {"ok": False, "error": {"code": "E_ENGINE", "message": "no result"}}
@@ -543,9 +561,13 @@ def tool_results_for(calls: list[dict], engine_result: dict) -> list[dict]:
             hidden = render.wire_hidden(r.get("hidden"))
             if hidden:
                 item["hidden"] = hidden
-        section_id = r.get("sectionId") or (claims.get(str(call.get("id"))) if isinstance(claims, dict) else None)
+        section_id = call_section_id(call) if item["ok"] else None
         if section_id:
-            item["sectionId"] = str(section_id)
+            item["sectionId"] = section_id
+        if item["ok"] and isinstance(r.get("slug"), str) and r["slug"]:
+            # create_page: the new page's final slug (turns.js toToolResult), which the service forwards to the
+            # model (api.ToolResult.Slug → loop.browserResult) and later calls of the reply target.
+            item["slug"] = r["slug"]
         out.append(item)
     return out
 
@@ -779,7 +801,9 @@ def run_case(case: dict, client: Client, engine: Engine, *, route: str | None = 
         if browser_calls:
             ops = [{"op": c.get("name"), **(c.get("input") if isinstance(c.get("input"), dict) else {})}
                    for c in browser_calls]
-            eng = engine(state, ops, ctx)
+            # As the browser applies a batch: a call aimed at the page a refused create_page of this batch
+            # would have made is stopped (E_TARGET, never applied) — turns.js applyOps (createpage.run_batch).
+            eng = createpage.run_batch(lambda batch, base=state: engine(copy.deepcopy(base), batch, ctx), ops)
             if isinstance(eng.get("state"), dict):
                 state = eng["state"]
             items = tool_results_for(browser_calls, eng)

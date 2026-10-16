@@ -1084,7 +1084,8 @@ def _replay(c: dict, engine):
     case has no history ops, so the state is site_state; the engine cache answers)."""
     from ..verify import ctx_of
     fc = {"site_state": c["site_state"], "context": c.get("context"), "template": c.get("template")}
-    return engine.run(c["site_state"], _replay_ops(c), ctx_of(fc))
+    from ..createpage import run_engine_result
+    return run_engine_result(engine, c["site_state"], _replay_ops(c), ctx_of(fc))
 
 
 def oracle_detail(c: dict, err: str, engine) -> str:

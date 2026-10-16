@@ -36,6 +36,7 @@ docker one on 5433; the lab uses its own database name).
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -160,7 +161,40 @@ def default_plan(cases_path: Path | None) -> list[dict]:
         _msg("Updating the title.", {"id": "toolu_lab_1", "name": t_op["op"], "input": _op(t_op)}),
         _msg("Done — the title now reads as asked.", usage=(160, 12)),
     ]})
+    plan += create_page_plan(title)
     return plan
+
+
+def create_page_plan(title_case: dict) -> list[dict]:
+    """Two create_page captures (launcher 1d4193e2 engine + the 160ef91 service): the create's `slug` in the model's
+    tool_result (loop.browserResult, create_page only) with a section added to the new page in the same batch; and a
+    create the engine refuses (`faq` is a built-in page: E_SLUG) whose same-batch follow-up on `faq` the browser stops
+    (E_TARGET "was not created", never applied — turns.js applyOps, mirrored by the collector)."""
+    create = {"title": "Deals", "slug": "deals", "in_nav": True}
+    add = {"target": {"kind": "page", "page": "deals"}, "list": "sections", "action": "add", "item": {"id": "productCarousel"}}
+    ok_case = {**copy.deepcopy(title_case), "id": "create_page.deals", "kind": "create_page",
+               "request": "Add a Deals page with a product carousel and put it in the menu",
+               "expected": {"ops": [{"op": "create_page", **create}, {"op": "edit_list", **add}], "diff": []}}
+    faq = {"title": "FAQ"}
+    faq_add = {"target": {"kind": "page", "page": "faq"}, "list": "sections", "action": "add", "item": {"id": "heroBanner"}}
+    refused_case = {**copy.deepcopy(title_case), "id": "create_page.faq-refused", "kind": "create_page",
+                    "request": "Make a new FAQ page with a hero on it", "expected": {"ops": [], "diff": []}}
+    return [
+        {"name": "create_page.slug.deals", "shape": "create_page ok + slug; same-batch section add on the new slug",
+         "case": ok_case, "steps": [
+            _msg("Creating the Deals page with a carousel.", {"id": "toolu_lab_1", "name": "create_page", "input": create},
+                 {"id": "toolu_lab_2", "name": "edit_list", "input": add}),
+            _msg("Done — the Deals page has a product carousel and is in the header menu once you Save and Publish.",
+                 usage=(200, 24)),
+        ]},
+        {"name": "create_page.refused-stop.faq", "shape": "create_page E_SLUG; the same-batch follow-up stopped E_TARGET",
+         "case": refused_case, "steps": [
+            _msg("Creating an FAQ page with a hero.", {"id": "toolu_lab_1", "name": "create_page", "input": faq},
+                 {"id": "toolu_lab_2", "name": "edit_list", "input": faq_add}),
+            _msg("There is already a built-in FAQ page, so I did not create another one. Want me to add the hero to it?",
+                 usage=(220, 26)),
+        ]},
+    ]
 
 
 def plan_from_dir(root: Path) -> list[dict]:

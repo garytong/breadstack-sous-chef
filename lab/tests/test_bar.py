@@ -149,3 +149,28 @@ def test_a_measured_seed_spread_widens_only_its_own_set():
     assert by["paraphrase"]["tol"] == max(1, math.ceil(2 * math.sqrt(sd ** 2 + 2 * 2.5 ** 2) - 1e-9))
     from souschef_lab.retrain import noise as N
     assert by["paraphrase"]["tol"] == N.seed_aware_tol(sd, 2.5)
+
+
+def test_capability_rows_are_reported_never_paired():
+    """r6-4 review: a row a new tool re-keyed (p137.k2 create_page) — the live model was never offered the tool — sits in
+    the report-only `capability` set: a candidate's free win there moves no set Δ, no McNemar count, no drift total."""
+    arms = arms_equal()
+    arms["current"]["capability"] = [{"capability:p137.k2": 0}, {"capability:p137.k2": 0}]
+    arms["candidate"]["capability"] = [{"capability:p137.k2": 1}, {"capability:p137.k2": 1}]
+    b = BAR.evaluate(arms, baseline=None, th=TH, oos_where=where_all(arms), trigger_rules=["a"])
+    cap = {r["set"]: r for r in b["sets"]}["capability"]
+    assert cap["bar"] is False and cap["delta"] == 1.0 and b["pooled"]["c"] == 0
+    base = BAR.evaluate(arms_equal(), baseline=None, th=TH, oos_where=where_all(arms), trigger_rules=["a"])
+    assert rule(b, "trigger")["detail"] == rule(base, "trigger")["detail"]
+    assert "capability" in BAR.table_text(b)
+
+
+def test_out_of_scope_allows_two_misses_on_twelve_rows():
+    arms = arms_equal(out_of_scope=reps("out_of_scope", 12, 12))
+    arms["current"]["out_of_scope"] = reps("out_of_scope", 12, 12)
+    w = where_all(arms)
+    w["candidate"] = reps("out_of_scope", 12, 10)
+    assert rule(BAR.evaluate(arms, baseline=None, th=TH, oos_where=w), "oos_where")["pass"]
+    w["candidate"] = reps("out_of_scope", 12, 9)
+    b = BAR.evaluate(arms, baseline=None, th=TH, oos_where=w)
+    assert not rule(b, "oos_where")["pass"] and "need 10" in rule(b, "oos_where")["detail"]

@@ -32,6 +32,11 @@ counts the rows whose case expects every site font); font_pair="drop"
 (SOUSCHEF_FONT_PAIR=drop) moves them to rejects.jsonl (reason font_pair_policy), for a
 round that must not teach site-wide font changes at all. Neither changes the exam.
 
+Capabilities (r6-4: create_page and the dropdown option lists, 2026-10-15): stats.json `capabilities` counts the
+kept rows (train / val) of the cases tagged meta.capability — contrast.py's create_page and list_options groups by
+group (page:create, page:exists, list:tags …) and mode, and prepare's relabelled page-create rows — beside the
+rejects of those cases (so a group that collected nothing usable shows as 0 kept, not missing).
+
 Outputs: runs/<id>/dataset/{dataset/{train,val,rejects}.jsonl, stats.json,
 dataset-manifest.json, manifest.json} (the layout train.py and pipeline-train.sh
 read) and runs/<id>/model/context.tar.gz (the lab image's lab/model-image, the build
@@ -207,6 +212,32 @@ def font_pair_rows(rows: list[dict], cases: dict[str, dict], m) -> list[str]:
         if c is not None and set(FONT_PAIR) <= A.case_addresses(c, m):
             out.append(str(r.get("id")))
     return out
+
+
+def capability_rows(train: list[dict], val: list[dict], rejects: list[dict], cases: dict[str, dict]) -> dict:
+    """{capability: {train, val, rejected, by_group: {group: {train, val, rejected}}, by_mode: {mode: kept}}} for the
+    rows whose case carries meta.capability (module docstring)."""
+    out: dict[str, dict] = {}
+
+    def rec(cap: str, group: str) -> tuple[dict, dict]:
+        r = out.setdefault(cap, {"train": 0, "val": 0, "rejected": 0, "by_group": {}, "by_mode": {}})
+        return r, r["by_group"].setdefault(group, {"train": 0, "val": 0, "rejected": 0})
+    for split, rows in (("train", train), ("val", val), ("rejected", rejects)):
+        for r in rows:
+            c = cases.get(str(r.get("case_id") or "")) if split == "rejected" else _case_of(r, cases)
+            meta = (c or {}).get("meta") or {}
+            cap = meta.get("capability")
+            if not cap:
+                continue
+            total, grp = rec(str(cap), str(meta.get("cap_group") or meta.get("group") or "?"))
+            total[split] += 1
+            grp[split] += 1
+            if split != "rejected":
+                mode = str(((c or {}).get("score") or {}).get("mode"))
+                total["by_mode"][mode] = total["by_mode"].get(mode, 0) + 1
+    for r in out.values():
+        r["by_group"] = dict(sorted(r["by_group"].items()))
+    return dict(sorted(out.items()))
 
 
 def hidden_write_rows(rows: list[dict], cases: dict[str, dict], m) -> list[str]:
@@ -484,8 +515,13 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
     keys = new_keys_of(store.read_json(f"{pre}/prepare/report.json"))
     nk = new_key_positives(read_jsonl(data / "train.jsonl"), cases_by_id, m_new, keys, minimum=minimum, waive=waive)
     hidden_ids = hidden_write_rows(read_jsonl(data / "train.jsonl"), cases_by_id, m_new)
+    rejects_now = read_jsonl(data / "rejects.jsonl")
+    cap_cases = {**cases_by_id, **load_cases_by_id(cases, {str(r.get("case_id")) for r in rejects_now if r.get("case_id")}
+                                                   - set(cases_by_id))}
+    capabilities = capability_rows(read_jsonl(data / "train.jsonl"), read_jsonl(data / "val.jsonl"), rejects_now, cap_cases)
     st = refresh_stats(data, st, font_pair=font, hidden_write_rows={"train": len(hidden_ids), "ids": hidden_ids[:50]},
-                       new_key_positives={a: {k: v for k, v in r.items() if k != "reason"} for a, r in nk["keys"].items()})
+                       new_key_positives={a: {k: v for k, v in r.items() if k != "reason"} for a, r in nk["keys"].items()},
+                       capabilities=capabilities)
     gates: dict[str, Any] = {}
     problems: list[str] = []
     # 1. render parity
@@ -528,7 +564,9 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
                "rejects_first_reason": st.get("rejects_first_reason"), "block_drift_rows": st.get("block_drift_rows"),
                "preview_claim_kept": st.get("preview_claim_kept"), "updates": gates["train_plan"].get("updates"),
                "tokens_train": st.get("tokens_train"), "parity": {k: v for k, v in gates["parity"].items() if k != "failures"},
-               "new_key_short": nk["short"], "font_pair_rows": font["rows"], "hidden_write_rows": len(hidden_ids)}
+               "new_key_short": nk["short"], "font_pair_rows": font["rows"], "hidden_write_rows": len(hidden_ids),
+               "capabilities": {k: {"train": v["train"], "val": v["val"], "rejected": v["rejected"]}
+                                for k, v in capabilities.items()}}
     if problems:
         note = notification("stage_failed", "error", "Sous Chef pipeline failed: dataset (gate)",
                             "The training set failed its gates: " + "; ".join(problems[:6]) +

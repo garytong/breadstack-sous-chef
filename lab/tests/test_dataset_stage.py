@@ -337,3 +337,26 @@ def test_trigger_train_arms_are_checked_before_any_gpu(tmp_path):
     s.write_json("base/adapters/q3/adapter_config.json", {**R4_LORA, "base_model_name_or_path": "unsloth/Qwen3-8B"})
     with pytest.raises(ConfigError, match="Qwen3-8B"):
         DS.train_config_of({"trigger": {"train": {**both, "init_adapter": "base/adapters/q3"}}}, s)
+
+
+def test_capability_rows_count_the_new_families_kept_and_rejected():
+    """r6-4: stats.json `capabilities` — the create_page / list_options cases' rows by group and mode."""
+    def cap(cid, capability, group, mode):
+        c = _case(cid, [], mode=mode)
+        c["meta"].update(family="F8", capability=capability, group=group)
+        return c
+    cases = {"p1": cap("p1", "create_page", "page:create", "page"), "p2": cap("p2", "create_page", "page:exists", "page"),
+             "r1": cap("r1", "create_page", "case:F3:r4-F3-0064", "page"),
+             "l1": cap("l1", "list_options", "list:tags", "list"), "x": _case("x", [])}
+    train = [_row(1, "p1"), _row(2, "r1", family="F3"), _row(3, "x")]
+    val = [_row(4, "l1")]
+    rejects = [{"id": "p2#p1", "case_id": "p2", "family": "F8", "reasons": ["not_pass"]}]
+    got = DS.capability_rows(train, val, rejects, cases)
+    assert got == {
+        "create_page": {"train": 2, "val": 0, "rejected": 1, "by_mode": {"page": 2},
+                        "by_group": {"case:F3:r4-F3-0064": {"train": 1, "val": 0, "rejected": 0},
+                                     "page:create": {"train": 1, "val": 0, "rejected": 0},
+                                     "page:exists": {"train": 0, "val": 0, "rejected": 1}}},
+        "list_options": {"train": 0, "val": 1, "rejected": 0, "by_mode": {"list": 1},
+                         "by_group": {"list:tags": {"train": 0, "val": 1, "rejected": 0}}}}
+    assert DS.capability_rows(train, val, [], {"x": cases["x"]}) == {}

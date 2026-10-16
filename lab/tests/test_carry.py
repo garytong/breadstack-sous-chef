@@ -577,3 +577,31 @@ def test_a_retried_collect_reuses_its_carry(tmp_path, monkeypatch, ok_render):
                  runner=Runner(), version=version, progress=lambda m: None, sync_s=3600, carry_tools=TOOLS,
                  carry_fn=lambda *a, **k: calls.append(1))
     assert not calls and res["metrics"]["carry"]["reused"] and res["metrics"]["carry"]["carried"] == 2
+
+
+# --- r6-4: tag / brand rows written before the engine knew the store's lists --------------------------------------------
+
+def test_a_tag_or_brand_write_without_its_derived_id_is_reasked(tmp_path):
+    assert K.stale_ref_writes({"messages": [
+        {"role": "tool", "content": '{"ok":true,"written":["homeSections[2].settings.tagSlug"]}'},
+        {"role": "tool", "content": '{"ok":true,"written":["homeSections[3].settings.brandSlug","homeSections[3].settings.brandId"]}'},
+        {"role": "tool", "content": '{"code":"E_FIELD","message":"x"}'}]}) == ["homeSections[2].settings.tagSlug"]
+    new = '{"ok":true,"written":["s.settings.tagId","s.settings.tagSlug"]}'
+    assert K.ref_only_change(new, '{"ok":true,"written":["s.settings.tagSlug"]}')
+    assert not K.ref_only_change(new, '{"ok":true,"written":["s.settings.title"]}') and not K.ref_only_change(new, new)
+    case = make_case()
+    row = make_row(case)
+    tool = next(m for m in row["messages"] if m.get("role") == "tool")
+    tool["content"] = '{"ok":true,"written":["pageSectionsAll.home[0].settings.brandSlug"]}'
+    rep = run_carry(tmp_path, [case], [source([(case, row)])])
+    assert rep["reasons"] == {"ref_written_changed": 1}
+    assert rep["examples"]["ref_written_changed"][0]["paths"] == ["pageSectionsAll.home[0].settings.brandSlug"]
+
+
+def test_a_replay_that_differs_only_by_derived_ids_says_so():
+    turns = [{"names": {"c1": "set_fields"}, "stored": {"c1": '{"ok":true,"written":["s.tagSlug"]}'},
+              "streams": [[("turn.done", {"stop": "end_turn"})], [("turn.done", {"stop": "end_turn"})]]}]
+    cl = K.ReplayClient(turns)
+    cl.ti = 0
+    cl.tool_results("t", {"results": [{"toolCallId": "c1", "ok": True, "written": ["s.tagSlug", "s.tagId"]}]})
+    assert cl.problems == ["ref_written_changed:set_fields"]

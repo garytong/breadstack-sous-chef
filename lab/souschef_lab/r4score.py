@@ -14,6 +14,16 @@ turn can be right (`case.score.mode`, set by r4cases):
   ask      a request too vague to act on: no accepted (or refused) write, no report_unsupported, and a question in
            the reply (`clarify_ok`; a write is `wrote`, no question `no_question`) — `score_ask`. The vague first turns
            of the follow-up family (history expect "ask" / "offer") as scored turns, and contrast.py's vague requests
+  page     create_page (r6-4, the 2026-10-15 tool): exam.score_page on expected.page — scored on the OP (title without
+           case or spacing, a canonical slug equal to slugify of the asked slug or title, in_nav and status as asked,
+           a same-turn section add on the new page is the page's own write, nothing else written), or a decline
+           (the page exists, the slug is reserved, the template can't show custom pages): nothing written and the
+           reply says why. Verdict `pass` either way (the exam's pass sets know no other)
+  list     listing a carousel source's choices (tags / brands / categories) in answer mode — `score_listing` on the
+           context the turn was SENT: only names of that context list, a short list named in full, a longer one at
+           most 15 names then "...and N more" with N = total − named (the *Truncated total when the list was cut, and
+           then the editor's dropdown named), an empty list said to be empty, an unknown list (member missing) never
+           said to be empty and the dropdown named; no write, no report_unsupported (`answer_ok`)
 
 A turn that did not finish (`stop` ≠ end_turn, turn.error, transport error) is
 `no_answer` / `error` whatever the mode.
@@ -79,7 +89,10 @@ baseline or an earlier eval scored on the old key never pairs with them: they
 leave every Δ until the live model is re-calibrated (drift calibrate
 --fresh-baseline, or the next candidate eval's baseline on Approve). Re-scoring an
 old run's rows under the old key: font policy "as_authored" (exam rows back to
-their built ids and keys).
+their built ids and keys). r6-4 adds a 20th: p137.k2 ("create a new page for
+events", report_unsupported pages before) expects create_page — or, on a site
+that already has the page (the exam's vintage state does), the reply that it
+exists (exam.score_page); "as_authored" restores p137 and its `pages` key.
 """
 from __future__ import annotations
 
@@ -93,7 +106,7 @@ from pathlib import Path
 from typing import Any
 
 RULE_VERSION = "verify-3"
-POLICY_VERSION = "r6-3"
+POLICY_VERSION = "r6-4"  # r6-4: modes page (create_page) and list (dropdown choices), exam p137.k2
 FONT_POLICIES = ("all", "as_authored", "body_only", "body_or_both")
 ACTED_SCOPES = ("keys", "target", "off")
 DEFAULT_POLICY: dict[str, Any] = {"refused_corrected": False, "mailto": True, "same_control": True,
@@ -168,7 +181,15 @@ def flags_of(case: dict, row: dict, history_rows: list[dict] | None = None) -> l
         flags.append("lookup_storm")
     measured = set(((case.get("meta") or {}).get("measured") or {}).get("warnings") or [])
     measured |= {f"W_HIDDEN:{k}" for k in (case.get("expected") or {}).get("expect_hidden") or []}
-    if (case.get("score") or {}).get("mode") in ("exact", "keys"):
+    mode = (case.get("score") or {}).get("mode")
+    if mode == "page":
+        from .exam import accepted_ops, page_expectation
+        spec = page_expectation(case, row) or {}
+        ex = spec.get("existing") or {}
+        _, refused = accepted_ops(row)
+        if spec.get("why") == "exists" and ex.get("in_context") and any(o.get("op") == "create_page" for o in refused):
+            flags.append("create_refused")  # the context showed the page: a training row must not try to create it
+    if mode in ("exact", "keys", "page"):
         seen = {w for b in row.get("engine_results") or [] for r in b.get("results") or [] for w in r.get("warnings") or []
                 if str(w).startswith("W_HIDDEN")}
         if seen - measured:
@@ -701,8 +722,15 @@ def _restore_superseded(case: dict) -> dict:
         c["id"] = sup["id"]
     if "fields" in sup:
         c["fields"] = copy.deepcopy(sup["fields"])
+    for k, v in (sup.get("row") or {}).items():  # create-page (exam.amend): kind back to out_of_scope
+        c[k] = copy.deepcopy(v)
+    if "out_of_scope" in sup:
+        e["out_of_scope"] = copy.deepcopy(sup["out_of_scope"])
+    e.pop("page", None)
     c["meta"].pop("superseded", None)
     c["meta"].pop("answer_key", None)
+    for k, v in (sup.get("meta") or {}).items():
+        c["meta"][k] = copy.deepcopy(v)
     return c
 
 
@@ -834,6 +862,172 @@ def score_ask(row: dict) -> dict:
     if not exam_asks(reply):  # a sign-off ("Anything else?") is not a question about the request
         return {"verdict": "no_question", "reasons": ["did_not_ask"], "info": []}
     return {"verdict": "clarify_ok", "reasons": [], "info": ["asked"]}
+
+
+# --- listing a dropdown's choices (mode list) ----------------------------------------------------------------------------
+
+LIST_MAX = 15  # rules.go "Listing choices": at most 15 names, then "...and N more"
+LIST_KINDS = ("tags", "brands", "categories", "locations")
+_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+(.+?)\s*$")
+_MORE = re.compile(r"(?:\.\.\.|\u2026)?\s*\band\s+(\d+)\s+(?:more|others?)\b", re.IGNORECASE)
+DROPDOWN = re.compile(r"\bdrop-?\s?downs?\b|\bpicker\b|\b(?:tag|brand|category|location)\s+(?:setting|field|menu|list|selector)\b"
+                      r"|\bsource settings\b", re.IGNORECASE)
+SAYS_NONE = re.compile(r"\b(?:no|zero|0)\s+(?:\w+\s+){0,2}(?:tags?|brands?|categor(?:y|ies)|locations?)\b|\bnone\b"
+                       r"|\b(?:don't|doesn't|do not|does not|haven't|hasn't|have not|has not)\s+(?:\w+\s+)?"
+                       r"(?:have|set up|got|added|created|made|defined)\s+any\b"
+                       r"|\b(?:isn't|aren't|is not|are not)\s+any\b|\bnot set up\b|\bempty\b|\bnothing\b", re.IGNORECASE)
+# a sentence that says the list cannot be SEEN (an unknown list: "There's no tag list loaded, so I can't see them")
+# is not a claim that the store has none
+CANT_SEE = re.compile(r"\b(?:can't|cannot|can not|couldn't|could not|unable to|not able to)\s+(?:\w+\s+)?"
+                      r"(?:see|view|load|access|read|tell|find)\b|\b(?:list|lists|data)\s+(?:isn't|aren't|is not|are not|"
+                      r"wasn't|weren't)\b|\b(?:not|isn't|wasn't|n't been)\s+loaded\b|\bloaded\b|\bvisible to me\b"
+                      r"|\bdon't have (?:access|visibility)\b", re.IGNORECASE)
+_SENTENCE = re.compile(r"[^.!?\n\u2026]+[.!?\u2026]*")
+
+
+def says_none(reply: str) -> bool:
+    """The reply says the store HAS none (a sentence matching SAYS_NONE that is not about being unable to see the
+    list — CANT_SEE)."""
+    return any(SAYS_NONE.search(x) and not CANT_SEE.search(x) for x in _SENTENCE.findall(str(reply or "")))
+
+
+# a name the reply runs on after a list name in the same sentence ("Staff Picks, Local Finds and Moon Rocks"): any
+# Title-Case run after a separator, in a line that names one of the list's own entries
+_INLINE_ITEM = re.compile(r"(?:,|;|\band\b|\bor\b|&)\s+((?:[A-Z0-9][\w'&.-]*)(?:\s+[A-Z0-9][\w'&.-]*){0,3})")
+_STEP_VERB = re.compile(r"^(?:open|click|go|select|choose|pick|press|scroll|find|use|tap|save|then|under|in)\b", re.IGNORECASE)
+
+
+def _clean_item(s: str) -> str:
+    t = re.sub(r"[*_`]+", "", s).strip()
+    t = re.split(r"\s+[(\u2014\u2013]|\s+-\s+|:\s", t, maxsplit=1)[0]
+    return t.strip().strip(".,;").strip()
+
+
+def listing_view(case: dict, row: dict | None = None) -> dict:
+    """What the context the turn was SENT says about the case's list: {list, known, names, slugs, total, shown,
+    truncated, situation: short | long | truncated | empty | unknown}."""
+    lst = str(((case.get("expected") or {}).get("listing") or {}).get("list") or "tags")
+    ctx = (row or {}).get("context") if isinstance((row or {}).get("context"), dict) else (case.get("context") or {})
+    entries = ctx.get(lst) if isinstance(ctx, dict) else None
+    out: dict[str, Any] = {"list": lst, "known": isinstance(entries, list)}
+    if not isinstance(entries, list):
+        return {**out, "names": [], "slugs": [], "total": None, "shown": 0, "truncated": False, "situation": "unknown"}
+    names = [str(e.get("name") or "") for e in entries if isinstance(e, dict) and e.get("name")]
+    slugs = [str(e.get("slug") or "") for e in entries if isinstance(e, dict) and e.get("slug")]
+    cut = (ctx.get(f"{lst}Truncated") or {}) if isinstance(ctx.get(f"{lst}Truncated"), dict) else {}
+    total = int(cut.get("total") or len(names))
+    sit = ("empty" if not names else "truncated" if cut else "long" if total > LIST_MAX else "short")
+    return {**out, "names": names, "slugs": slugs, "total": total, "shown": len(names), "truncated": bool(cut),
+            "situation": sit}
+
+
+def _inline_invented(line: str, names: list[str], known: set[str]) -> list[str]:
+    """Names a prose line runs on with after one of the list's own names (_INLINE_ITEM) that the list lacks."""
+    low = line.casefold()
+    spans = [(m.start(), m.end()) for n in names for m in re.finditer(r"(?<![\w])" + re.escape(n.casefold()) + r"(?![\w])", low)]
+    if not spans:
+        return []
+    first = min(a for a, _ in spans)
+    out = []
+    for m in _INLINE_ITEM.finditer(line):
+        if m.start() < first:
+            continue
+        item = _clean_item(m.group(1))
+        if not item or item.casefold() in known or any(a <= m.start(1) < b for a, b in spans):
+            continue
+        if _STEP_VERB.match(item) or item.isdigit() or item.casefold() in ("i", "i'll", "i'd", "you", "we", "the", "a", "an"):
+            continue
+        out.append(item)
+    return out
+
+
+def score_listing(case: dict, row: dict) -> dict:
+    """Mode list (module docstring): the reply to "what tags / brands / categories can I use" against the context
+    list the turn was sent (listing_view). Verdicts: answer_ok, wrote, reported, invented_name, missing_names,
+    no_more_count, wrong_more_count, no_dropdown_pointer, said_none, did_not_say_none."""
+    from .exam import accepted_ops
+    accepted, refused = accepted_ops(row)
+    v = listing_view(case, row)
+    reply = _reply_of(row)
+    called = {c.get("name") for c in row.get("tool_calls") or []}
+    detail: dict[str, Any] = {"list": v["list"], "situation": v["situation"], "total": v["total"]}
+    if accepted or refused:
+        return {"verdict": "wrote", "reasons": ["wrote_on_a_question"], "info": [], "detail": detail}
+    if "report_unsupported" in called:
+        return {"verdict": "reported", "reasons": ["reported_unsupported"], "info": [], "detail": detail}
+    known = {x.casefold() for x in v["names"]} | {x.casefold() for x in v["slugs"]}
+    named = [n for n in v["names"] if re.search(r"(?<![\w])" + re.escape(n.casefold()) + r"(?![\w])", reply.casefold())]
+    invented = []
+    for line in reply.splitlines():
+        mm = _BULLET.match(line)
+        if not mm:
+            invented += _inline_invented(line, v["names"], known)
+            continue
+        item = _clean_item(mm.group(1))
+        if not item or item.casefold() in known:
+            continue
+        if len(item.split()) <= 5 and not _STEP_VERB.match(item) and not item.endswith("?"):
+            invented.append(item)
+    detail.update(named=len(named), invented=invented[:5])
+    if invented:
+        return {"verdict": "invented_name", "reasons": [f"invented:{x}" for x in invented][:5], "info": [], "detail": detail}
+    sit = v["situation"]
+    if sit == "unknown":
+        if says_none(reply):
+            return {"verdict": "said_none", "reasons": ["claimed_an_unknown_list_is_empty"], "info": [], "detail": detail}
+        if not DROPDOWN.search(reply):
+            return {"verdict": "no_dropdown_pointer", "reasons": ["unknown_list_without_the_dropdown"], "info": [],
+                    "detail": detail}
+        return {"verdict": "answer_ok", "reasons": [], "info": ["list:unknown"], "detail": detail}
+    if sit == "empty":
+        if not says_none(reply):
+            return {"verdict": "did_not_say_none", "reasons": ["empty_list_not_said"], "info": [], "detail": detail}
+        return {"verdict": "answer_ok", "reasons": [], "info": ["list:empty"], "detail": detail}
+    if sit == "short":
+        missing = [n for n in v["names"] if n not in named]
+        if missing:
+            return {"verdict": "missing_names", "reasons": [f"missing:{n}" for n in missing][:5], "info": [], "detail": detail}
+        return {"verdict": "answer_ok", "reasons": [], "info": ["list:short"], "detail": detail}
+    k = len(named)
+    more = [int(x) for x in _MORE.findall(reply)]
+    detail["more"] = more
+    if not named or k > LIST_MAX:
+        return {"verdict": "missing_names" if not named else "invented_name",
+                "reasons": [f"named:{k} (1..{LIST_MAX})"], "info": [], "detail": detail}
+    if not more:
+        return {"verdict": "no_more_count", "reasons": ["no_and_n_more"], "info": [], "detail": detail}
+    if (v["total"] or 0) - k not in more:
+        return {"verdict": "wrong_more_count", "reasons": [f"and_{more[0]}_more_not_{(v['total'] or 0) - k}"], "info": [],
+                "detail": detail}
+    if sit == "truncated" and not DROPDOWN.search(reply):
+        return {"verdict": "no_dropdown_pointer", "reasons": ["cut_list_without_the_dropdown"], "info": [], "detail": detail}
+    return {"verdict": "answer_ok", "reasons": [], "info": [f"list:{sit}"], "detail": detail}
+
+
+def oracle_turn(case: dict) -> dict | None:
+    """{ops, text}: what a right answer sends on a `page` or `list` case — for dry runs' scripts (r4collect
+    oracle_scripts); None for any other mode."""
+    mode = (case.get("score") or {}).get("mode")
+    if mode == "page":
+        from .exam import page_oracle
+        ops, text = page_oracle(case)
+        return {"ops": ops, "text": text}
+    if mode != "list":
+        return None
+    v = listing_view(case)
+    label = {"tags": "Tag", "brands": "Brand", "categories": "Category"}.get(v["list"], v["list"])
+    if v["situation"] == "unknown":
+        return {"ops": [], "text": f"I can't see your {v['list']} right now. The {label} dropdown in the carousel's "
+                                   "Source settings lists them all."}
+    if v["situation"] == "empty":
+        return {"ops": [], "text": f"Your store has no {v['list']} set up yet."}
+    shown = v["names"][:LIST_MAX]
+    text = "\n".join(f"- {n}" for n in shown)
+    if v["situation"] in ("long", "truncated"):
+        text += f"\n...and {(v['total'] or 0) - len(shown)} more."
+    if v["situation"] == "truncated":
+        text += f" The {label} dropdown in the carousel's Source settings shows them all."
+    return {"ops": [], "text": text + "\nWant me to switch the carousel to one of these?"}
 
 
 # --- relaxing an exact verdict ------------------------------------------------------------------------------------------
@@ -1160,6 +1354,18 @@ def score(case: dict, row: dict, engine=None, history_rows: list[dict] | None = 
     elif mode == "ask":
         s = score_ask(row) if not unfinished else {"verdict": "no_answer", "reasons": [f"stop:{row.get('stop')}"], "info": []}
         out.update(verdict=s["verdict"], reasons=s["reasons"], info=s["info"])
+    elif mode in ("page", "list") and unfinished:
+        out.update(verdict="no_answer", reasons=[f"stop:{row.get('stop')}"])
+    elif mode == "page":
+        s = exam.score_page(case, row, refused_ok=bool(pol.get("refused_corrected")) and refused_corrected(row))
+        out.update(verdict=s["verdict"], reasons=list(s.get("reasons") or []), info=list(s.get("info") or []),
+                   detail=s.get("detail") or {})
+        if pol.get("refused_corrected") and s["verdict"] == "pass" and (s.get("detail") or {}).get("expect") == "create" \
+                and exam.accepted_ops(row)[1]:
+            out["relaxed"] = ["refused_corrected"]
+    elif mode == "list":
+        s = score_listing(case, row)
+        out.update(verdict=s["verdict"], reasons=s["reasons"], info=s["info"], detail=s["detail"])
     elif mode == "exact":
         r = relax_exact(_verify(case, row, engine), row, pol)
         if r["verdict"] not in PASSING:

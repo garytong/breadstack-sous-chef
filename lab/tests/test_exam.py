@@ -71,7 +71,9 @@ def test_sets_have_the_studys_sizes_and_the_lab_schema():
             assert r["context"]["template"] == "vintage" and r["context"]["page"] == r["meta"]["page"]
             exp = r["expected"]
             assert exp["ops"] == [] and exp["diff"] == []
-            if name.startswith("out_of_scope"):
+            if r["kind"] == "create_page":  # p137.k2 (2026-10-15): creating a page is create_page, not out of scope
+                assert r["id"] == "p137.k2" and exp["page"]["title"] == "Events" and exp["out_of_scope"] is None
+            elif name.startswith("out_of_scope"):
                 assert r["kind"] == "out_of_scope" and exp["keys"] == [] and exp["out_of_scope"]["reason"]
             else:
                 assert r["kind"] == "phrasing" and exp["keys"] and exp["out_of_scope"] is None
@@ -184,13 +186,15 @@ def test_out_of_scope_needs_no_write_and_a_place():
 def test_every_out_of_scope_row_names_its_where():
     """Contract 1: every out-of-scope row carries `expected_where`, values of
     the shared enum, and the build derives the same from reason + request."""
-    want = {"p135": "products", "p136": "products", "p137": "pages", "p138": "themes", "p139": "domain",
+    want = {"p135": "products", "p136": "products", "p138": "themes", "p139": "domain",
             "p140": "support", "p141": "categories", "p142": "support", "p143": "support", "p144": "support",
             "p145": "domain", "p146": "support", "p147": "support", "h063": "support", "h064": "products",
             "h065": "support", "h066": "support"}
     got = {}
     for name in ("out_of_scope", "out_of_scope_holdout"):
         for r in X.load_set(name):
+            if r["id"] == "p137.k2":  # create_page since 2026-10-15 (test_p137_expects_create_page)
+                continue
             o = r["expected"]["out_of_scope"]
             assert o["expected_where"] == X.expected_where_for(o["reason"], r["request"])
             assert set(o["expected_where"]) <= set(X.WHERE_VALUES)
@@ -287,7 +291,9 @@ def test_retrieval_through_the_services_cli(tmp_path):
     assert 0 <= rep["overall"]["hit"] <= 14 and rep["overall"]["chars_p50"] > 0
     assert set(rep["by_class"]) == {"real"}
     oos = X.retrieval(X.load_set("out_of_scope"), X.MANIFEST_FILE, F.binary())
-    assert oos["overall"]["n"] == 0 and oos["overall"]["out_of_scope"]["n"] == 13
+    # 12 out of scope; p137.k2 (create_page) has no keys to retrieve: unlabelled for the retrieval score
+    assert oos["overall"]["n"] == 0 and oos["overall"]["out_of_scope"]["n"] == 12
+    assert [r["id"] for r in oos["results"] if r.get("unlabelled")] == ["p137.k2"]
     assert X.main(["retrieval", "--set", "real", "--out-dir", str(tmp_path)]) == 0
     saved = json.loads(next(tmp_path.glob("exam-retrieval-real-*.json")).read_text(encoding="utf-8"))
     assert saved["manifest_hash"] == REAL_HASH and saved["fields"]["source_sha256"]
@@ -592,7 +598,8 @@ def test_the_font_rows_expect_every_site_font_under_new_ids():
                if (r.get("meta") or {}).get("answer_key")}
     assert set(amended) == set(X.AMENDMENTS)
     for (s, old_id), r in amended.items():
-        assert r["id"] == old_id + X.AMENDED_ID_SUFFIX and r["meta"]["answer_key"] == X.ANSWER_KEY
+        want_key = X.PAGE_CREATE_KEY if (s, old_id) == ("out_of_scope", "p137") else X.ANSWER_KEY
+        assert r["id"] == old_id + X.AMENDED_ID_SUFFIX and r["meta"]["answer_key"] == want_key
     raw = {r["id"] for r in X.load_set("followup", amended=False)}
     assert "p150" in raw and "p150.k2" not in raw
     p150 = amended[("followup", "p150")]
@@ -639,3 +646,157 @@ def test_a_value_less_request_may_be_answered_with_a_question():
     assert X.score_turn(p031, reported)["verdict"] == "no_write"
     # a request that gives its value is not amended
     assert not any(r["id"].startswith("p002") and r["expected"].get("ask_ok") for r in X.load_set("paraphrase"))
+
+
+# --- create_page (2026-10-15): p137 re-keyed, the pages where-rule split, score_page ---------------------------------------
+
+def _page_row(ops_ok, reply="", ctx=None, slugs=None, calls=None):
+    """A row whose ops (op, ok) ran in one batch; create_page results carry their slug."""
+    ops = [o for o, _ in ops_ok]
+    res = []
+    for (o, ok), sl in zip(ops_ok, slugs or [None] * len(ops_ok)):
+        r = {"ok": ok}
+        if ok and o.get("op") == "create_page":
+            r["slug"] = sl or X.slugify(o.get("slug") or o.get("title"))
+        res.append(r)
+    return {"status": "ok", "stop": "end_turn", "ops": ops, "engine_results": [{"results": res}], "reply": reply,
+            "tool_calls": calls if calls is not None else [{"name": o["op"], "input": {}} for o in ops],
+            "context": ctx}
+
+
+def test_the_pages_where_rule_is_split_create_from_rename_duplicate_delete():
+    for text in ("rename the events page", "duplicate the about page so i can make one for our second shop",
+                 "delete the Careers page, we're not hiring", "change the url of the about page to /our-story",
+                 "clone the events page for our summer markets", "copy our about page and call the copy Our Team",
+                 "get rid of the events page, we don't do events anymore", "unpublish the loyalty page until it's ready"):
+        assert X.page_request(text) == "manage", text
+        assert X.expected_where_for("customPages is read-only", text) == ["pages"], text
+    for text in ("create a new page for events", "add a new page called Strain Guide", "new page: Accessibility Statement",
+                 "i need another page for wholesale inquiries", "make an 'Ask a Budtender' page"):
+        assert X.page_request(text) == "create", text
+        assert X.expected_where_for("customPages is read-only to the ops engine", text) == ["support"], text
+    assert X.page_request("make the hero bigger") is None
+    assert X.slugify("  Summer  Sale! ") == "summer-sale" and X.slugify("Wholesale_Inquiries") == "wholesaleinquiries"
+    assert X.slugify("4/20 Deals") == "420-deals" and X.is_reserved_page_slug("menu") and X.is_reserved_page_slug("sitemap-x")
+    assert X.page_title_of("add a new page called Strain Guide") == {"title": "Strain Guide", "match": "exact"}
+    assert X.page_title_of("new page: Accessibility Statement")["title"] == "Accessibility Statement"
+    assert X.page_title_of("build me a 'Medical Patients' info page") == {"title": "Medical Patients", "match": "contains"}
+    assert X.page_title_of("i need another page for wholesale inquiries") == {"words": ["wholesale", "inquiries"],
+                                                                             "match": "words"}
+    assert X.page_title_of("add a blank page i can fill in later") is None
+
+
+def test_p137_expects_create_page_or_the_existing_events_page():
+    p137 = next(r for r in X.load_set("out_of_scope") if r["id"] == "p137.k2")
+    assert p137["kind"] == "create_page" and p137["meta"]["class"] == "create" and X.is_labelled(p137)
+    assert not X.is_out_of_scope(p137) and p137["meta"]["superseded"]["out_of_scope"]["expected_where"] == ["pages"]
+    assert {r["id"] for r in X.load_set("out_of_scope", amended=False)} >= {"p137"}
+    # a site without an Events page: create_page {title Events}; the r5 answer (where=pages) fails
+    bare = {**p137, "context": {**p137["context"], "customPages": []}, "site_state": {"customPages": []}}
+    good = _page_row([({"op": "create_page", "title": "events"}, True)], "Added /events.")
+    assert X.score_turn(bare, good)["verdict"] == "pass"
+    r5 = _page_row([], calls=[{"name": "report_unsupported", "input": {"where": "pages"}}])
+    assert X.score_turn(bare, r5)["verdict"] == "reported"
+    assert X.score_turn(bare, _page_row([({"op": "create_page", "title": "Events", "in_nav": True}, True)]))["verdict"] \
+        == "wrong_value"
+    # the exam's vintage state HAS a custom page Events (/events): never create it again — say it exists
+    have = {**p137, "site_state": {"customPages": [{"slug": "events", "title": "Events"}]}}
+    said = _page_row([], "You already have an Events page at /events. Want me to add a section to it?")
+    assert X.score_turn(have, said)["verdict"] == "pass"
+    tried = _page_row([({"op": "create_page", "title": "Events"}, False)], "There's already an Events page (/events).")
+    assert X.score_turn(have, tried)["verdict"] == "pass"  # refused by the engine, explained: right on the site
+    assert X.score_turn(have, _page_row([], "Done!"))["verdict"] == "not_explained"
+    assert X.score_turn(have, r5)["verdict"] == "reported"
+    # the oracle answers each the right way
+    assert X.page_oracle(bare)[0] == [{"op": "create_page", "title": "Events"}]
+    assert X.page_oracle({**p137, "context": {**p137["context"], "customPages": [{"slug": "events", "title": "Events"}]}})[0] == []
+
+
+def test_score_page_create_slug_status_nav_sections_and_strays():
+    case = {"expected": {"page": {"expect": "create", "title": "Budtender Picks", "in_nav": False, "status": "published",
+                                  "sections": ["productCarousel"], "if_exists": "decline"}},
+            "context": {"page": "home", "customPages": []}, "site_state": {"customPages": []}}
+    create = {"op": "create_page", "title": "budtender  picks", "slug": "budtender-picks"}
+    add = {"op": "edit_list", "target": {"kind": "page", "page": "budtender-picks"}, "list": "sections", "action": "add",
+           "item": {"id": "productCarousel"}}
+    assert X.score_page(case, _page_row([(create, True), (add, True)]))["verdict"] == "pass"  # the add is the page's own
+    assert X.score_page(case, _page_row([(create, True)]))["verdict"] == "missing_writes"
+    stray = {"op": "set_fields", "target": {"kind": "global", "panel": "HeaderSection"}, "values": {"x": 1}}
+    assert X.score_page(case, _page_row([(create, True), (add, True), (stray, True)]))["verdict"] == "extra_writes"
+    other = dict(add, target={"kind": "page", "page": "home"})
+    assert X.score_page(case, _page_row([(create, True), (other, True)]))["verdict"] == "missing_writes"
+    assert X.score_page(case, _page_row([({**create, "slug": "picks"}, True), (dict(add, target={"kind": "page", "page": "picks"}), True)],
+                                        slugs=["picks", None]))["verdict"] == "wrong_value"  # not the title's slug
+    assert X.score_page(case, _page_row([(create, False), (create, True), (add, True)]))["verdict"] == "invalid_op"
+    assert X.score_page(case, _page_row([(create, False), (create, True), (add, True)]), refused_ok=True)["verdict"] == "pass"
+    draft = {"expected": {"page": {"expect": "create", "title": "Price Match", "status": "draft", "in_nav": False}}}
+    assert X.score_page(draft, _page_row([({"op": "create_page", "title": "Price Match", "status": "draft"}, True)]))["verdict"] == "pass"
+    assert X.score_page(draft, _page_row([({"op": "create_page", "title": "Price Match"}, True)]))["reasons"] == ["wrong_value:status:published"]
+    slugged = {"expected": {"page": {"expect": "create", "title": "Summer Sale", "slugs": ["summer-sale"], "in_nav": False}}}
+    assert X.score_page(slugged, _page_row([({"op": "create_page", "title": "Summer Sale", "slug": "summer-sale"}, True)]))["verdict"] == "pass"
+    words = {"expected": {"page": {"expect": "create", "title_match": "words", "words": ["420", "deals"], "in_nav": False}}}
+    assert X.score_page(words, _page_row([({"op": "create_page", "title": "4/20 Deals"}, True)]))["verdict"] == "pass"
+    assert X.score_page(words, _page_row([({"op": "create_page", "title": "Promotions"}, True)]))["verdict"] == "wrong_value"
+
+
+def test_score_page_declines():
+    reserved = {"expected": {"page": {"expect": "decline", "why": "reserved", "title": "Menu"}}}
+    refused = _page_row([({"op": "create_page", "title": "Menu"}, False)], "/menu is taken. Should I use /menu-2 instead?")
+    assert X.score_page(reserved, refused)["verdict"] == "pass"
+    assert X.score_page(reserved, _page_row([({"op": "create_page", "title": "Menu"}, False)], "It's taken."))["verdict"] == "no_question"
+    wrote = _page_row([({"op": "create_page", "title": "Menu", "slug": "menu-2"}, True)], "Done.")
+    assert X.score_page(reserved, wrote)["verdict"] == "wrote"
+    tpl = {"expected": {"page": {"expect": "decline", "why": "template", "title": "Gift Cards"}}}
+    assert X.score_page(tpl, _page_row([({"op": "create_page", "title": "Gift Cards"}, False)],
+                                       "This template can't show custom pages yet."))["verdict"] == "pass"
+    # a create + section add on a page the site already has: the follow-up must not land on the existing page
+    exists = {"expected": {"page": {"expect": "create", "title": "Contact", "sections": ["newsletter"], "if_exists": "decline"}},
+              "context": {"customPages": []}}
+    add = {"op": "edit_list", "target": {"kind": "page", "page": "contact"}, "list": "sections", "action": "add",
+           "item": {"id": "newsletter"}}
+    blocked = _page_row([({"op": "create_page", "title": "Contact", "slug": "contact"}, False), (add, False)],
+                        "You already have a Contact page (/contact).")
+    assert X.score_page(exists, blocked)["verdict"] == "pass" and X.page_expectation(exists)["existing"]["kind"] == "builtin"
+    leaked = _page_row([({"op": "create_page", "title": "Contact", "slug": "contact"}, False), (add, True)], "Added it.")
+    assert X.score_page(exists, leaked)["verdict"] == "wrote"
+
+
+
+def test_score_page_exists_must_say_it_exists_or_edit_it_instead():
+    """r6-4 review: a decline "exists" must say the page is already there (naming it is not enough), and the rules'
+    other answer — add the asked section to the existing page — passes too (not as a same-batch create follow-up)."""
+    p137 = next(r for r in X.load_set("out_of_scope") if r["id"] == "p137.k2")
+    have = {**p137, "site_state": {"customPages": [{"slug": "events", "title": "Events"}]}}
+    for lax in ("Sorry, I can't make an events page.", "What would you like on the events page?"):
+        assert X.score_turn(have, _page_row([], lax))["verdict"] == "not_explained", lax
+    assert X.score_turn(have, _page_row([], "You have an Events page already (/events)."))["verdict"] == "pass"
+    assert X.score_turn(have, _page_row([], "You've got an Events page at /events; edit it instead?"))["verdict"] == "pass"
+    deals = {"expected": {"page": {"expect": "create", "title": "Deals", "sections": ["productCarousel"], "if_exists": "decline"}},
+             "context": {"customPages": [{"slug": "deals", "title": "Deals"}]}, "site_state": {"customPages": []}}
+    add = {"op": "edit_list", "target": {"kind": "page", "page": "deals"}, "list": "sections", "action": "add",
+           "item": {"id": "productCarousel"}}
+    edited = _page_row([(add, True)], "You already have a Deals page (/deals), so I added a product carousel to it.")
+    v = X.score_page(deals, edited)
+    assert v["verdict"] == "pass" and v["info"] == ["decline:exists:edited"] and v["detail"]["edited_existing"] == 1
+    assert X.score_page(deals, _page_row([(add, True)], "Added a product carousel."))["verdict"] == "not_explained"
+    other = dict(add, item={"id": "gallery"})  # not the asked section
+    assert X.score_page(deals, _page_row([(other, True)], "You already have a Deals page."))["verdict"] == "wrote"
+    home = dict(add, target={"kind": "page", "page": "home"})
+    assert X.score_page(deals, _page_row([(home, True)], "You already have a Deals page."))["verdict"] == "wrote"
+    # after a refused create in a LATER batch: a deliberate edit of the existing page
+    later = {"status": "ok", "stop": "end_turn", "ops": [{"op": "create_page", "title": "Deals"}, add],
+             "engine_results": [{"results": [{"ok": False, "error": {"code": "E_SLUG"}}]}, {"results": [{"ok": True}]}],
+             "reply": "Deals already exists at /deals, so I put the carousel there.", "tool_calls": [], "context": None}
+    assert X.score_page(deals, later)["verdict"] == "pass"
+
+
+def test_score_page_words_create_may_ask_for_the_name():
+    """A request that names no page title (title_match "words"): asking for the name is right (rules: "if they gave
+    none, ask"); an exact-title request must be created."""
+    words = {"expected": {"page": {"expect": "create", "title_match": "words", "words": ["dosing", "guide"], "in_nav": False}}}
+    asked = _page_row([], "Happy to! What would you like the page to be called?")
+    assert X.score_page(words, asked) == {"verdict": "pass", "reasons": [], "info": ["asked_for_the_name"],
+                                          "detail": {"expect": "create", "create_refused": 0}}
+    assert X.score_page(words, _page_row([], "Done — anything else?"))["verdict"] == "no_answer"  # a sign-off is no question
+    exact = {"expected": {"page": {"expect": "create", "title": "Dosing Guide", "in_nav": False}}}
+    assert X.score_page(exact, asked)["verdict"] == "no_answer"

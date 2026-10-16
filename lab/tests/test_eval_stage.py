@@ -40,7 +40,9 @@ def test_plan_sets_rebases_the_exam_and_keeps_the_recorded_rows(tmp_path):
     assert all((r.get("meta") or {}).get("context_source") == "rederived" for r in rows)
     rec = [r for s_ in EV.EXAM_SETS for r in sets["recorded"][s_]]
     assert len(rec) == len(rows) and sets["stale_round"] is False and sets["probe"] == []
-    assert sum(len(v) for v in sets["sets"].values()) == 252 - len(sets["stale"])
+    # p137.k2 (create_page) is scored in the report-only capability set, under its own set's key in the baseline
+    assert [r["id"] for r in sets["capability"]] == ["p137.k2"] and sets["capability"][0]["_origin_set"] == "out_of_scope"
+    assert sum(len(v) for v in sets["sets"].values()) + len(sets["capability"]) == 252 - len(sets["stale"])
 
 
 def test_a_newer_deployed_manifest_with_a_hard_change_marks_a_stale_round(tmp_path):

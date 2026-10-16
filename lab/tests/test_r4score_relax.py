@@ -58,7 +58,7 @@ def test_policy_defaults_env_and_typos(monkeypatch):
                  "font": "all"}
     assert R.STRICT_POLICY == {"refused_corrected": False, "mailto": False, "same_control": False,
                                "acted_first_turn": "off", "font": "all"}
-    assert R.POLICY_VERSION == "r6-3"
+    assert R.POLICY_VERSION == "r6-4"  # r6-4: modes page (create_page) and list, exam p137.k2
     monkeypatch.setenv("SOUSCHEF_FONT_POLICY", "body_only")
     monkeypatch.setenv("SOUSCHEF_SCORE_POLICY", json.dumps({"mailto": False}))
     p = R.policy_of()
@@ -668,3 +668,138 @@ def test_prepare_fixes_generic_font_cases_under_all_only():
     assert "site_fonts" not in cases[1]["expected"] and "site_fonts" not in cases[2]["expected"]
     again = [{**_font_case("make the whole site DM Sans"), "id": "g", "site_state": st}]
     assert fix_site_fonts(again, m, "as_authored")["count"] == 0 and "site_fonts" not in again[0]["expected"]
+
+
+# ── r6-4: create_page (mode page) and dropdown choices (mode list) ──────────
+
+def _ctx_row(text, ops=(), oks=(), context=None, calls=None):
+    r = _row(list(ops), list(oks), text=text)
+    r["context"] = context
+    if calls is not None:
+        r["tool_calls"] = calls
+    return r
+
+
+def _list_case(lst, entries, truncated=None):
+    ctx = {"page": "home"}
+    if entries is not None:
+        ctx[lst] = entries
+    if truncated:
+        ctx[f"{lst}Truncated"] = truncated
+    return {"id": "l1", "score": {"mode": "list"}, "context": ctx, "expected": {"listing": {"list": lst}}, "meta": {}}
+
+
+def _ents(n, word="Tag"):
+    return [{"slug": f"{word.lower()}-{i}", "name": f"{word} {chr(65 + i // 26)}{chr(65 + i % 26)}"} for i in range(n)]
+
+
+def test_listing_short_long_cut_empty_unknown():
+    short = _list_case("tags", _ents(3))
+    names = [e["name"] for e in short["context"]["tags"]]
+    ok = "Here are your tags:\n" + "\n".join(f"- {n}" for n in names) + "\nWant me to switch the carousel to one?"
+    assert R.score(short, _ctx_row(ok))["verdict"] == "answer_ok"
+    assert R.score(short, _ctx_row("- " + names[0] + "\n- " + names[1]))["verdict"] == "missing_names"
+    assert R.score(short, _ctx_row(ok + "\n- Super Sale"))["verdict"] == "invented_name"  # never a name the context lacks
+    assert R.score(short, _ctx_row(ok, [_set(CB1, title="x")], [True]))["verdict"] == "wrote"
+    longc = _list_case("tags", _ents(24))
+    first = [e["name"] for e in longc["context"]["tags"]][:15]
+    body = "\n".join(f"- **{n}**" for n in first)
+    assert R.score(longc, _ctx_row(body + "\n...and 9 more."))["verdict"] == "answer_ok"
+    assert R.score(longc, _ctx_row(body + "\n...and 10 more."))["verdict"] == "wrong_more_count"
+    assert R.score(longc, _ctx_row(body))["verdict"] == "no_more_count"
+    cut = _list_case("tags", _ents(100), {"shown": 100, "total": 130})
+    first = [e["name"] for e in cut["context"]["tags"]][:15]
+    body = "\n".join(f"- {n}" for n in first) + "\n…and 115 more."
+    assert R.score(cut, _ctx_row(body))["verdict"] == "no_dropdown_pointer"
+    assert R.score(cut, _ctx_row(body + " The Tag dropdown in the carousel's settings shows them all."))["verdict"] == "answer_ok"
+    assert R.score(cut, _ctx_row(body.replace("115", "85") + " See the dropdown."))["verdict"] == "wrong_more_count"
+    empty = _list_case("brands", [])
+    assert R.score(empty, _ctx_row("Your store has no brands set up yet."))["verdict"] == "answer_ok"
+    assert R.score(empty, _ctx_row("Pick one from the Brand dropdown."))["verdict"] == "did_not_say_none"
+    unknown = _list_case("brands", None)
+    assert R.listing_view(unknown)["situation"] == "unknown"
+    assert R.score(unknown, _ctx_row("You don't have any brands set up."))["verdict"] == "said_none"
+    assert R.score(unknown, _ctx_row("I can't see your brands right now; the Brand dropdown in the editor lists them."))["verdict"] == "answer_ok"
+    assert R.score(unknown, _ctx_row("I can't see them right now."))["verdict"] == "no_dropdown_pointer"
+    reported = _ctx_row("x", calls=[{"name": "report_unsupported", "input": {"where": "brands"}}])
+    assert R.score(unknown, reported)["verdict"] == "reported"
+    # r6-4 review: more ways to say none; "no list loaded" is not "none"; a name invented inside a sentence
+    for none in ("You haven't created any brands yet.", "Your store has 0 brands.", "There are no brands set up."):
+        assert R.score(empty, _ctx_row(none))["verdict"] == "answer_ok", none
+    assert R.score(unknown, _ctx_row("There's no brand list loaded for me right now… the Brand dropdown in the carousel "
+                                     "settings shows them."))["verdict"] == "answer_ok"
+    assert R.score(unknown, _ctx_row("I can't see your brands, so I can't tell. Your store has no brands? Check the "
+                                     "Brand dropdown."))["verdict"] == "said_none"
+    prose = f"Your tags are {names[0]}, {names[1]} and Moon Rocks."
+    assert R.score(short, _ctx_row(prose))["verdict"] == "invented_name"
+    assert R.score(short, _ctx_row(f"Your tags are {names[0]}, {names[1]} and {names[2]}. Want me to use one?"))["verdict"] \
+        == "answer_ok"
+    # the oracle's reply passes its own case
+    for c in (short, longc, cut, empty, unknown):
+        o = R.oracle_turn(c)
+        assert o["ops"] == [] and R.score(c, _ctx_row(o["text"]))["verdict"] == "answer_ok", o
+
+
+def test_page_mode_scores_the_op_and_flags_a_create_the_context_ruled_out():
+    case = {"id": "p1", "score": {"mode": "page"}, "meta": {},
+            "expected": {"page": {"expect": "create", "title": "Deals", "in_nav": False, "if_exists": "decline"}},
+            "context": {"page": "home", "customPages": []}, "site_state": {"customPages": []}}
+    good = _ctx_row("Added /deals; it goes live when you press Save and Publish.",
+                    [{"op": "create_page", "title": "Deals"}], [True])
+    sc = R.score(case, good)
+    assert sc["verdict"] == "pass" and sc["usable"] and sc["mode"] == "page"
+    have = {**case, "context": {"page": "home", "customPages": [{"slug": "deals", "title": "Deals"}]}}
+    tried = _ctx_row("You already have a Deals page at /deals.", [{"op": "create_page", "title": "Deals"}], [False])
+    sc = R.score(have, tried)
+    assert sc["verdict"] == "pass" and "create_refused" in sc["flags"] and not sc["usable"]
+    clean = R.score(have, _ctx_row("You already have a Deals page at /deals. Add something to it?"))
+    assert clean["verdict"] == "pass" and clean["usable"]
+    assert R.oracle_turn(case)["ops"] == [{"op": "create_page", "title": "Deals"}]
+    unfinished = {**good, "stop": "max_tokens"}
+    assert R.score(case, unfinished)["verdict"] == "no_answer"
+
+
+def test_p137_goes_back_to_where_pages_under_as_authored():
+    from souschef_lab import exam as X
+    row = next(r for r in X.load_set("out_of_scope") if r["id"] == "p137.k2")
+    assert R.apply_font_policy(row, "all") == (row, None)
+    old, note = R.apply_font_policy(row, "as_authored")
+    assert note == "font:as_authored" and old == next(r for r in X.load_set("out_of_scope", amended=False) if r["id"] == "p137")
+
+
+def test_prepare_relabels_page_creates_filed_as_where_pages():
+    from souschef_lab.retrain.prepare import fix_page_creates
+    def where(cid, text, holdout=False):
+        return {"id": cid, "kind": "unsupported", "request": text, "holdout": holdout, "score": {"mode": "where"},
+                "expected": {"ops": [], "out_of_scope": {"reason": "r", "expected_where": ["pages"]}, "where": ["pages"]},
+                "meta": {"family": "F3", "group": f"case:F3:{cid}"}}
+    cases = [where("a", "add a new page called Strain Guide"), where("b", "delete the events page"),
+             where("c", "add a blank page i can fill in later"), where("d", "make a new page called Deals and put it in the menu"),
+             where("e", "i need another page for wholesale inquiries", holdout=True),
+             {**where("f", "add a new page called X"), "expected": {"out_of_scope": {"expected_where": ["support"]}}}]
+    rep = fix_page_creates(cases)
+    assert rep["count"] == 4 and rep["modes"] == {"page": 3, "ask": 1} and rep["holdouts"] == 1
+    a, b, c, d, e, f = cases
+    assert a["score"]["mode"] == "page" and a["kind"] == "create_page" and a["expected"]["out_of_scope"] is None
+    assert a["expected"]["page"]["title"] == "Strain Guide" and a["expected"]["page"]["in_nav"] is False
+    assert a["meta"]["oracle_ops"] == [{"op": "create_page", "title": "Strain Guide"}] and "create_page" in a["meta"]["fixed"]
+    assert a["meta"]["relabelled"]["from"]["out_of_scope"]["expected_where"] == ["pages"]
+    assert b["score"]["mode"] == "where"  # deleting a page stays where=pages
+    assert c["score"]["mode"] == "ask"   # no name: ask for it
+    assert d["expected"]["page"] == {"expect": "create", "title_match": "exact", "in_nav": True, "status": "published",
+                                     "sections": [], "if_exists": "decline", "title": "Deals"}
+    assert e["id"] == "e.k2" and e["meta"]["superseded"] == {"id": "e"} and e["expected"]["page"]["words"] == ["wholesale", "inquiries"]
+    assert f["score"]["mode"] == "where"
+    assert fix_page_creates([where("g", "add a new page called Y")], "off")["count"] == 0
+    # "a menu page" is a page about a menu, not one in the header menu; a create of the exam's own page is dropped
+    menu = [where("h", "create a menu page for our drinks"), where("i", "add a page called Events and put it in the top nav"),
+            where("j", "make an events page")]
+    rep = fix_page_creates(menu)
+    assert rep["exam_clash"] == ["i", "j"] and [c["id"] for c in menu] == ["h"]
+    assert menu[0]["expected"]["page"]["in_nav"] is False
+    nav = [where("k", "add a Gift Guide page and put it in the header menu")]
+    fix_page_creates(nav)
+    assert nav[0]["expected"]["page"]["in_nav"] is True
+    # the relabelled create passes on the op a teacher sends
+    row = _ctx_row("Added /strain-guide.", [{"op": "create_page", "title": "Strain Guide"}], [True])
+    assert R.score({**a, "context": {"customPages": []}}, row)["verdict"] == "pass"

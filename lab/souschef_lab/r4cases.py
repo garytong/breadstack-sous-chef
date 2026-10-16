@@ -22,6 +22,13 @@ the dataset builder share:
   answer   no write, the reply names one of expected.reply_any
   ask      no write and a question: a request too vague to act on (r4score.score_ask; contrast.py's vague requests
            and the follow-up family's vague first turns as scored turns)
+  page     create_page on expected.page (exam.score_page): the create op as asked, or a decline (the page exists,
+           the slug is reserved, the template can't show custom pages) — contrast.py's page family and the pool's
+           relabelled page-create rows (retrain/prepare.fix_page_creates)
+  list     a dropdown's choices named from the context list the turn was sent (r4score.score_listing;
+           expected.listing {list, situation}; the case's `context_extras` — categories or any other member, None = a
+           list the browser could not load — and `option_lists` {tags, brands} are laid over the context fixture
+           when its context is derived: with_case_extras)
 
 F0 (the verbatim cases) is REBASED onto the cases' common manifest (the exam's
 `fixtures/exam/manifest-real.json`, PLAN §0.3 fallback): the state gets the
@@ -52,8 +59,9 @@ from pathlib import Path
 from typing import Any
 
 from . import FIXTURES_DIR
+from .createpage import run_engine_result
 
-MODES = ("exact", "keys", "where", "clarify", "answer", "ask")
+MODES = ("exact", "keys", "where", "clarify", "answer", "ask", "page", "list")
 FAMILY_ORDER = ("F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F0H", "F9H", "F0X")  # F7 authored, F8 contrast.py
 TEMPLATE_POOL = ("vintage", "vintage", "bold", "boutique", "cozy", "editorial", "elegant", "playful", "pluto", "retro", "sweet")
 DEFAULT_MANIFEST = FIXTURES_DIR / "exam" / "manifest-real.json"
@@ -241,7 +249,7 @@ def rebase_f0(src: dict, manifest, extras: dict, engine, where_by_source: dict[s
             mode = "clarify"
         else:
             ops = [o for o in exp["ops"] if o.get("op") != "pick_asset"]
-            r = engine.run(st, ops, ctx_of(case))
+            r = run_engine_result(engine, st, ops, ctx_of(case))
             if not r.ok:
                 why = "op_refused"
                 continue
@@ -462,6 +470,7 @@ def remeasure(c: dict, engine, manifest, extras: dict) -> str | None:
 
     c["site_state"] = humanize(copy.deepcopy(c["site_state"]))
     state = copy.deepcopy(c["site_state"])
+    extras = with_case_extras(extras, c)
     view = c["meta"].get("view") or None
     page0 = (c.get("context") or {}).get("page") or c["meta"].get("page") or "home"
     for i, h in enumerate(c.get("history") or []):
@@ -469,8 +478,8 @@ def remeasure(c: dict, engine, manifest, extras: dict) -> str | None:
         h["context"] = context_of(state, page, extras, manifest, view=view, text=h.get("user") or "")
         ops = strip(h.get("ops"))
         if ops:
-            r = engine.run(state, ops, ctx_of({"site_state": state, "context": h["context"], "template": c.get("template")}),
-                           print_state=True)
+            r = run_engine_result(engine, state, ops, ctx_of({"site_state": state, "context": h["context"],
+                                                              "template": c.get("template")}), print_state=True)
             if not r.ok or not r.diff() or not r.state:
                 return f"history_{i}_refused"
             state = r.state
@@ -480,7 +489,7 @@ def remeasure(c: dict, engine, manifest, extras: dict) -> str | None:
     mode = c["score"]["mode"]
     e = c["expected"]
     if mode == "exact":
-        r = engine.run(state, strip(e.get("ops")), ctx_of(fc))
+        r = run_engine_result(engine, state, strip(e.get("ops")), ctx_of(fc))
         if not r.ok:
             return "exact_refused"
         if not r.diff():
@@ -490,18 +499,80 @@ def remeasure(c: dict, engine, manifest, extras: dict) -> str | None:
                                  "remeasured": "humanized-state"}
         alts = []
         for a in e.get("alt_exact") or []:
-            ra = engine.run(state, strip(a.get("ops")), ctx_of(fc))
+            ra = run_engine_result(engine, state, strip(a.get("ops")), ctx_of(fc))
             if ra.ok and ra.diff():
                 alts.append({**a, "diff": ra.diff()})
         e["alt_exact"] = alts
     elif mode == "keys":
         ops = strip(c["meta"].get("oracle_ops") or e.get("ops"))
         if ops:
-            r = engine.run(state, ops, ctx_of(fc))
+            r = run_engine_result(engine, state, ops, ctx_of(fc))
             if not r.ok or not r.diff():
                 return "oracle_refused"
             c["meta"]["measured"] = {**(c["meta"].get("measured") or {}), "warnings": r.warnings, "written": r.written,
                                      "remeasured": "humanized-state"}
+    elif mode == "page":
+        return measure_page(c, engine, state, fc)
+    elif mode == "list":
+        from .r4score import listing_view
+        want = (e.get("listing") or {}).get("situation")
+        got = listing_view(c)["situation"]
+        if want and got != want:
+            return f"listing_{got}_not_{want}"  # the derived context does not carry the list the case is about
+    return None
+
+
+def with_case_extras(extras: dict | None, c: dict) -> dict:
+    """The context fixture with the case's own lists laid over it: `option_lists` ({tags, brands}: the carousel
+    lists the browser host holds, a missing or null kind = not loaded — state.option_lists_of, the same lists the
+    engine ctx carries) and `context_extras` (any other member, e.g. a listing case's categories). A None list is
+    one the context leaves out."""
+    ol, own = c.get("option_lists"), c.get("context_extras")
+    if not isinstance(ol, dict) and not (isinstance(own, dict) and own):
+        return extras or {}
+    out = dict(extras or {})
+    if isinstance(ol, dict):
+        for k in ("tags", "brands"):
+            out[k] = copy.deepcopy(ol[k]) if isinstance(ol.get(k), list) else None
+    if isinstance(own, dict):
+        out.update(copy.deepcopy(own))
+    return out
+
+
+def measure_page(c: dict, engine, state: dict, fc: dict) -> str | None:
+    """A page case on its state: a create's oracle ops (create_page + the asked section adds) must apply and create
+    the page the spec names; a decline's attempted create (meta.attempt) must be REFUSED by the engine (the page
+    exists, the slug is reserved, the template is not basic) — so the case is true on this engine."""
+    from .exam import page_expectation, score_page
+    from .verify import ctx_of
+    spec = page_expectation(c) or {}
+    ops = [o for o in c["meta"].get("oracle_ops") or [] if o.get("op") != "pick_asset"]
+    if spec.get("expect") == "create":
+        if not ops:
+            return "page_no_oracle"
+        r = run_engine_result(engine, state, ops, ctx_of(fc))
+        if not r.ok:
+            return "page_oracle_refused"
+        res = [{"ok": x.get("ok"), "slug": x.get("slug"), "warnings": x.get("warnings") or []}
+               for x in list(getattr(r, "results", None) or [])]
+        row = {"ops": ops, "engine_results": [{"results": res}], "reply": "", "tool_calls": [], "context": c.get("context")}
+        v = score_page(c, row)
+        if v["verdict"] != "pass":
+            return f"page_oracle_{v['verdict']}"
+        c["meta"]["measured"] = {**(c["meta"].get("measured") or {}), "warnings": r.warnings, "written": r.written,
+                                 "remeasured": "humanized-state"}
+        return None
+    attempt = [o for o in c["meta"].get("attempt") or [] if isinstance(o, dict)]
+    if attempt:
+        r = run_engine_result(engine, state, attempt, ctx_of(fc))
+        first = (list(getattr(r, "results", None) or []) or [{}])[0]
+        if first.get("ok"):
+            return "page_decline_accepted"  # the engine creates it: not a decline on this engine
+        code = (first.get("error") or {}).get("code")
+        want = "E_TARGET" if spec.get("why") == "template" else "E_SLUG"
+        if code != want:  # E_OP: an engine without create_page — the case would teach nothing true
+            return f"page_refused_{code}_not_{want}"
+        c["meta"]["measured"] = {**(c["meta"].get("measured") or {}), "refusal": code, "remeasured": "humanized-state"}
     return None
 
 
@@ -562,7 +633,7 @@ def tag_seen(exam_cases: list[dict], trained: list[dict], manifest) -> dict:
             pool[k] += 1
     n_seen = 0
     for c in exam_cases:
-        if c.get("kind") in ("unsupported", "clarify") or (c.get("score") or {}).get("mode") in ("where", "clarify"):
+        if c.get("kind") in ("unsupported", "clarify") or (c.get("score") or {}).get("mode") in ("where", "clarify", "list"):
             mine = set()
         else:
             mine = write_ids(c, manifest)
