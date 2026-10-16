@@ -297,9 +297,9 @@ func TestTurn_TextOnly(t *testing.T) {
 	if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" || len(userBlocks) != 1 || !strings.HasPrefix(userBlocks[0].Text, "<context>\n{\"page\":\"home\"") || !strings.HasSuffix(userBlocks[0].Text, "</context>\nhello") {
 		t.Errorf("messages = %d, user text = %q", len(msgs), userBlocks)
 	}
-	// The request carried the prefix: 10 tools, 2 system blocks with cache_control, tool_choice auto.
+	// The request carried the prefix: 11 tools, 2 system blocks with cache_control, tool_choice auto.
 	reqs := h.fake.Requests()
-	if len(reqs) != 1 || len(reqs[0].Body["tools"].([]any)) != 10 || len(reqs[0].Body["system"].([]any)) != 2 {
+	if len(reqs) != 1 || len(reqs[0].Body["tools"].([]any)) != 11 || len(reqs[0].Body["system"].([]any)) != 2 {
 		t.Fatalf("request shape: %d requests", len(reqs))
 	}
 	if tc := reqs[0].Body["tool_choice"].(map[string]any); tc["type"] != "auto" {

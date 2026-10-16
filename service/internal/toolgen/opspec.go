@@ -100,7 +100,7 @@ func targetSchema(ctx schemaContext) map[string]any {
 		}, "kind")
 }
 
-// ─── The ten tools ───────────────────────────────────────────────────────────
+// ─── The eleven tools ────────────────────────────────────────────────────────
 
 // orderDesc is edit_list's `order` member. It spells out the two engine rules
 // (validate.js reorder, engine README rule 7) the model broke in int-run2
@@ -186,6 +186,28 @@ var opSpecs = map[string]opSpec{
 				"page":   str("Page slug. Omit for the page the merchant is viewing. Pages: home, " + strings.Join(ctx.pages, ", ") + "."),
 				"layout": str("The layout id for that page (e.g. filter-left, tab, summary-left, accordion, hero-featured)."),
 			}, "layout")
+		},
+	},
+	// create_page mirrors the launcher engine's op (ops/schema.js
+	// OPS.CREATE_PAGE, validate.js / engine.js create_page): the editor host
+	// appends {slug, title, sections:[], settings:{}, status, showInNav,
+	// modified} to the draft's customPages and, with in_nav, sets the real
+	// header switch pageVisibility[slug].inHeaderNav. The engine owns the
+	// slug (slugify of slug ‖ title) and refuses duplicates, reserved slugs
+	// and premium templates; the result carries the final `slug`
+	// (api.ToolResult.Slug). Strict, three optionals (budget 11 → 14 of 24).
+	CreatePage: {
+		runs: RunsBrowser, strict: true,
+		desc: func(ctx schemaContext) string {
+			return "Create ONE new, empty custom page in the editor's unsaved draft (what the Pages tab's \"New page\" does). It goes live at /<slug> only when the merchant presses Save and Publish, and it is in the header menu only with in_nav true. The result returns the page's final `slug`: then target the new page with {\"kind\":\"page\",\"page\":<slug>} (edit_list on its list \"sections\" to add sections) or {\"kind\":\"section\",\"page\":<slug>,…}. To add sections in the SAME batch as the create, pass `slug` yourself and use exactly that slug; if the create is refused, those later calls are refused too. Refused, with nothing created, when the title or slug matches a page that already exists (edit that page instead), when the slug is reserved or not already lowercase words joined by hyphens, or on a template that cannot show custom pages; the error says which and may suggest a free slug. Renaming, duplicating or deleting pages is not available (report_unsupported where pages)."
+		},
+		schema: func(ctx schemaContext) map[string]any {
+			return obj("", map[string]any{
+				"title":  str("The new page's name as the merchant gave it, plain text, at most 80 characters (e.g. \"Deals\", \"Summer Events\")."),
+				"slug":   str("Optional: the page's path segment, only lowercase letters, digits and hyphens (e.g. \"summer-events\"); anything else is refused. Omit to derive it from the title; pass it when a later call in the same batch targets the new page."),
+				"status": enumStr("Optional: published (default) = served at /<slug> once saved; draft = saved but not served, and hidden from the editor's page list. Use draft only when the merchant asks for it.", []string{"published", "draft"}),
+				"in_nav": boolean("Optional: true also adds the page to the header menu. Only when the merchant asks for it; otherwise omit."),
+			}, "title")
 		},
 	},
 	ResetPinnedSection: {

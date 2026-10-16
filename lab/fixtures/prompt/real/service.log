@@ -1,26 +1,26 @@
-2026/10/10 05:37:15 sous-chef: migrated to schema version 5
-2026/10/10 05:37:15 sous-chef lab-e2e listening on :37285 (routes: [lab-fake lab-fake-fields], default: lab-fake, keys: 1, usage shipping: false)
-2026/10/10 05:37:15 api: GET /version 200 323B 0s
-2026/10/10 05:37:15 api: POST /v1/manifests 200 2254B 192ms
-2026/10/10 05:37:15 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.tagline 204 0B 6ms
-2026/10/10 05:37:15 api: POST /v1/turns 200 537B 14ms
-2026/10/10 05:37:19 api: POST /v1/turns/0fdb582f-f7de-428e-b9f2-b94057c3ebe9/tool-results 200 591B 9ms
-2026/10/10 05:37:23 api: POST /v1/turns/0fdb582f-f7de-428e-b9f2-b94057c3ebe9/tool-results 200 559B 11ms
-2026/10/10 05:37:26 api: POST /v1/manifests 200 2254B 144ms
-2026/10/10 05:37:26 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.title 204 0B 2ms
-2026/10/10 05:37:26 api: POST /v1/turns 200 573B 13ms
-2026/10/10 05:37:30 api: POST /v1/turns/5a0d9a46-7aa9-4ffb-b8a3-e85131a2d87f/tool-results 200 570B 8ms
-2026/10/10 05:37:30 api: POST /v1/manifests 200 2254B 135ms
-2026/10/10 05:37:30 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.title 204 0B 2ms
-2026/10/10 05:37:30 api: POST /v1/turns 200 573B 8ms
-2026/10/10 05:37:30 api: POST /v1/turns/9b205fc6-9aef-4c9e-bbff-fa9f0f9e276b/tool-results 200 564B 48ms
-2026/10/10 05:37:30 api: POST /v1/manifests 200 2254B 137ms
-2026/10/10 05:37:30 api: DELETE /v1/conversations/lab-image/gallery/gallery/bgImage/pick 204 0B 2ms
-2026/10/10 05:37:30 api: POST /v1/turns 200 427B 8ms
-2026/10/10 05:37:31 api: POST /v1/turns/d8809789-2ee2-44df-acc1-00915fc37c7d/tool-results 200 792B 48ms
-2026/10/10 05:37:34 api: POST /v1/turns/d8809789-2ee2-44df-acc1-00915fc37c7d/tool-results 200 577B 9ms
-2026/10/10 05:37:38 api: POST /v1/manifests 200 2254B 138ms
-2026/10/10 05:37:38 api: DELETE /v1/conversations/lab-list_add/page/home/sections/loyaltyForm 204 0B 2ms
-2026/10/10 05:37:38 api: POST /v1/turns 200 830B 8ms
-2026/10/10 05:37:42 api: POST /v1/turns/bc0e4d87-011f-4a6e-9168-c897782d06ea/tool-results 200 600B 8ms
-2026/10/10 05:37:46 sous-chef: shutting down
+2026/10/15 23:41:30 sous-chef: migrated to schema version 6
+2026/10/15 23:41:30 sous-chef lab-e2e listening on :39165 (routes: [lab-fake lab-fake-fields], default: lab-fake, keys: 1, usage shipping: false)
+2026/10/15 23:41:31 api: GET /version 200 323B 0s
+2026/10/15 23:41:31 api: POST /v1/manifests 200 2806B 129ms
+2026/10/15 23:41:31 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.tagline 204 0B 5ms
+2026/10/15 23:41:31 api: POST /v1/turns 200 537B 13ms
+2026/10/15 23:41:34 api: POST /v1/turns/d7ba93f6-337f-4522-a52c-941e0c03d950/tool-results 200 591B 9ms
+2026/10/15 23:41:37 api: POST /v1/turns/d7ba93f6-337f-4522-a52c-941e0c03d950/tool-results 200 559B 10ms
+2026/10/15 23:41:41 api: POST /v1/manifests 200 2806B 123ms
+2026/10/15 23:41:41 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.title 204 0B 2ms
+2026/10/15 23:41:41 api: POST /v1/turns 200 573B 11ms
+2026/10/15 23:41:44 api: POST /v1/turns/ad7d94ce-e830-4d5f-8f9a-2c83a4fd3445/tool-results 200 570B 10ms
+2026/10/15 23:41:44 api: POST /v1/manifests 200 2806B 125ms
+2026/10/15 23:41:44 api: DELETE /v1/conversations/lab-set_field.contentBlock-1.title 204 0B 2ms
+2026/10/15 23:41:44 api: POST /v1/turns 200 573B 7ms
+2026/10/15 23:41:44 api: POST /v1/turns/868af4d5-743b-448c-9ec9-801b7aa03418/tool-results 200 564B 48ms
+2026/10/15 23:41:44 api: POST /v1/manifests 200 2806B 119ms
+2026/10/15 23:41:44 api: DELETE /v1/conversations/lab-image/gallery/gallery/bgImage/pick 204 0B 1ms
+2026/10/15 23:41:44 api: POST /v1/turns 200 427B 7ms
+2026/10/15 23:41:45 api: POST /v1/turns/b4e4dc7c-337f-4295-955d-1c462d962d32/tool-results 200 792B 48ms
+2026/10/15 23:41:48 api: POST /v1/turns/b4e4dc7c-337f-4295-955d-1c462d962d32/tool-results 200 577B 9ms
+2026/10/15 23:41:51 api: POST /v1/manifests 200 2806B 128ms
+2026/10/15 23:41:51 api: DELETE /v1/conversations/lab-list_add/page/home/sections/loyaltyForm 204 0B 2ms
+2026/10/15 23:41:51 api: POST /v1/turns 200 830B 8ms
+2026/10/15 23:41:55 api: POST /v1/turns/a0d340ab-9bc8-4368-8a83-71bdcbde8d5f/tool-results 200 600B 8ms
+2026/10/15 23:41:58 sous-chef: shutting down

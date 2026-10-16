@@ -874,6 +874,7 @@ func TestIndexContent(t *testing.T) {
 		"b: f=137",
 		"faqCategories[].items[]: a q",
 		`{kind:"section",page,sectionId,storeId?}`,
+		"create_page {title, slug?, status?, in_nav?}",
 	} {
 		if !strings.Contains(ix.Text, want) {
 			t.Errorf("index missing %q", want)

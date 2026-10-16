@@ -34,7 +34,7 @@ func loadSnapshot(t *testing.T) []byte {
 // --- rules -------------------------------------------------------------------
 
 func TestRules_NameEveryToolAndNoSalvagedLeftovers(t *testing.T) {
-	for _, tool := range []string{"set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "reset_pinned_section", "pick_asset", "lookup_fields", "describe_target", "report_unsupported"} {
+	for _, tool := range []string{"set_fields", "edit_list", "reset", "restore_default", "set_page_layout", "create_page", "reset_pinned_section", "pick_asset", "lookup_fields", "describe_target", "report_unsupported"} {
 		if !strings.Contains(Rules, tool) {
 			t.Errorf("rules never mention %s", tool)
 		}
@@ -135,6 +135,61 @@ func TestRules_ContextContractAndRealTurnFixes(t *testing.T) {
 	}
 	if strings.Contains(Rules, "{\"kind\":\"branding\"} edits branding") {
 		t.Error("branding target still described as the Branding panel")
+	}
+}
+
+// 2026-10-15: creating a page is supported (create_page), renaming,
+// duplicating and deleting are still where=pages; listing a dropdown's
+// choices is supported, from the <context> lists (tags, brands, categories,
+// locations) or lookup_fields, at most 15 names then "...and N more" with a
+// pointer to the editor's dropdown; picking a carousel brand is not a
+// "brands" report.
+func TestRules_CreatePageAndListingChoices(t *testing.T) {
+	for _, want := range []string{
+		// create_page
+		"- pages: rename, duplicate or delete pages (creating a new page IS supported: create_page;",
+		"Creating pages:",
+		"create_page adds ONE new, empty custom page to the unsaved draft",
+		"title = the name the merchant gave (if they gave none, ask)",
+		"Set in_nav only when they ask",
+		"Never create a page that <context> already has",
+		"edit that page instead",
+		`edit_list on {"kind":"page","page":<slug>} list "sections"`,
+		"the slug create_page returned",
+		"pass slug yourself (lowercase letters, digits and hyphens) and target exactly that slug",
+		"goes live when they press Save and Publish",
+		"whether it is in the header menu",
+		// option lists
+		"Listing choices (never report_unsupported for it):",
+		"come ONLY from the <context> lists categories, tags, brands and locations",
+		"never name one that is not there",
+		"lookup_fields (enum, enum_labels)",
+		"at most 15",
+		`"...and N more"`,
+		`"tagsTruncated" / "brandsTruncated": {shown, total}`,
+		"that setting's dropdown in the editor",
+		`An empty list ("tags": []) means the store has none set up: say so.`,
+		"A list missing from <context> means you cannot see it right now (never say there are none)",
+		"If none matches, say so and ask",
+		"tags, brands, custom pages and locations come from the <context> block",
+		"category, tag or brand names and slugs",
+		// brands where: picking is supported
+		"- brands: create or edit brand records (choosing a brand or tag for a product carousel IS supported).",
+	} {
+		if !strings.Contains(Rules, want) {
+			t.Errorf("rules lack %q", want)
+		}
+	}
+	if !strings.Contains(Rules, "E_ORDER, E_LIMIT, E_SLUG)") {
+		t.Error("the error-code list lacks E_SLUG (create_page's slug refusals)")
+	}
+	// "create" left the pages where: report_unsupported is for the rest.
+	if strings.Contains(Rules, "pages: create, rename") {
+		t.Error("rules still send page creation to report_unsupported")
+	}
+	// report_unsupported's where enum is unchanged (shared contract 1).
+	if got := strings.Join(toolgen.UnsupportedWhere, ","); got != "domain,sites,pages,assets,seo,themes,products,categories,brands,support" {
+		t.Errorf("where enum changed: %s", got)
 	}
 }
 

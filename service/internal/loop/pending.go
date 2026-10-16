@@ -144,8 +144,9 @@ func (p *pendingDoc) suspendedEvent() map[string]any {
 // browserResult turns one browser-reported outcome into the tool_result the
 // model reads: the engine's {code,message,key} with is_error on failure; for
 // pick_asset the chosen asset {public_url, alt, srcset}; otherwise
-// {ok, written, warnings, hidden, sectionId} (keys sorted; `hidden` =
-// [{by, byValue, key}], contract 4, only when the browser sent entries).
+// {ok, written, warnings, hidden, sectionId, slug} (keys sorted; `hidden` =
+// [{by, byValue, key}], contract 4, only when the browser sent entries;
+// `slug` = create_page's new page, only for that op).
 func browserResult(name string, res api.ToolResult) model.ToolResult {
 	if !res.OK {
 		e := res.Error
@@ -174,6 +175,9 @@ func browserResult(name string, res api.ToolResult) model.ToolResult {
 	}
 	if res.SectionID != "" {
 		out["sectionId"] = res.SectionID
+	}
+	if res.Slug != "" && name == toolgen.CreatePage {
+		out["slug"] = res.Slug
 	}
 	b, _ := json.Marshal(out)
 	return model.ToolResult{ID: res.ToolCallID, Content: string(b)}

@@ -41,7 +41,10 @@ func fastFinishReply(n int) string {
 // service knows and showed (no server tool, no report_unsupported, no
 // pick_asset, no op the service refused) other than an edit_list add or
 // duplicate (the new row's id or index never reaches the model, and the
-// follow-up step — describing or filling the new section — needs it), and
+// follow-up step — describing or filling the new section — needs it) and a
+// create_page (the follow-up — sections on the new page — needs its slug,
+// and the closing reply must say where the page lives, that it goes live on
+// Save and whether it is in the header menu), and
 // every one answered ok:true with no warnings, no `hidden` entries, no new
 // `sectionId` and no asset. A result's sectionId equal to the op's own
 // target.sectionId / sectionId is the launcher's echo of the input, not
@@ -59,6 +62,9 @@ func (t *turn) cleanBatch(answered map[string]api.ToolResult) (ops int, clean bo
 		}
 		in := parseOpInput(c.Input)
 		if c.Name == toolgen.EditList && (in.Action == "add" || in.Action == "duplicate") {
+			return 0, false
+		}
+		if c.Name == toolgen.CreatePage {
 			return 0, false
 		}
 		res, ok := answered[c.ID]

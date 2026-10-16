@@ -75,9 +75,17 @@ func fieldsRequest(h *harness, route, text string) api.TurnRequest {
 // "too vague to act on → ask one short question" line follows the
 // two-controls rule. Without those two lines the bodies still hash to
 // 32b026b7… / 480416c4…; tools, system[1] and the user turn did not move.
+// With them alone (the r6 commit): d1605274… / f081b59b….
+// Moved again on purpose 2026-10-15 (create_page + dropdown options): the
+// tool list gains create_page after set_page_layout, and system[0] gains
+// "Creating pages" and "Listing choices" (an empty list = none set up, a
+// missing one = not visible), drops "create" from the pages where, reads
+// picking a carousel brand as supported and names E_SLUG among the error
+// codes. On top of the font / vague-request lines (d1605274… /
+// f081b59b…); system[1] and the user turn did not move.
 const (
-	anthropicBodySHA        = "d1605274a2419a377dc08dfc741a9a35b63f0c4da1ca5a2ae8301afd4e7e0cb6"
-	anthropicBodySHANoBlock = "f081b59b2e80595e87bf377122c165d845ce69a3bda051a8e45f10f6977769be"
+	anthropicBodySHA        = "06b8d4be5590805e90b0e4661a689eb63f404300259203dbabdbd2e16ebf58a0"
+	anthropicBodySHANoBlock = "a212b8be08b178ac4d4896ddb2082b5b049576e5f2b6b908be7953be704cd3c4"
 )
 
 func TestFieldsContext_AnthropicRequestIsByteIdentical(t *testing.T) {

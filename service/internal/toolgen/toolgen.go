@@ -1,7 +1,7 @@
 // Package toolgen builds the Anthropic Messages API tool definitions Sous
 // Chef exposes to the model (README §2) and dispatches the server-side ones.
 //
-// The ten tools are generated per manifest hash in a fixed order, because the
+// The eleven tools are generated per manifest hash in a fixed order, because the
 // tool list is the first part of the cached prompt prefix: ToolsJSON is
 // byte-stable for a given manifest. Data-op schemas are derived from the
 // browser engine's op schema (cookie-cutter launcher/client/src/sousChef/
@@ -20,18 +20,21 @@
 // at 16; exceeding either is a 400 before any token is billed (seen live on
 // int 2026-10-04 at 29/24). `lookup_fields` and `describe_target`, whose
 // members are all optional, are therefore `strict: false` too (Dispatch
-// validates them and answers self-correcting errors); the six remaining
-// tools are `strict: true` and spend 11 of the 24
-// (TestStrictOptionalParameterBudget; 12 before `keys` became required on
-// reset / restore_default, 10 until report_unsupported gained `where`). `tool_choice` is always `auto` (forced tool use
+// validates them and answers self-correcting errors); the seven remaining
+// tools are `strict: true` and spend 14 of the 24
+// (TestStrictOptionalParameterBudget; 11 before create_page's slug, status
+// and in_nav, 12 before `keys` became required on reset / restore_default,
+// 10 until report_unsupported gained `where`). `tool_choice` is always `auto` (forced tool use
 // 400s on Claude Sonnet 5.5 / Opus 5.5), which the loop sets — not this
 // package.
 //
 // Browser ops are applied by the engine, which is the authority on their
-// shape — with one server-side exception: ValidateBrowserOp refuses a reset /
-// restore_default without `keys` before the loop emits it, because the
-// engine's keyless form clears the WHOLE target (every field of a section,
-// page or panel) and the model must never be able to reach it.
+// shape — with two server-side exceptions (ValidateBrowserOp), refused
+// before the loop emits them: a reset / restore_default without `keys`,
+// because the engine's keyless form clears the WHOLE target (every field
+// of a section, page or panel) and the model must never be able to reach
+// it; and a create_page without a usable title, which the engine would
+// refuse anyway.
 package toolgen
 
 import (
@@ -39,6 +42,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/breadstack/sous-chef/internal/fields"
 	"github.com/breadstack/sous-chef/internal/manifest"
@@ -77,6 +82,7 @@ const (
 	Reset              = "reset"
 	RestoreDefault     = "restore_default"
 	SetPageLayout      = "set_page_layout"
+	CreatePage         = "create_page"
 	ResetPinnedSection = "reset_pinned_section"
 	PickAsset          = "pick_asset"
 	LookupFields       = "lookup_fields"
@@ -86,13 +92,13 @@ const (
 
 // Order is the fixed tool order (part of the cached prefix).
 var Order = []string{
-	SetFields, EditList, Reset, RestoreDefault, SetPageLayout, ResetPinnedSection,
+	SetFields, EditList, Reset, RestoreDefault, SetPageLayout, CreatePage, ResetPinnedSection,
 	PickAsset, LookupFields, DescribeTarget, ReportUnsupported,
 }
 
 var runsOf = map[string]Runs{
 	SetFields: RunsBrowser, EditList: RunsBrowser, Reset: RunsBrowser, RestoreDefault: RunsBrowser,
-	SetPageLayout: RunsBrowser, ResetPinnedSection: RunsBrowser,
+	SetPageLayout: RunsBrowser, CreatePage: RunsBrowser, ResetPinnedSection: RunsBrowser,
 	PickAsset:    RunsSuspend,
 	LookupFields: RunsServer, DescribeTarget: RunsServer,
 	// report_unsupported is answered by the server but also echoed to the
@@ -260,9 +266,15 @@ func Dispatch(m *manifest.Manifest, name string, input json.RawMessage) (res Res
 // strings: the engine applies such a call to EVERY field of the target
 // (validate.js validateResetLike, `op.keys === undefined`), and the strict
 // schema (keys required, minItems 1) is belt; this is braces, so the clear-
-// all form cannot reach the browser however the input arrived. Every other
-// tool passes untouched (the engine validates it).
+// all form cannot reach the browser however the input arrived. It also
+// refuses a create_page whose `title` is missing, not a string, blank or
+// longer than MaxPageTitle characters (the engine's own limit; strict mode
+// cannot carry maxLength), so a malformed create never reaches the editor.
+// Every other tool passes untouched (the engine validates it).
 func ValidateBrowserOp(name string, input json.RawMessage) (res Result, refused bool) {
+	if name == CreatePage {
+		return validateCreatePage(input)
+	}
 	if name != Reset && name != RestoreDefault {
 		return Result{}, false
 	}
@@ -287,6 +299,104 @@ func ValidateBrowserOp(name string, input json.RawMessage) (res Result, refused 
 		}
 	}
 	return Result{}, false
+}
+
+// MaxPageTitle is create_page's title limit in characters (after trimming),
+// the launcher engine's (ops/validate.js create_page).
+const MaxPageTitle = 80
+
+// validateCreatePage refuses a create_page without a usable title.
+func validateCreatePage(input json.RawMessage) (Result, bool) {
+	var req struct {
+		Title any `json:"title"`
+	}
+	if err := unmarshalInput(input, &req); err != nil {
+		return errResult("E_OP", err.Error()), true
+	}
+	need := fmt.Sprintf("create_page needs a title: the new page's name as the merchant said it, plain text, at most %d characters. Nothing was created.", MaxPageTitle)
+	title, ok := req.Title.(string)
+	// Trimmed and whitespace runs collapsed, as the engine counts it
+	// (validate.js normTitle, then code points).
+	title = strings.Join(strings.Fields(title), " ")
+	if !ok || title == "" || utf8.RuneCountInString(title) > MaxPageTitle {
+		return errResult("E_VALUE", need), true
+	}
+	return Result{}, false
+}
+
+// PageOf is the page a browser op's input aims at by slug — target.page,
+// page (set_page_layout / reset_pinned_section) or for.target.page
+// (pick_asset) — or "" (none named: the viewed page).
+func PageOf(input json.RawMessage) string {
+	var in struct {
+		Page   any `json:"page"`
+		Target struct {
+			Page any `json:"page"`
+		} `json:"target"`
+		For struct {
+			Target struct {
+				Page any `json:"page"`
+			} `json:"target"`
+		} `json:"for"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return ""
+	}
+	for _, p := range []any{in.Target.Page, in.Page, in.For.Target.Page} {
+		if s, ok := p.(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// CreatePageSlugs are the slugs a create_page call would have created: its
+// slug as passed and Slugify(slug ‖ title), the engine's own rule. A batch
+// stops later ops aimed at them when the create is refused (loop dispatch),
+// so a follow-up never lands on a page that already holds the slug.
+func CreatePageSlugs(input json.RawMessage) []string {
+	var in struct {
+		Title any `json:"title"`
+		Slug  any `json:"slug"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return nil
+	}
+	var out []string
+	given, _ := in.Slug.(string)
+	if strings.TrimSpace(given) == "" {
+		given = ""
+	} else {
+		out = append(out, given)
+	}
+	base := given
+	if base == "" {
+		base, _ = in.Title.(string)
+	}
+	if s := Slugify(base); s != "" && s != given {
+		out = append(out, s)
+	}
+	return out
+}
+
+// Slugify mirrors the launcher's slugify (lib/pageSlug.js): lowercase, keep
+// only a-z, 0-9, whitespace and hyphens, trim, whitespace runs → one
+// hyphen, hyphen runs → one.
+func Slugify(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		case unicode.IsSpace(r) || r == '\ufeff':
+			b.WriteRune(' ')
+		}
+	}
+	out := strings.Join(strings.Fields(b.String()), "-")
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	return out
 }
 
 func unmarshalInput(input json.RawMessage, into any) error {

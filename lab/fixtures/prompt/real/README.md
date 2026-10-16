@@ -3,7 +3,7 @@
 One directory per captured turn, each the REAL `sous-chef` binary (built from `service/cmd/sous-chef`, `BUILD_ID lab-e2e`)
 talking to `tests/fake_model.py` over a `messages-compatible` route (`auth: none`, `stream: false`), with the lab's own
 collector (`souschef_lab.collect.run_case`) as the browser and the real engine (`headless.mjs`) applying the ops.
-No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_real.py`. Re-captured 2026-10-10 (`--from fixtures/prompt/real`) after the wave-2 service changes: new system[0]/system[1]/tools, the fields-context block re-ranked; everything else byte-identical (docs/LAB.md §10 "Deferred", prompt-parity note). Re-captured once more the same day after the verify pass's rule/tool wording and the gallery alias: only `system` and `tools` moved.
+No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_real.py`. Re-captured 2026-10-10 (`--from fixtures/prompt/real`) after the wave-2 service changes: new system[0]/system[1]/tools, the fields-context block re-ranked; everything else byte-identical (docs/LAB.md §10 "Deferred", prompt-parity note). Re-captured once more the same day after the verify pass's rule/tool wording and the gallery alias: only `system` and `tools` moved. Re-captured 2026-10-15 (`--from`) after create_page and the post-demo font / vague-request rules: new system[0], `create_page` in tools, and — on the lab's cc-snapshot-r4 engine — the warnings capture's gated result carries the engine's `hidden` member; verdicts unchanged.
 
 ```
 <capture>/
@@ -17,7 +17,7 @@ No API spend; nothing leaves 127.0.0.1. Captured 2026-10-01 by `tests/capture_re
 |---|---|---|---|
 | `ok.set_field.contentBlock-1.title` | `{"ok":true,"written":[…]}` | 2 | pass |
 | `error.set_field.contentBlock-1.tagline` | `{"code":"E_FIELD","message":…,"key":"showButton"}` with `is_error`, then the retry's ok | 3 | invalid_op (the scripted bad op) |
-| `warnings-sectionid.list_add.home.sections.loyaltyForm` | `{"ok":true,"sectionId":"loyaltyForm","written":[…]}` and `{"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":[…]}` — two results in ONE user message | 2 | extra_writes (the scripted gated write) |
+| `warnings-sectionid.list_add.home.sections.loyaltyForm` | `{"ok":true,"sectionId":"loyaltyForm","written":[…]}` and `{"hidden":[{"by":"style",…}],"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":[…]}` — two results in ONE user message | 2 | extra_writes (the scripted gated write) |
 | `fields-context.set_field.contentBlock-1.title` | the `ok.` turn again on route `lab-fake-fields` (`fields_context: on`): the user turn carries the `<candidate_fields>` block between `</context>` and the text; `plan.json` names the route; the row logs the block as `candidate_fields` (captured 2026-10-04) | 2 | pass |
 | `pick_asset.image.gallery.bgImage` | `turn.suspended` → the bare `api.Asset` `{"public_url":…,"srcset":{…}}`, then the set_fields' ok | 3 | pass |
 

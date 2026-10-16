@@ -609,6 +609,12 @@ func (t *turn) lostRow(ctx context.Context, em api.Emitter, status string, cause
 // its results arrive (resume).
 func (t *turn) dispatch(uses []model.Block, overruled bool) (results []model.ToolResult, pending *pendingDoc, calls []model.Block, refused bool) {
 	pd := &pendingDoc{}
+	// Slugs of a create_page refused here: a later op of the same batch
+	// aimed at one (the model passes the slug and targets it in the same
+	// reply) would otherwise land on whatever page already holds it. The
+	// browser applies the same rule after an engine refusal (client/turns.js
+	// applyOps).
+	notCreated := map[string]bool{}
 	for _, u := range uses {
 		runs, known := toolgen.RunsWhere(u.Name)
 		call := pendingCall{ID: u.ID, Name: u.Name, Input: u.Input}
@@ -617,6 +623,14 @@ func (t *turn) dispatch(uses []model.Block, overruled bool) (results []model.Too
 			call.Server = true
 			refused = true
 			res := model.ToolResult{ID: u.ID, IsError: true, Content: errJSON("E_OP", fmt.Sprintf("unknown tool %q", u.Name))}
+			results = append(results, res)
+			pd.ServerResults = append(pd.ServerResults, serverResult{ID: u.ID, Content: res.Content, IsError: true})
+		case (runs == toolgen.RunsBrowser || runs == toolgen.RunsSuspend) && notCreated[toolgen.PageOf(u.Input)]:
+			call.Server = true
+			refused = true
+			t.rec.MarkServer(u.ID)
+			msg := fmt.Sprintf("page %q was not created (create_page was refused earlier in this reply), so this op was not applied", toolgen.PageOf(u.Input))
+			res := model.ToolResult{ID: u.ID, IsError: true, Content: errJSON("E_TARGET", msg)}
 			results = append(results, res)
 			pd.ServerResults = append(pd.ServerResults, serverResult{ID: u.ID, Content: res.Content, IsError: true})
 		case runs == toolgen.RunsServer && overruled && u.Name == toolgen.ReportUnsupported:
@@ -651,16 +665,24 @@ func (t *turn) dispatch(uses []model.Block, overruled bool) (results []model.Too
 			// counted.
 			pd.SuspendedID = u.ID
 		default: // browser op
-			if out, refused := toolgen.ValidateBrowserOp(u.Name, u.Input); refused {
+			if out, bad := toolgen.ValidateBrowserOp(u.Name, u.Input); bad {
 				// A reset / restore_default without keys would clear the
-				// whole target in the engine: answered here, is_error, and
-				// never emitted as a tool.call (README §2, §4 step 4).
+				// whole target in the engine, and a create_page without a
+				// usable title cannot be applied: answered here, is_error,
+				// and never emitted as a tool.call (README §2, §4 step 4).
+				// `bad`, not `refused`: the named result must see it, or a
+				// batch with no browser op left would not escalate.
 				call.Server = true
 				refused = true
 				t.rec.MarkServer(u.ID)
 				res := model.ToolResult{ID: u.ID, Content: out.Content, IsError: true}
 				results = append(results, res)
 				pd.ServerResults = append(pd.ServerResults, serverResult{ID: u.ID, Content: res.Content, IsError: true})
+				if u.Name == toolgen.CreatePage {
+					for _, slug := range toolgen.CreatePageSlugs(u.Input) {
+						notCreated[slug] = true
+					}
+				}
 				break
 			}
 			call.Seq = t.seq + len(calls) + 1

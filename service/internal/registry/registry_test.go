@@ -286,7 +286,7 @@ func TestGetAndLoad(t *testing.T) {
 	// Load from cache (no store read), then from the store after eviction.
 	gets := st.gets
 	c, err := r.Load(ctx, hash)
-	if err != nil || c.Hash != hash || len(c.Tools) != 10 || len(c.Prefix.Tools) != 10 || c.Prefix.Index != c.Index.Text {
+	if err != nil || c.Hash != hash || len(c.Tools) != 11 || len(c.Prefix.Tools) != 11 || c.Prefix.Index != c.Index.Text {
 		t.Fatalf("load = %v %v", c, err)
 	}
 	if st.gets != gets {

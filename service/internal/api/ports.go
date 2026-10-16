@@ -190,7 +190,11 @@ type ToolResult struct {
 	Warnings   []string   `json:"warnings,omitempty"`
 	Written    []string   `json:"written,omitempty"`
 	SectionID  string     `json:"sectionId,omitempty"`
-	Asset      *Asset     `json:"asset,omitempty"`
+	// Slug is create_page's outcome: the new custom page's final slug as
+	// the engine derived it (slugify of the op's slug or title), which the
+	// model targets in its next calls. Absent for every other op.
+	Slug  string `json:"slug,omitempty"`
+	Asset *Asset `json:"asset,omitempty"`
 	// Hidden is the launcher's `hidden: [{key, by, byValue}]` next to the
 	// unchanged `W_HIDDEN:<key>` warnings (shared contract 4): which setting
 	// gates a written field and that setting's post-op value. Kept raw — a

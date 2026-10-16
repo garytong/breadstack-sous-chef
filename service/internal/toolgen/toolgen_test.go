@@ -75,7 +75,7 @@ func walk(s any, fn func(path string, m map[string]any)) {
 
 func TestToolsOrderAndNames(t *testing.T) {
 	tools := Tools(snapshot(t))
-	if len(tools) != 10 || len(Order) != 10 {
+	if len(tools) != 11 || len(Order) != 11 {
 		t.Fatalf("len = %d", len(tools))
 	}
 	seen := map[string]bool{}
@@ -94,7 +94,7 @@ func TestToolsOrderAndNames(t *testing.T) {
 			t.Errorf("%s: no Runs classification", tl.Name)
 		}
 	}
-	if Order[0] != SetFields || Order[9] != ReportUnsupported {
+	if Order[0] != SetFields || Order[10] != ReportUnsupported {
 		t.Fatal("order must start with set_fields and end with report_unsupported (cached prefix)")
 	}
 }
@@ -102,7 +102,7 @@ func TestToolsOrderAndNames(t *testing.T) {
 func TestRunsClassification(t *testing.T) {
 	want := map[string]Runs{
 		SetFields: RunsBrowser, EditList: RunsBrowser, Reset: RunsBrowser, RestoreDefault: RunsBrowser,
-		SetPageLayout: RunsBrowser, ResetPinnedSection: RunsBrowser, PickAsset: RunsSuspend,
+		SetPageLayout: RunsBrowser, CreatePage: RunsBrowser, ResetPinnedSection: RunsBrowser, PickAsset: RunsSuspend,
 		LookupFields: RunsServer, DescribeTarget: RunsServer, ReportUnsupported: RunsServer,
 	}
 	for name, w := range want {
@@ -129,7 +129,7 @@ func TestStrictness(t *testing.T) {
 			t.Errorf("%s: strict=%v", tl.Name, tl.Strict)
 		}
 	}
-	for _, name := range []string{Reset, RestoreDefault, SetPageLayout, ResetPinnedSection, PickAsset, ReportUnsupported} {
+	for _, name := range []string{Reset, RestoreDefault, SetPageLayout, CreatePage, ResetPinnedSection, PickAsset, ReportUnsupported} {
 		if !toolByName(t, tools, name).Strict {
 			t.Errorf("%s must stay strict (data op / merchant-facing)", name)
 		}
@@ -176,10 +176,11 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 	// `keys` on reset / restore_default was optional then (one each) and is
 	// required now, so those two are added back before comparing; the
 	// optional `where` on report_unsupported (2026-10-10, shared contract 1)
-	// did not exist then, so it is taken out.
+	// did not exist then, so it is taken out; nor did create_page
+	// (2026-10-15), which is left out of the sum.
 	preFix := 0
 	for _, tl := range Tools(snapshot(t)) {
-		if tl.Name != SetFields && tl.Name != EditList {
+		if tl.Name != SetFields && tl.Name != EditList && tl.Name != CreatePage {
 			opt, _ := countStrictBudget(tl.InputSchema)
 			preFix += opt
 		}
@@ -187,8 +188,9 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 	if preFix+2-1 != 29 {
 		t.Fatalf("pre-fix strict set counts %d (+2 for the then-optional keys) optional parameters, the API reported 29 — counter drifted from the API's rule", preFix)
 	}
-	// The strict set today: 11 (two target embeddings = 8, set_page_layout's
-	// page, report_unsupported's manual_hint and where). 13 of headroom.
+	// The strict set today: 14 (two target embeddings = 8, set_page_layout's
+	// page, create_page's slug, status and in_nav, report_unsupported's
+	// manual_hint and where). 10 of headroom.
 	today := 0
 	for _, tl := range Tools(snapshot(t)) {
 		if tl.Strict {
@@ -196,8 +198,8 @@ func TestStrictOptionalParameterBudget(t *testing.T) {
 			today += opt
 		}
 	}
-	if today != 11 {
-		t.Fatalf("strict set counts %d optional parameters, want 11", today)
+	if today != 14 {
+		t.Fatalf("strict set counts %d optional parameters, want 14", today)
 	}
 	// The counter itself, on the shape the API rejected: a nested object's
 	// optionals count, required members do not, anyOf is one union.
@@ -356,8 +358,8 @@ func TestToolsJSONIsByteStable(t *testing.T) {
 	}
 	// Canonical: sorted keys, no whitespace, valid JSON.
 	var decoded []map[string]any
-	if err := json.Unmarshal(a, &decoded); err != nil || len(decoded) != 10 {
-		t.Fatalf("ToolsJSON not a 10-tool array: %v", err)
+	if err := json.Unmarshal(a, &decoded); err != nil || len(decoded) != 11 {
+		t.Fatalf("ToolsJSON not an 11-tool array: %v", err)
 	}
 	if strings.Contains(string(a), "\n") || !strings.HasPrefix(string(a), `[{"description":`) {
 		t.Fatalf("ToolsJSON not canonical: %.80s", a)
@@ -396,7 +398,7 @@ func TestToolsDependOnManifest(t *testing.T) {
 		t.Fatal("set_page_layout page description should list manifest pages")
 	}
 	// A nil manifest still yields a well-formed (manifest-free) tool list.
-	if n := Tools(nil); len(n) != 10 {
+	if n := Tools(nil); len(n) != 11 {
 		t.Fatal("Tools(nil)")
 	}
 }
@@ -859,7 +861,7 @@ func TestValidateBrowserOp(t *testing.T) {
 
 func TestDispatchIgnoresBrowserTools(t *testing.T) {
 	m := snapshot(t)
-	for _, name := range []string{SetFields, EditList, Reset, RestoreDefault, SetPageLayout, ResetPinnedSection, PickAsset, "unknown_tool"} {
+	for _, name := range []string{SetFields, EditList, Reset, RestoreDefault, SetPageLayout, CreatePage, ResetPinnedSection, PickAsset, "unknown_tool"} {
 		if _, handled := Dispatch(m, name, json.RawMessage(`{}`)); handled {
 			t.Errorf("%s must not be handled server-side", name)
 		}
@@ -891,5 +893,139 @@ func TestDescriptionsMatchBrowserContracts(t *testing.T) {
 	pa := toolByName(t, tools, PickAsset)
 	if !strings.Contains(pa.Description, `srcset is an object {"<width>": "<url>"}`) {
 		t.Errorf("pick_asset must describe the srcset object it returns: %s", pa.Description)
+	}
+}
+
+// create_page mirrors the launcher engine's op (ops/schema.js
+// OPS.CREATE_PAGE): {title, slug?, status?, in_nav?}, strict, a browser op
+// placed after set_page_layout. Its description carries the contract the
+// engine and host keep: draft only until Save and Publish, header only with
+// in_nav, the result's slug, same-batch targeting, and what stays
+// unsupported.
+func TestCreatePageSchema(t *testing.T) {
+	for _, m := range []*manifest.Manifest{snapshot(t), nil} {
+		tools := Tools(m)
+		cp := toolByName(t, tools, CreatePage)
+		if !cp.Strict {
+			t.Fatal("create_page must be strict")
+		}
+		if r, ok := RunsWhere(CreatePage); !ok || r != RunsBrowser || EchoedToBrowser(CreatePage) {
+			t.Fatalf("create_page runs %s,%v", r, ok)
+		}
+		for i, name := range Order {
+			if name == CreatePage && (i == 0 || Order[i-1] != SetPageLayout) {
+				t.Fatalf("create_page at %d, want right after set_page_layout: %v", i, Order)
+			}
+		}
+		if req := cp.InputSchema["required"].([]string); strings.Join(req, ",") != "title" {
+			t.Fatalf("create_page required = %v, want title", req)
+		}
+		p := props(t, cp.InputSchema)
+		if len(p) != 4 {
+			t.Fatalf("create_page members = %v", p)
+		}
+		for k, typ := range map[string]string{"title": "string", "slug": "string", "status": "string", "in_nav": "boolean"} {
+			if got := p[k].(map[string]any)["type"]; got != typ {
+				t.Errorf("create_page.%s type = %v, want %s", k, got, typ)
+			}
+		}
+		var status []string
+		for _, v := range p["status"].(map[string]any)["enum"].([]any) {
+			status = append(status, v.(string))
+		}
+		if strings.Join(status, ",") != "published,draft" {
+			t.Fatalf("create_page.status enum = %v", status)
+		}
+		for _, want := range []string{"ONE new, empty custom page", "unsaved draft", "Save and Publish", "in_nav", "`slug`", `{"kind":"page","page":<slug>}`, "SAME batch", "already exists", "Renaming, duplicating or deleting pages is not available"} {
+			if !strings.Contains(cp.Description, want) {
+				t.Errorf("create_page description lacks %q: %s", want, cp.Description)
+			}
+		}
+		if d := p["title"].(map[string]any)["description"].(string); !strings.Contains(d, "at most 80 characters") {
+			t.Errorf("create_page.title must state the engine's limit: %s", d)
+		}
+	}
+	// The new tool's optionals stay inside the budget with room for one
+	// more target member (TestStrictOptionalParameterBudget's headroom).
+	opt, union := countStrictBudget(toolByName(t, Tools(snapshot(t)), CreatePage).InputSchema)
+	if opt != 3 || union != 0 {
+		t.Fatalf("create_page optional=%d union=%d, want 3 and 0", opt, union)
+	}
+}
+
+// ValidateBrowserOp refuses a create_page without a usable title — missing,
+// not a string, blank, or over the engine's 80 characters — as E_VALUE
+// before it reaches the editor, and lets every well-formed create through
+// (the engine judges slug, duplicates, reserved slugs and the template).
+func TestValidateBrowserOpCreatePage(t *testing.T) {
+	long := strings.Repeat("é", MaxPageTitle+1)
+	for _, in := range []string{`{}`, `{"title":null}`, `{"title":""}`, `{"title":"   "}`, `{"title":7}`, `{"title":["Deals"]}`, `{"title":"` + long + `"}`, `{"slug":"deals"}`} {
+		res, refused := ValidateBrowserOp(CreatePage, json.RawMessage(in))
+		if !refused || !res.IsError {
+			t.Errorf("create_page %s: must be refused, got %+v", in, res)
+			continue
+		}
+		var e struct{ Code, Message string }
+		if err := json.Unmarshal([]byte(res.Content), &e); err != nil || e.Code != "E_VALUE" || !strings.Contains(e.Message, "create_page needs a title") || !strings.Contains(e.Message, "Nothing was created") {
+			t.Errorf("create_page %s: result %s", in, res.Content)
+		}
+	}
+	for _, in := range []string{``, `not json`} {
+		if res, refused := ValidateBrowserOp(CreatePage, json.RawMessage(in)); !refused || !strings.Contains(res.Content, `"code":"E_`) {
+			t.Errorf("create_page %q: must be refused, got %+v", in, res)
+		}
+	}
+	for _, in := range []string{
+		`{"title":"Deals"}`,
+		`{"title":"  Summer Events  ","slug":"summer-events","status":"draft","in_nav":true}`,
+		`{"title":"` + strings.Repeat("é", MaxPageTitle) + `"}`,
+		// The engine, not the service, judges slug and status values.
+		`{"title":"Deals","slug":"cart","status":"hidden"}`,
+	} {
+		if res, refused := ValidateBrowserOp(CreatePage, json.RawMessage(in)); refused {
+			t.Errorf("create_page %s must pass, got %+v", in, res)
+		}
+	}
+}
+
+// Slugify mirrors the launcher's lib/pageSlug.js slugify; CreatePageSlugs
+// and PageOf feed the loop's same-batch stop after a refused create_page.
+func TestSlugifyCreatePageSlugsPageOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"Summer  Sale 2026!": "summer-sale-2026",
+		"  About -- Us ":     "about-us",
+		"Café & Bar":         "caf-bar",
+		"!!!":                "",
+		"a b":                "a-b",
+		"-a":                 "-a",
+		"a -":                "a-",
+		"deals":              "deals",
+	} {
+		if got := Slugify(in); got != want {
+			t.Errorf("Slugify(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		`{"title":"Our Story"}`:            "our-story",
+		`{"title":"x","slug":"deals"}`:     "deals",
+		`{"title":"x","slug":"Our Story"}`: "Our Story|our-story",
+		`{"title":"Deals","slug":"  "}`:    "deals",
+		`{"title":7}`:                      "",
+		`not json`:                         "",
+	} {
+		if got := strings.Join(CreatePageSlugs(json.RawMessage(in)), "|"); got != want {
+			t.Errorf("CreatePageSlugs(%s) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		`{"target":{"kind":"page","page":"deals"}}`:                          "deals",
+		`{"page":"products","layout":"wide"}`:                                "products",
+		`{"for":{"target":{"kind":"section","page":"deals"},"key":"image"}}`: "deals",
+		`{"target":{"kind":"global"}}`:                                       "",
+		`{"target":{"page":3}}`:                                              "",
+	} {
+		if got := PageOf(json.RawMessage(in)); got != want {
+			t.Errorf("PageOf(%s) = %q, want %q", in, got, want)
+		}
 	}
 }

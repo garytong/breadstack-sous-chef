@@ -45,7 +45,7 @@ func BuildIndex(m *Manifest) Index {
 	b.WriteString("Omit page to act on the page the merchant is viewing (the host fills it in).\n")
 
 	b.WriteString("## Ops\n")
-	b.WriteString("set_fields {target, values{key:val}, assets?{key:{alt,srcset,mobile}}}; edit_list {target, list, action add|remove|reorder|update|duplicate, index int|[i,j], item, order, sectionId}; reset {target, keys?} → unset_value; restore_default {target, keys?} → manifest default; set_page_layout {page, layout}; reset_pinned_section {page, sectionId}; pick_asset {purpose, asset_type} suspends until the merchant picks.\n")
+	b.WriteString("set_fields {target, values{key:val}, assets?{key:{alt,srcset,mobile}}}; edit_list {target, list, action add|remove|reorder|update|duplicate, index int|[i,j], item, order, sectionId}; reset {target, keys?} → unset_value; restore_default {target, keys?} → manifest default; set_page_layout {page, layout}; create_page {title, slug?, status?, in_nav?} → new empty custom page, result slug; reset_pinned_section {page, sectionId}; pick_asset {purpose, asset_type} suspends until the merchant picks.\n")
 	b.WriteString("Detail panels are list rows: edit_list update on the owning list (→Panel below), item keys = the panel's keys. Nested lists use the dotted key (slides[].bullets) with index [slideIdx, bulletIdx]. `update` is allowed on every list; `duplicate` only on sections.\n")
 	b.WriteString("Keyed keys: section locationOverrides.<locId>.<f>; global categories.<slug>.<f>, footerLocationOverrides.<locId>.<f> (f = LocationDetailsPanel / CategoryDetailsPanel key).\n")
 	b.WriteString("Field flags in lookup_fields: ro = derived (read-only), if/hide = gated, ref = pick from site context (category|tag|brand|location), keyed_by = dotted id key.\n")

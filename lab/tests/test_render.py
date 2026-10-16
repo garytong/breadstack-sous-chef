@@ -247,11 +247,13 @@ def test_real_capture_error_shape():
 
 
 def test_real_capture_warnings_and_section_id_shape():
-    """Two results in ONE user message, in call order; sorted map keys: ok, sectionId, warnings, written."""
+    """Two results in ONE user message, in call order; sorted map keys: (hidden,) ok, sectionId, warnings, written.
+    The engine names the gate of a W_HIDDEN write (`hidden`, re-captured 2026-10-15 on the cc-snapshot-r4 engine)."""
     case, row, reqs = _capture(_fixture("warnings-sectionid."))
     add, gated = _results(reqs)
     assert add["content"][0]["text"] == '{"ok":true,"sectionId":"loyaltyForm","written":["homeSections"]}'
-    assert gated["content"][0]["text"] == '{"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":["homeSections[1].settings.tileBorder"]}'
+    assert gated["content"][0]["text"] == ('{"hidden":[{"by":"style","byValue":null,"key":"tileBorder"}],'
+                                           '"ok":true,"warnings":["W_HIDDEN:tileBorder"],"written":["homeSections[1].settings.tileBorder"]}')
     assert len([m for m in reqs[-1]["messages"] if m["role"] == "user"]) == 2  # the context block + one results message
     assert row["batches"] == 1 and row["verdict"] == "extra_writes"  # the gated set_fields is the scripted extra write
 

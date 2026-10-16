@@ -311,6 +311,40 @@
   "input_schema": {
    "additionalProperties": false,
    "properties": {
+    "in_nav": {
+     "description": "Optional: true also adds the page to the header menu. Only when the merchant asks for it; otherwise omit.",
+     "type": "boolean"
+    },
+    "slug": {
+     "description": "Optional: the page's path segment, only lowercase letters, digits and hyphens (e.g. \"summer-events\"); anything else is refused. Omit to derive it from the title; pass it when a later call in the same batch targets the new page.",
+     "type": "string"
+    },
+    "status": {
+     "description": "Optional: published (default) = served at /<slug> once saved; draft = saved but not served, and hidden from the editor's page list. Use draft only when the merchant asks for it.",
+     "enum": [
+      "published",
+      "draft"
+     ],
+     "type": "string"
+    },
+    "title": {
+     "description": "The new page's name as the merchant gave it, plain text, at most 80 characters (e.g. \"Deals\", \"Summer Events\").",
+     "type": "string"
+    }
+   },
+   "required": [
+    "title"
+   ],
+   "type": "object"
+  },
+  "name": "create_page",
+  "description": "Create ONE new, empty custom page in the editor's unsaved draft (what the Pages tab's \"New page\" does). It goes live at /<slug> only when the merchant presses Save and Publish, and it is in the header menu only with in_nav true. The result returns the page's final `slug`: then target the new page with {\"kind\":\"page\",\"page\":<slug>} (edit_list on its list \"sections\" to add sections) or {\"kind\":\"section\",\"page\":<slug>,…}. To add sections in the SAME batch as the create, pass `slug` yourself and use exactly that slug; if the create is refused, those later calls are refused too. Refused, with nothing created, when the title or slug matches a page that already exists (edit that page instead), when the slug is reserved or not already lowercase words joined by hyphens, or on a template that cannot show custom pages; the error says which and may suggest a free slug. Renaming, duplicating or deleting pages is not available (report_unsupported where pages).",
+  "strict": true
+ },
+ {
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
     "page": {
      "description": "The page whose built-in block is reset.",
      "enum": [
