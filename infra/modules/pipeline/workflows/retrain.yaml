@@ -1539,7 +1539,10 @@ vertex_attempt:
           # a job that never starts (no Spot / on-demand capacity: Vertex
           # queues it silently) is given up as `capacity` after max_pending_s
           # (Flex-start: its own maxWaitDuration + 30 min), so the ladder
-          # moves on instead of waiting for the 14 h deadline
+          # moves on instead of waiting for the 14 h deadline. Only the state
+          # tells: Vertex stamps startTime at creation, before any machine
+          # (2026-10-16: a Spot job PENDING for 78 min, startTime 0.2 s after
+          # createTime; Flex-start's failures carry one too)
           - pending_until: '${started + default(map.get(rung, "max_pending_s"), 3600)}'
     - flex_pending:
         switch:
@@ -1579,7 +1582,7 @@ vertex_attempt:
             next: failed
           - condition: '${sys.now() > deadline}'
             next: overdue
-          - condition: '${(cj.state == "JOB_STATE_QUEUED" or cj.state == "JOB_STATE_PENDING") and not("startTime" in cj) and sys.now() > pending_until}'
+          - condition: '${(cj.state == "JOB_STATE_QUEUED" or cj.state == "JOB_STATE_PENDING") and sys.now() > pending_until}'
             next: never_started
         next: keep_lock
     - overdue:
@@ -1641,7 +1644,8 @@ vertex_attempt:
           - msg: '${default(map.get(cj, ["error", "message"]), cj.state)}'
           - entry.message: '${msg}'
           # startTime: "Time when the CustomJob for the first time entered the
-          # JOB_STATE_RUNNING state" (customJobs reference)
+          # JOB_STATE_RUNNING state" (customJobs reference); in practice Vertex
+          # sets it at creation (never_started), so this is only a fallback
           - vx_started: '${map.get(cj, "startTime") != null}'
           - vx_code: '${default(map.get(cj, ["error", "code"]), 0)}'
           # this job's TRAIN_NONCE (its `create` label; an adopted job keeps its own)

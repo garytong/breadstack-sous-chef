@@ -274,18 +274,28 @@ class Vertex(FakeBase):
     def get(self, name, region="us-central1"):
         return self.call("GET", f"https://{region}-aiplatform.googleapis.com/v1/{name}")[1]
 
-    def test_flex_never_starts_and_its_message_matches_no_regex(self):
+    def test_flex_never_starts_yet_has_a_start_time_and_code_14(self):
+        # real Vertex (2026-10-16): startTime 0.2 s after createTime on a job that never got a machine, and
+        # Flex-start gives up with code 14 and its own text
         name = self.create("FLEX_START", wait=14400)
-        self.assertEqual(self.get(name)["state"], "JOB_STATE_QUEUED")
+        j = self.get(name)
+        self.assertEqual(j["state"], "JOB_STATE_QUEUED")
+        self.assertIn("startTime", j)
         self.clock.advance(60)
         self.assertEqual(self.get(name)["state"], "JOB_STATE_PENDING")
         self.clock.advance(14400)
         j = self.get(name)
         self.assertEqual(j["state"], "JOB_STATE_FAILED")
-        self.assertNotIn("startTime", j)
-        src = (E.WF_DIR / "retrain.yaml").read_text()
-        for rx in re.findall(r'text\.match_regex\(msg, "([^"]+)"\)', src):
-            self.assertIsNone(re.search(rx.replace("(?i)", ""), j["error"]["message"], re.I), rx)
+        self.assertEqual(j["error"]["code"], 14)
+        self.assertIn("The maximum wait duration of 4h has been reached", j["error"]["message"])
+
+    def test_spot_without_capacity_stays_pending_with_a_start_time(self):
+        self.g.fail_next["vertex-pending"] = 1
+        name = self.create("SPOT")
+        self.clock.advance(3 * 3600)
+        j = self.get(name)
+        self.assertEqual(j["state"], "JOB_STATE_PENDING")
+        self.assertIn("startTime", j)
 
     def test_spot_preempted_past_six_restarts_is_a_stockout(self):
         self.g.fail_next["vertex-preempt"] = 7

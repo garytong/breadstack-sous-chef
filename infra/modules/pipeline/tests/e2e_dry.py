@@ -42,8 +42,9 @@ and omit a zero exitCode; Artifact Registry versions answer without
 relatedTags unless view=FULL, carry `latest`, and exist untagged; Cloud
 Build queues, works and ends later, fails a docker client or worker that
 cannot build the step, pushes at the end into immutable tags; Vertex jobs
-queue, pend, run and end on the clock (Flex-start fails without startTime
-and with a message no regex knows, Spot preemptions restart inside the job,
+queue, pend, run and end on the clock (every job has a startTime from its
+creation, as real Vertex stamps it; Flex-start fails with code 14 and
+Vertex's own text, Spot preemptions restart inside the job,
 cancel passes through CANCELLING); Cloud Storage answers media as bytes
 with its Content-Type and X-Goog-Generation, a missing object as the
 text "No such object: …", pages listings, and can race a reader
@@ -149,7 +150,9 @@ DOCKER_BUILDER_DIGESTS = {"6c9d05f41f8e": 29, "f772ab459889": 20}
 # deliberately one no keyword regex would match (audit VX-5). A Spot preemption restarts the job inside Vertex up to
 # six times, then fails it with a STOCKOUT (https://docs.cloud.google.com/gemini-enterprise-agent-platform/
 # machine-learning/training/use-spot-vms); this is the stockout text Vertex prints.
-VERTEX_FLEX_GAVE_UP = "Job did not run: the requested worker pool was never provisioned for this job."
+# Vertex's own text (2026-10-16, code 14); {wait} is the maxWaitDuration as Vertex prints it ("30m")
+VERTEX_FLEX_GAVE_UP = ("The maximum wait duration of {wait} has been reached without resources being provisioned. "
+                       "You may want to increase the MaxWaitDuration and resubmit the job.")
 VERTEX_STOCKOUT = ("Resources are insufficient in region: {region}. Please try a different region. If you use K80, "
                    "please consider using P100 or V100 instead.")
 VERTEX_MAX_RESTARTS = 6
@@ -950,9 +953,10 @@ class FakeGCP:
         raise wfsim.SimError(f"ar: {method} {path}")
 
     # ── Vertex AI custom jobs ──
-    # States move on the virtual clock: QUEUED → PENDING → RUNNING (startTime) → a terminal state; the trainer runs
-    # when the job's run ends. Flex-start: PENDING until maxWaitDuration (0 = forever, absent = 24 h), then FAILED
-    # with no startTime and an undocumented message. Spot: a preemption restarts the job inside Vertex (up to six
+    # States move on the virtual clock: QUEUED → PENDING → RUNNING → a terminal state; every job has a startTime from
+    # its creation, as real Vertex stamps it (2026-10-16), so only the state says whether it ever ran. The trainer
+    # runs when the job's run ends. Flex-start: PENDING until maxWaitDuration (0 = forever, absent = 24 h), then
+    # FAILED with code 14 and Vertex's own text. Spot: a preemption restarts the job inside Vertex (up to six
     # times, the trainer resumes from its checkpoints); past that, FAILED with the STOCKOUT text and a startTime.
     # cancel → CANCELLING → CANCELLED ("success is not guaranteed": a job that got capacity first SUCCEEDS).
     # Modes (fail_next): vertex-pending (Spot that never starts), vertex-late-success (with it: the cancel loses
@@ -1001,6 +1005,8 @@ class FakeGCP:
             rec = {"name": name, "displayName": body["displayName"], "state": "JOB_STATE_QUEUED", "region": region,
                    "strategy": sched.get("strategy"), "machine": pool["machineSpec"]["machineType"],
                    "labels": body.get("labels") or {}, "createTime": now_iso(now), "updateTime": now_iso(now),
+                   # real Vertex stamps startTime at creation, before any machine (2026-10-16)
+                   "startTime": now_iso(now),
                    "_run": run_id, "_args": cs.get("args") or [], "_env": env, "_t0": now}
             if sched.get("strategy") == "FLEX_START":
                 wait = sched.get("maxWaitDuration")
@@ -1025,8 +1031,7 @@ class FakeGCP:
                 raise HttpFail(404)
             if m.group(2) and method == "POST":
                 if rec["state"] not in VERTEX_TERMINAL and rec["state"] != "JOB_STATE_CANCELLING":
-                    if rec["_plan"]["kind"] == "pending" and rec["_plan"].get("late"):
-                        rec["startTime"] = now_iso(now)  # capacity arrived just before the cancel
+                    # a "late" pending job got capacity just before the cancel: it SUCCEEDS at _cancel_at (tick_vertex)
                     rec["state"] = "JOB_STATE_CANCELLING"
                     rec["_cancel_at"] = now + 90
                     rec["updateTime"] = now_iso(now)
@@ -1055,11 +1060,13 @@ class FakeGCP:
             if rec["state"] == "JOB_STATE_QUEUED" and now >= rec["_t0"] + 30:
                 rec["state"] = "JOB_STATE_PENDING"
             if plan["kind"] == "flex" and plan["fail_at"] is not None and now >= plan["fail_at"]:
+                waited = int(round((plan["fail_at"] - rec["_t0"]) / 60))
                 rec.update(state="JOB_STATE_FAILED", endTime=now_iso(plan["fail_at"]),
-                           error={"code": 4, "message": VERTEX_FLEX_GAVE_UP})
+                           error={"code": 14, "message": VERTEX_FLEX_GAVE_UP.format(
+                               wait=f"{waited // 60}h" if waited % 60 == 0 and waited >= 60 else f"{waited}m")})
             elif plan["kind"] == "run":
-                if now >= plan["start_at"] and "startTime" not in rec:
-                    rec.update(state="JOB_STATE_RUNNING", startTime=now_iso(plan["start_at"]))
+                if now >= plan["start_at"] and rec["state"] in ("JOB_STATE_QUEUED", "JOB_STATE_PENDING"):
+                    rec["state"] = "JOB_STATE_RUNNING"  # startTime was stamped at creation
                 if now >= plan["end_at"]:
                     self.finish_vertex(rec, plan["end_at"], run=plan["restarts"] <= VERTEX_MAX_RESTARTS)
             rec["updateTime"] = now_iso(now)

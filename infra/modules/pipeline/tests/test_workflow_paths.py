@@ -485,6 +485,10 @@ class VX:
             self.n += 1
             name = f"projects/p/locations/us-central1/customJobs/{self.n}"
             self.jobs[name] = {"name": name, "beh": beh, "polls": 0, "state": "JOB_STATE_PENDING", "labels": dict(b.get("labels") or {})}
+            if beh != "flex_fail":
+                # real Vertex stamps startTime at creation, before any machine (2026-10-16); flex_fail keeps the
+                # workflow's no-startTime fallback covered
+                self.jobs[name]["startTime"] = "2026-10-03T00:00:00Z"
             if self.lose > 0:
                 self.lose -= 1
                 return 503, {"error": {"code": 503}}, {}
@@ -550,6 +554,21 @@ class Vertex(unittest.TestCase):
         vj = r.gcs["runs/rt-x/train/vertex.json"][0]
         self.assertTrue(out["state"] == "succeeded" and vj["attempts"][0]["state"] == "capacity", vj["attempts"])
         self.assertNotIn("wf/runs/rt-x/train/current.json", r.gcs)
+
+    def test_spot_pending_with_a_start_time_is_capacity_and_moves_on(self):
+        # 2026-10-16: a Spot job sat PENDING for 78 min with a startTime 0.2 s after its creation; the never-started
+        # check must go by the state, or the ladder waits for the 14 h deadline
+        two = copy.deepcopy(CFG)
+        two["trainer"]["ladder"] = [CFG["trainer"]["ladder"][1], dict(CFG["trainer"]["ladder"][1], name="spot-2")]
+        vx = VX(["pending", "run_then_ok"])
+        r = vrouter(vx)
+        out = interp("retrain", r).call_sub("stage_train", {"cfg": two, "ctx": CTX})
+        vj = r.gcs["runs/rt-x/train/vertex.json"][0]
+        first = "projects/p/locations/us-central1/customJobs/1"
+        self.assertIn("startTime", vx.jobs[first])
+        self.assertTrue(out["state"] == "succeeded" and vj["attempts"][0]["state"] == "capacity"
+                        and "never started" in vj["attempts"][0]["message"], vj["attempts"])
+        self.assertEqual(vx.cancels, [first])
 
     def test_cancel_awaited_late_success_taken(self):
         vx = VX(["late_success"])
