@@ -444,6 +444,54 @@ def test_r4collect_oracle_passes_and_the_default_script_does_not():
         eng.close()
 
 
+def test_r4collect_excuses_acting_on_a_vague_first_turn(monkeypatch):
+    """r6: r4score.excuse_divergences is wired into run_r4_case — an `ask` turn the teacher answered by writing the
+    case's own key (written again by the scored turn) is excused when the scored turn passes and the relaxation is
+    on; with it off (the default since the r6 review) it still diverges."""
+    _need_engine()
+    sys.path.insert(0, str(LAB))
+    from souschef_lab import collect as C
+    from souschef_lab import r4collect as RC
+    from souschef_lab.manifest import load
+    from souschef_lab.state import load_context_fixture
+    from tests import fake_service as FS
+
+    m = load(str(EXAM_MANIFEST))
+    eng = E.PersistentEngine(manifest_path=EXAM_MANIFEST, size=1)
+    try:
+        case = copy.deepcopy(_hand_case(m, eng))
+        case["id"] = "r4-F2-9003"
+        acted = [{"op": "set_fields", "target": case["target"], "values": {"borderRadius": 6}}]
+        case["history"] = [{"user": "the buttons look too round", "context": None, "page": "home", "expect": "ask",
+                            "assistant": "I squared them a bit.", "ops": acted, "calls": []}]
+        case["request"] = "radius 4"
+        script = copy.deepcopy(case)
+        script["history"][0]["expect"] = "write"  # the teacher acts where the case expected a question
+        doc = json.loads(EXAM_MANIFEST.read_text(encoding="utf-8"))
+        for policy, usable in (('{"acted_first_turn": "keys"}', True), (None, False)):
+            if policy:
+                monkeypatch.setenv("SOUSCHEF_SCORE_POLICY", policy)
+            else:
+                monkeypatch.delenv("SOUSCHEF_SCORE_POLICY", raising=False)
+            svc = FS.FakeService(manifest=doc, key="k")
+            svc.scripts.update(RC.oracle_scripts([script], "lab-t-"))
+            svc.start()
+            try:
+                client, _ = C.connect(svc.url, "k", EXAM_MANIFEST, [case], sse=False, timeout_s=30, build_id="t")
+                row = RC.run_r4_case(case, client, eng, route="default", fields=None, manifest=m,
+                                     extras=load_context_fixture(), assets=[], site_prefix="lab-t-")
+            finally:
+                svc.stop()
+            sc = row["score"]
+            assert sc["usable"] is usable, sc
+            if usable:
+                assert sc["history_excused"][0]["excused"] == "acted_first_turn:keys" and "history_diverged" not in sc
+            else:
+                assert sc["history_diverged"][0]["why"] == "did_not_ask"
+    finally:
+        eng.close()
+
+
 # ── r4cases revisions (the verifier round) ──────────────────────────────────
 
 def test_authored_values_find_what_the_merchant_never_typed():

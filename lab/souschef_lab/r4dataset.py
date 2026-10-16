@@ -27,6 +27,19 @@ A row whose log carries no stored conversation (a fake service, a failed GET)
 is rebuilt from its events when the turn used no server tool and its model
 calls are all visible, else rejected `no_conversation`.
 
+A CARRIED row (retrain/carry.py: `carried: {source, row}` — an earlier round's
+accepted, built row the carry step re-checked on this round's engine and case)
+is not re-asked: `rerender_carried` replaces its system turn, its tools and its
+scored turn's candidate-fields block with this build's (the block from the
+same turn inputs: context, text, previous exchange) and keeps every assistant
+and tool message byte for byte; then every keep rule below applies to it as
+to any row (`meta.carried`, stats `carried_rows` / `carried_by_source` /
+`asked_rows`). A carried row ranks first among a case's samples.
+
+The usable rows the caps cut are written to `dataset/capped.jsonl` (never
+trained): the next round carries them instead of asking the teacher again for
+rows the same caps would cut again.
+
 Keep rules (a row must pass all; `rejects.jsonl` names the first and all):
 error, history_error, not_pass (verify-3 verdict), the score's flags
 (preview_claim, where_missing, empty_reply, lookup_storm, unexpected_hidden,
@@ -254,6 +267,60 @@ def student_source(case: dict, row: dict, fields) -> tuple[list[dict], dict]:
     return out, notes
 
 
+CARRIED_SOURCE = "carried"
+CAPPED_FILE = "capped.jsonl"  # the usable rows the caps cut (never trained; a later round may carry them)
+
+
+def hf_final_turn(hf: dict) -> dict:
+    """The scored (last) user turn of a BUILT row (to_hf_messages' shape), taken apart:
+    {index, head, context, block, text, previous, history_assistant_turns}. `previous` is the
+    follow-up exchange the service reads the turn with (previous_exchange's: the earlier user
+    turn's text and the last assistant text before the scored turn, both trimmed), None for a
+    first turn. RenderError when the row has no user turn or its user turn does not parse."""
+    from .fields import split_user_text
+
+    msgs = hf.get("messages") or []
+    users = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    if not users:
+        raise RenderError("carried:no_user_turn")
+    fi = users[-1]
+    try:
+        head, context, block, text = split_user_text(str(msgs[fi].get("content") or ""))
+    except ValueError as e:
+        raise RenderError(f"carried:user_turn {e}") from None
+    previous = None
+    if len(users) > 1:
+        pi = users[-2]
+        replies = [render.go_trim_space(str(m.get("content") or "")) for m in msgs[pi + 1:fi] if m.get("role") == "assistant"]
+        replies = [r for r in replies if r]
+        previous = (render.go_trim_space(str(msgs[pi].get("content") or "")), replies[-1] if replies else "")
+    return {"index": fi, "head": head, "context": context, "block": block, "text": text, "previous": previous,
+            "history_assistant_turns": sum(1 for m in msgs[:fi] if m.get("role") == "assistant")}
+
+
+def rerender_carried(hf: dict, fields, system_text: str, tools: list | None) -> tuple[dict, dict]:
+    """An earlier round's accepted row (retrain/carry.py) on THIS build's manifest: a copy of
+    `hf` whose system turn is `system_text`, whose tools are `tools` and whose scored user turn
+    carries the candidate-fields block `fields` computes for it now (the same turn inputs —
+    context, text, previous exchange — as the row was collected with). Everything the teacher
+    said, and every tool result, is kept byte for byte (the carry stage re-checked them on this
+    manifest's engine). Returns (row, notes {block_chars, block_changed, history_assistant_turns})."""
+    from .fields import join_user_text
+
+    t = hf_final_turn(hf)
+    row = json.loads(json.dumps(hf))
+    msgs = row["messages"]
+    if not msgs or msgs[0].get("role") != "system":
+        raise RenderError("carried:no_system_turn")
+    msgs[0]["content"] = system_text
+    block = fields.block(t["context"], t["text"], t["previous"]) if fields is not None else ""
+    msgs[t["index"]]["content"] = join_user_text(t["head"], block, t["text"])
+    if tools is not None:
+        row["tools"] = tools
+    return row, {"block_chars": len(block), "block_changed": render.go_trim_space(block) != render.go_trim_space(t["block"]),
+                 "history_assistant_turns": t["history_assistant_turns"]}
+
+
 def _nth_user_index(msgs: list[dict], n: int) -> int:
     seen = -1
     for i, m in enumerate(msgs):
@@ -272,9 +339,12 @@ def estimate_tokens(hf: dict) -> int:
 
 
 def rank_key(row: dict) -> tuple:
+    """A carried row (retrain/carry.py: the row an earlier round trained on) first, then the fewest
+    browser ops, fewest server calls, shortest reply, earliest pass."""
     ops = [c for c in row.get("tool_calls") or [] if c.get("name") not in SERVER_TOOLS]
     server = sum(1 for c in row.get("tool_calls") or [] if c.get("name") in SERVER_TOOLS)
-    return (len(ops), server, len(str(row.get("reply") or "")), str(row.get("_pass") or ""))
+    return (0 if isinstance(row.get("carried"), dict) else 1, len(ops), server, len(str(row.get("reply") or "")),
+            str(row.get("_pass") or ""))
 
 
 def keep_reasons(case: dict, row: dict, engine_fp: str | None) -> list[str]:
@@ -368,7 +438,13 @@ def build(cases_path: Path, logs: list[Path], manifest: Path, out: Path, *, why:
     turns = []  # every scored turn's block, computed in one CLI process (one spawn per row otherwise)
     for samples in by_case.values():
         for row in samples:
-            if row.get("status") == "ok":
+            if row.get("status") == "ok" and isinstance(row.get("carried"), dict):
+                try:
+                    t = hf_final_turn(row["carried"].get("row") or {})
+                    turns.append((t["context"], t["text"], t["previous"]))
+                except RenderError:
+                    pass  # rejected below
+            elif row.get("status") == "ok":
                 hist = row.get("history_rows") or []
                 prev = previous_exchange(str(hist[-1].get("text") or ""), hist[-1]) if hist else None
                 turns.append((row.get("context"), row.get("text") or "", prev))
@@ -389,13 +465,26 @@ def build(cases_path: Path, logs: list[Path], manifest: Path, out: Path, *, why:
             reasons = keep_reasons(case, row, engine_fp)
             hf = None
             if not reasons:
+                carried = row.get("carried") if isinstance(row.get("carried"), dict) else None
                 try:
-                    src, notes = student_source(case, row, fields)
+                    if carried is not None:
+                        crow, notes = rerender_carried(carried.get("row") or {}, fields, system_text, tools)
+                        notes.update(source=CARRIED_SOURCE, block_drift=False)
+                    else:
+                        src, notes = student_source(case, row, fields)
                 except RenderError as e:
-                    reasons = [str(e).split(":")[0] if str(e).startswith("no_conversation") else "conversation_mismatch"]
+                    if carried is not None:
+                        reasons = ["carried_render"]
+                    else:
+                        reasons = [str(e).split(":")[0] if str(e).startswith("no_conversation") else "conversation_mismatch"]
                     notes = {"error": str(e)}
                 if not reasons:
-                    messages, info = to_hf_messages(src, system_text)
+                    if carried is not None:
+                        messages = crow["messages"]
+                        info = {"tools_called": [c["function"]["name"] for m in messages if m.get("role") == "assistant"
+                                                 for c in m.get("tool_calls") or []], "missing_tool_results": 0}
+                    else:
+                        messages, info = to_hf_messages(src, system_text)
                     if info["missing_tool_results"]:
                         reasons.append("missing_tool_results")
                     if notes.get("block_drift"):
@@ -423,6 +512,11 @@ def build(cases_path: Path, logs: list[Path], manifest: Path, out: Path, *, why:
                                    "block_drift": notes.get("block_drift"), "leak_max_jaccard": leak["max_jaccard"],
                                    "tools_called": info["tools_called"], "turn_id": row.get("turn_id"), "at": row.get("at"),
                                    "holdout": False}}
+                    if carried is not None:
+                        src_meta = (carried.get("row") or {}).get("meta") or {}
+                        hf["meta"]["carried"] = {"from": carried.get("source"), "row": (carried.get("row") or {}).get("id"),
+                                                 "pass": src_meta.get("pass"), "block_changed": notes.get("block_changed")}
+                        hf["meta"]["turn_id"], hf["meta"]["at"] = src_meta.get("turn_id"), src_meta.get("at")
                     if count(hf) > max_seq:
                         reasons.append("over_length")
             if "block_drift" in reasons:
@@ -445,9 +539,13 @@ def build(cases_path: Path, logs: list[Path], manifest: Path, out: Path, *, why:
     train, val = [], []
     for r in sorted(kept, key=lambda x: x["id"]):
         (val if h100(r["meta"]["group"]) < val_pct else train).append(r)
+    kept_ids = {r["id"] for r in kept}
+    # usable rows the caps cut: never trained, but kept so the next round can carry them (retrain/carry.py)
+    # instead of re-asking the teacher for rows the same caps would cut again
+    capped = [r for r in sorted(rows, key=lambda x: x["id"]) if r["id"] not in kept_ids]
     data = out / "dataset"
     data.mkdir(parents=True, exist_ok=True)
-    for name, rs in (("train.jsonl", train), ("val.jsonl", val), ("rejects.jsonl", rejects)):
+    for name, rs in (("train.jsonl", train), ("val.jsonl", val), ("rejects.jsonl", rejects), (CAPPED_FILE, capped)):
         with (data / name).open("w", encoding="utf-8") as f:
             for r in rs:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -463,6 +561,9 @@ def build(cases_path: Path, logs: list[Path], manifest: Path, out: Path, *, why:
         "capped_section": dict(cut_section), "capped_family": dict(cut_family),
         "section_cap": section_cap, "section_cap_scope": sorted(section_cap_scope), "family_max_share": family_max_share,
         "render_sources": dict(stats["sources"]), "block_drift_rows": stats["block_drift"],
+        "carried_rows": sum(1 for r in kept if r["meta"].get("carried")),
+        "carried_by_source": dict(Counter(str(r["meta"]["carried"].get("from")) for r in kept if r["meta"].get("carried"))),
+        "asked_rows": sum(1 for r in kept if not r["meta"].get("carried")),
         "block_drift_rejected": stats["block_drift_rejected"], "no_case": stats["no_case"],
         "rows_with_block": sum(1 for r in kept if r["meta"]["fields_context"]),
         "preview_claim_kept": sum(1 for r in kept for m in r["messages"] if m["role"] == "assistant" and mentions_preview(m["content"])),

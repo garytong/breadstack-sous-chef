@@ -70,9 +70,14 @@ func fieldsRequest(h *harness, route, text string) api.TurnRequest {
 // previous rules.go, opspec.go, toolgen.go and vocab.txt the bodies still hash
 // to 068c1bdf… / 2a501c2a…; the new vocab.txt alone gives 224101af… /
 // 9395c03b…; the user turn's block did not move.
+// Moved again on purpose 2026-10-15 (the user's font / vague-request
+// decisions): system[0]'s "The font" line names every site font, and a
+// "too vague to act on → ask one short question" line follows the
+// two-controls rule. Without those two lines the bodies still hash to
+// 32b026b7… / 480416c4…; tools, system[1] and the user turn did not move.
 const (
-	anthropicBodySHA        = "32b026b756c8be963fb87fbb3f220b8fb7a6895ff4ebec80589547b78d70c4c2"
-	anthropicBodySHANoBlock = "480416c41637df970920fce0ece8e59dfffe3a1572204b65f232dec0c4da0ab9"
+	anthropicBodySHA        = "d1605274a2419a377dc08dfc741a9a35b63f0c4da1ca5a2ae8301afd4e7e0cb6"
+	anthropicBodySHANoBlock = "f081b59b2e80595e87bf377122c165d845ce69a3bda051a8e45f10f6977769be"
 )
 
 func TestFieldsContext_AnthropicRequestIsByteIdentical(t *testing.T) {

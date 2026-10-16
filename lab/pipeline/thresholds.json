@@ -32,5 +32,7 @@
   "gpu_warm_minutes": 15,
   "exam_workers": 2,
   "smoke_rows_per_set": 10,
-  "field_list_cap": 500
+  "field_list_cap": 500,
+  "sigma_seed": {},
+  "_sigma_seed": "Retrain bar only (retrain/bar.py): {set: rows} of seed-to-seed spread, measured by retrain/noise.py (docs/RETRAIN.md R10); empty = eval-replicate noise only. Never used by drift verdicts."
 }

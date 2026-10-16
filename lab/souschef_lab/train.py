@@ -20,6 +20,23 @@ thermometer's to_hf shape (trainkit.check_rows). Settings: flags, or
   python -m souschef_lab.train --name sous-chef-9b-v1        # one epoch
   python -m souschef_lab.train --config lab/train.yaml --max-steps 4 --name smoke
 
+Seeds and warm starts (r6; the defaults are r4's: seed 3407, a fresh LoRA on the base):
+
+  python -m souschef_lab.train --seed 2 --name r6-s2              # another SGD path on the same data
+  python -m souschef_lab.train --init-adapter runs/adapters/r4-sft/adapter --lr 5e-5 --name r6-warm
+  python -m souschef_lab.train --gen-check 32 ...                 # + first-call match on 32 fixed val rows
+  python -m souschef_lab.train select runs/adapters/r6-s3407 runs/adapters/r6-s2 --into runs/adapters/r6
+
+--seed changes the LoRA init and the data order; the validation subset stays
+fixed (--val-seed, 3407) so the seeds' losses compare. --init-adapter loads
+an adapter's LoRA weights into the fresh LoRA before the first update (same
+rank and alpha). `select` keeps the best run (gen-check first when every
+run has one, then the lowest final validation loss) and records every
+run's scores in the kept run.json. tools/pipeline-train.sh runs the loop on
+Vertex: TRAIN_ARMS (base:<seed> from the base, warm:<seed> from
+INIT_ADAPTER, e.g. base:3407,base:2,warm:3407 — from-base seeds and a warm
+start in the same round, the best on validation kept) or TRAIN_SEEDS.
+
 --dry-run never imports torch (tests/test_train_dry.py checks). Training
 needs the [train] extra: `make -C lab train-env` (uv, pinned to the thermometer's measured set, cu130 wheels; several GB, once); the
 first run downloads the base from Hugging Face.
@@ -57,7 +74,14 @@ RECIPE = {
 }
 
 CONFIG_KEYS = tuple(RECIPE) + ("data", "name", "output", "max_steps", "instruction_part", "response_part",
-                                "fields_context", "checkpoint_steps", "resume")
+                                "fields_context", "checkpoint_steps", "resume", "init_adapter", "val_seed", "gen_check")
+
+# The validation subset (--val-max-rows) and the generation check's rows are drawn with this seed whatever --seed
+# says, so every seed of a round is scored on the same rows (r4 drew its subset with its own --seed, 3407: the same).
+VAL_SEED = 3407
+GEN_CHECK_MAX_NEW_TOKENS = 512
+GEN_CHECK_BUDGET_S = 1200  # a generation check stops after this long (and then counts as incomplete)
+WARM_LR = 5e-5  # the suggested --lr for a warm start (tools/pipeline-train.sh INIT_LR's default)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,7 +120,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--optim", default=RECIPE["optim"], help="the optimizer (default: %(default)s)")
     p.add_argument("--warmup-ratio", type=float, default=RECIPE["warmup_ratio"], help="(default: %(default)s)")
     p.add_argument("--weight-decay", type=float, default=RECIPE["weight_decay"], help="(default: %(default)s)")
-    p.add_argument("--seed", type=int, default=RECIPE["seed"])
+    p.add_argument("--seed", type=int, default=RECIPE["seed"],
+                   help="the LoRA init and the data order (default: %(default)s)")
+    p.add_argument("--val-seed", type=int, default=VAL_SEED,
+                   help="draws the --val-max-rows subset and the --gen-check rows; fixed across --seed so the seeds' "
+                        "scores compare (default: %(default)s)")
+    p.add_argument("--init-adapter", type=Path,
+                   help="warm start: a LoRA adapter folder (adapter_config.json + adapter_model.safetensors, e.g. the "
+                        f"live round's) loaded before the first update; same rank and alpha. Pair it with a lower --lr "
+                        f"(about {WARM_LR:g}) (default: a fresh LoRA on the base)")
+    p.add_argument("--gen-check", type=int, default=0,
+                   help="after training, generate the first assistant turn of this many fixed validation rows "
+                        "(greedy) and count the ones whose tool calls match the reference; recorded in run.json, read "
+                        "by `select` (default: 0, off)")
     p.add_argument("--tiled-mlp", choices=["auto", "on", "off"], default=RECIPE["tiled_mlp"],
                    help=f"Unsloth tiled MLP, trading speed for memory (auto: on above {TILED_ABOVE} tokens) "
                         "(default: %(default)s)")
@@ -122,6 +158,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.data = Path(args.data)
     if args.output is not None:
         args.output = Path(args.output)
+    if args.init_adapter is not None:
+        args.init_adapter = Path(args.init_adapter)
+    if args.gen_check < 0 or args.seed < 0 or args.val_seed < 0:
+        p.error("--gen-check, --seed and --val-seed must be 0 or more")
     if args.checkpoint_steps < 0:
         p.error("--checkpoint-steps must be 0 or more")
     if args.save_steps < 0 or args.eval_steps < 0 or (args.val_max_rows is not None and args.val_max_rows < 1):
@@ -241,6 +281,430 @@ def check_fields_context(fc: dict, data: Path) -> str | None:
     return None
 
 
+# --- Warm start (--init-adapter) ---------------------------------------------------------------------------------------
+
+ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
+
+
+def init_adapter_info(path: Path) -> dict:
+    """What run.json records about the adapter a warm start begins from (no torch). ValueError when the folder is
+    not a LoRA adapter."""
+    d = Path(path)
+    missing = [f for f in ADAPTER_FILES if not (d / f).is_file()]
+    if missing:
+        raise ValueError(f"--init-adapter {d}: no {', '.join(missing)} there (a LoRA adapter folder: the `adapter/` "
+                         "inside a run, e.g. runs/adapters/r4-sft/adapter)")
+    try:
+        cfg = json.loads((d / "adapter_config.json").read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise ValueError(f"--init-adapter {d}: adapter_config.json is not JSON ({e})") from None
+    if str(cfg.get("peft_type", "LORA")).upper() != "LORA":
+        raise ValueError(f"--init-adapter {d}: a {cfg.get('peft_type')} adapter, not LoRA")
+    run = trainkit.read_json(d.parent / "run.json", {}) or {}
+    return {"path": str(d), "r": cfg.get("r"), "alpha": cfg.get("lora_alpha"), "base": cfg.get("base_model_name_or_path"),
+            "bytes": (d / "adapter_model.safetensors").stat().st_size,
+            "run": {k: run.get(k) for k in ("name", "seed", "lr", "steps", "last_eval_loss", "manifest_hash")
+                    if k in run} or None}
+
+
+def check_init_adapter(info: dict | None, args) -> str | None:
+    """The reason this adapter cannot start this run, if any: its LoRA shape must be this run's."""
+    if not info:
+        return None
+    if (info["r"], info["alpha"]) != (args.rank, args.alpha):
+        return (f"--init-adapter {info['path']} is r{info['r']}/α{info['alpha']}, this run r{args.rank}/α{args.alpha}: "
+                f"pass --rank {info['r']} --alpha {info['alpha']} (a warm start continues the same LoRA)")
+    base = str(info.get("base") or "")
+    if base and "/" in base and not Path(base).is_absolute() and base != args.base:
+        return f"--init-adapter {info['path']} was trained on {base}, this run's base is {args.base}"
+    return None
+
+
+def load_init_adapter(model, path: Path) -> dict:
+    """Copy a saved LoRA's weights into the model's fresh LoRA (get_peft_model's), so training continues it with
+    Unsloth's own patched setup unchanged. Stops on any LoRA weight the two do not share (another rank, other target
+    modules, another base); a shape mismatch raises in PEFT."""
+    from peft import set_peft_model_state_dict
+    from safetensors.torch import load_file
+
+    state = load_file(str(Path(path) / "adapter_model.safetensors"))
+    res = set_peft_model_state_dict(model, state)
+    unexpected = list(getattr(res, "unexpected_keys", []) or [])
+    missing = [k for k in (getattr(res, "missing_keys", []) or []) if "lora_" in k]
+    if unexpected or missing:
+        die(f"--init-adapter {path} does not fit this model's LoRA: {len(unexpected)} of its tensors have no place "
+            f"(e.g. {unexpected[:2]}), {len(missing)} LoRA weights would stay fresh (e.g. {missing[:2]})")
+    return {"tensors": len(state)}
+
+
+# --- The generation check (--gen-check): the first assistant turn of fixed validation rows, greedy -------------------
+
+_CALL = re.compile(r"<tool_call>\s*<function=([^>\n]*)>(.*?)</function>\s*</tool_call>", re.S)
+_PARAM = re.compile(r"<parameter=([^>\n]*)>\n?(.*?)\n?</parameter>", re.S)
+
+
+def parse_tool_calls(text: str) -> list[tuple[str, dict]]:
+    """The tool calls in a rendered (or generated) assistant turn — qwen3.5's <tool_call><function=…><parameter=…>
+    form (serving.render_conversation) — as (name, {parameter: value}), a value JSON-decoded when it is JSON, so the
+    order of an object's keys does not count."""
+    calls = []
+    for name, body in _CALL.findall(text or ""):
+        params = {}
+        for k, v in _PARAM.findall(body):
+            try:
+                params[k.strip()] = json.loads(v)
+            except ValueError:
+                params[k.strip()] = v.strip()
+        calls.append((name.strip(), params))
+    return calls
+
+
+def gen_check_items(rows: list[dict], n: int, seed: int = VAL_SEED) -> list[dict]:
+    """n validation rows (not follow-ups, a seeded draw in their own order: the same rows for every --seed) as
+    {id, prompt, expected}: the served prompt up to the first assistant turn's generation point, and that turn's
+    reference tool calls (none: a reply)."""
+    pool = [r for r in rows if not history_turns(r) and any(m.get("role") == "assistant" for m in r["messages"])]
+    items = []
+    for r in val_subset(pool, n, seed):
+        msgs = r["messages"]
+        k = next(i for i, m in enumerate(msgs) if m.get("role") == "assistant")
+        text = render_text(msgs[:k + 1], r.get("tools"), 0)
+        cut = text.rfind(serving.GENERATION_PROMPT)
+        if cut < 0:
+            continue
+        cut += len(serving.GENERATION_PROMPT)
+        items.append({"id": r.get("id"), "prompt": text[:cut],
+                      "expected": parse_tool_calls(text[cut:].split(serving.IM_END)[0])})
+    return items
+
+
+def gen_check_pass(generated: str, expected: list[tuple[str, dict]]) -> bool:
+    """A generated first turn matches when its tool calls are the reference's (names and arguments, in order); a
+    reference reply (no call) matches a generation with no call."""
+    return parse_tool_calls((generated or "").split(serving.IM_END)[0]) == expected
+
+
+def generation_check(model, tok, items: list[dict], torch, fast_model, budget_s: float = GEN_CHECK_BUDGET_S) -> dict:
+    """Greedy generation of each item's first assistant turn; {n, scored, match, rate, seconds, failed_ids}. Never
+    raises: an error is recorded (and the check is then incomplete, so `select` falls back to the loss)."""
+    t0 = time.monotonic()
+    res = {"n": len(items), "scored": 0, "match": 0, "rate": None, "seconds": None, "failed_ids": [],
+           "max_new_tokens": GEN_CHECK_MAX_NEW_TOKENS}
+    try:
+        if hasattr(fast_model, "for_inference"):
+            fast_model.for_inference(model)
+        model.eval()
+        eos = tok.convert_tokens_to_ids(serving.IM_END)
+        for it in items:
+            if time.monotonic() - t0 > budget_s:
+                res["stopped"] = f"over {budget_s:.0f}s"
+                break
+            ids = torch.tensor([tok(it["prompt"], add_special_tokens=False)["input_ids"]], device="cuda")
+            with torch.no_grad():
+                out = model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), do_sample=False,
+                                     max_new_tokens=GEN_CHECK_MAX_NEW_TOKENS, eos_token_id=eos, pad_token_id=eos)
+            text = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=False)
+            res["scored"] += 1
+            if gen_check_pass(text, it["expected"]):
+                res["match"] += 1
+            else:
+                res["failed_ids"].append(it["id"])
+            del out, ids
+    except Exception as e:  # noqa: BLE001 - the adapter is saved; a failed check must not cost the run
+        res["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    finally:
+        torch.cuda.empty_cache()
+    res["seconds"] = round(time.monotonic() - t0, 1)
+    res["rate"] = round(res["match"] / res["scored"], 4) if res["scored"] else None
+    return res
+
+
+# --- Seed selection (`select`) -------------------------------------------------------------------------------------
+
+def gen_complete(gc) -> bool:
+    return isinstance(gc, dict) and not gc.get("error") and gc.get("n") and gc.get("scored") == gc.get("n") \
+        and isinstance(gc.get("match"), int)
+
+
+def arm_of(run: dict) -> str:
+    """A run's arm, from its run.json: warm:<seed> when it started from an --init-adapter, else base:<seed>."""
+    warm = run.get("start") == "init_adapter" or bool(run.get("init_adapter"))
+    return f"{'warm' if warm else 'base'}:{run.get('seed')}"
+
+
+def select_seed(runs: list[dict], margin: int = 1) -> dict:
+    """Pick one of a round's arm runs (their run.json: from-base seeds and warm starts alike) — never on the bar's
+    sets: on the validation rows, which are the same for every arm (--val-seed). When every run has a complete
+    generation check of the same size, the runs within `margin` matches of the best stay in, and of those the lowest
+    final validation loss wins; otherwise the lowest final validation loss alone. A missing loss loses; a tie goes to
+    the earlier run (TRAIN_ARMS order). Returns {selected: index, rule, seeds} (`seeds`: one entry per arm)."""
+    if not runs:
+        raise ValueError("no runs to select from")
+    seeds = []
+    for r in runs:
+        gc = r.get("gen_check")
+        loss = r.get("last_eval_loss")
+        seeds.append({"arm": arm_of(r), "seed": r.get("seed"), "name": r.get("name"),
+                      "start": "warm" if arm_of(r).startswith("warm") else "base", "lr": r.get("lr"),
+                      "start_eval_loss": r.get("start_eval_loss"),
+                      "eval_loss": loss if isinstance(loss, (int, float)) else None,
+                      "base_eval_loss": r.get("base_eval_loss"), "steps": r.get("steps"),
+                      "gen_match": gc.get("match") if gen_complete(gc) else None,
+                      "gen_n": gc.get("n") if isinstance(gc, dict) else None,
+                      "gen_error": gc.get("error") if isinstance(gc, dict) else None})
+    by_gen = all(s["gen_match"] is not None for s in seeds) and len({s["gen_n"] for s in seeds}) == 1
+    cand = list(range(len(seeds)))
+    if by_gen:
+        best = max(s["gen_match"] for s in seeds)
+        cand = [i for i in cand if seeds[i]["gen_match"] >= best - margin]
+
+    def loss_key(i):
+        v = seeds[i]["eval_loss"]
+        return (v is None, v if v is not None else 0.0, i)
+
+    pick = min(cand, key=loss_key)
+    for i, s in enumerate(seeds):
+        s["selected"] = i == pick
+    rule = (f"generation check within {margin} of the best match, then the lowest final validation loss" if by_gen
+            else "the lowest final validation loss (no complete generation check on every arm)")
+    return {"selected": pick, "rule": rule, "by": "gen_check+loss" if by_gen else "loss", "margin": margin,
+            "seeds": seeds}
+
+
+def select_main(argv: list[str]) -> int:
+    """`python -m souschef_lab.train select RUN_DIR… --into OUT [--skipped ARM=REASON]…`: copy the selected arm's
+    run (adapter/, run.json, loss.jsonl, samples — no checkpoints) to OUT, its run.json carrying every arm's scores
+    (seeds: one entry per arm, selection) and the planned arms that were not trained (selection.skipped)."""
+    import shutil
+
+    ap = argparse.ArgumentParser(prog="souschef_lab.train select", description=select_main.__doc__)
+    ap.add_argument("runs", nargs="+", type=Path, help="the seeds' output folders (each with run.json and adapter/)")
+    ap.add_argument("--into", type=Path, required=True, help="where the selected run goes (replaced)")
+    ap.add_argument("--margin", type=int, default=1, help="generation-check matches treated as a tie (default: 1)")
+    ap.add_argument("--skipped", action="append", default=[], metavar="ARM=REASON",
+                    help="a planned arm that was not trained (the A100 trim, the 12 h window), recorded")
+    ns = ap.parse_args(argv)
+    skipped = []
+    for item in ns.skipped:
+        arm, _, why = item.partition("=")
+        if not arm.strip():
+            die(f"select: --skipped {item!r} is not ARM=REASON")
+        skipped.append({"arm": arm.strip(), "reason": why.strip() or None})
+    runs = []
+    for d in ns.runs:
+        r = trainkit.read_json(d / "run.json", None)
+        if not isinstance(r, dict) or not (d / "adapter" / "adapter_config.json").is_file():
+            die(f"select: {d} has no run.json or no adapter/adapter_config.json (an unfinished seed)")
+        runs.append(r)
+    sel = select_seed(runs, ns.margin)
+    for d, s in zip(ns.runs, sel["seeds"]):
+        s["output"] = str(d)
+    win = ns.runs[sel["selected"]]
+    out = ns.into
+    if out.resolve() in {d.resolve() for d in ns.runs}:
+        die("select: --into must be a folder of its own, not one of the seeds' runs")
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    shutil.copytree(win / "adapter", out / "adapter")
+    for f in ("loss.jsonl", "sample_rendered.txt", "sample_trained.txt"):
+        if (win / f).is_file():
+            shutil.copyfile(win / f, out / f)
+    summary = {"selected_seed": sel["seeds"][sel["selected"]]["seed"], "selected_arm": sel["seeds"][sel["selected"]]["arm"],
+               "selected_from": str(win), "rule": sel["rule"], "by": sel["by"], "margin": sel["margin"],
+               "arms": [s["arm"] for s in sel["seeds"]], "skipped": skipped, "at": utc_now()}
+    run = {**runs[sel["selected"]], "seeds": sel["seeds"], "selection": summary}
+    (out / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
+    (out / "seeds.json").write_text(json.dumps({"selection": summary, "seeds": sel["seeds"]}, indent=2),
+                                    encoding="utf-8")
+    for s in sel["seeds"]:
+        gen = f", gen {s['gen_match']}/{s['gen_n']}" if s["gen_match"] is not None else ""
+        say(f"arm {s['arm']}: final validation loss {s['eval_loss']}{gen}" + ("  <- selected" if s["selected"] else ""))
+    for k in skipped:
+        say(f"arm {k['arm']}: not trained ({k['reason'] or 'skipped'})")
+    say(f"Selected seed {summary['selected_seed']} (arm {summary['selected_arm']}; {sel['rule']}) -> {trainkit.rel(out)}")
+    return 0
+
+
+# --- The pipeline's training settings (tools/pipeline-train.sh) ----------------------------------------------------
+
+PIPELINE_ENV = {"TRAIN_SEED": "seed", "TRAIN_SEEDS": "seeds", "TRAIN_ARMS": "arms", "INIT_ADAPTER": "init_adapter",
+                "INIT_LR": "init_lr", "TRAIN_GEN_CHECK": "gen_check"}
+GEN_CHECK_MULTI = 32  # rows the generation check scores by default when several arms are trained
+_GS_SAFE = re.compile(r"^gs://[a-z0-9][a-z0-9._-]*(/[A-Za-z0-9._=@+-]+)+$")
+# A round's training arms (r6, the user's decision of 2026-10-15: from-base seeds AND a warm start in the same round,
+# the best kept). An arm is "<start>:<seed>": base = a fresh LoRA on the base at the recipe's lr; warm = the
+# init_adapter's LoRA at the warm-start lr (init_lr, default WARM_LR). Each trains on the same dataset in turn and is
+# scored on the same fixed validation rows; `select` keeps one.
+ARM_KINDS = ("base", "warm")
+MAX_ARMS = 4  # an H100 trains about 3 r4-sized arms in its 12 h attempt (window_estimate); a 5th never fits
+# Wall time on the train stage's H100 (r4/r5: 601-650 updates in 2.0-2.4 h of SFT): the upper rate per update, an
+# arm's fixed part (model load, the validations, a 32-row generation check, the push), the job's head (self-test,
+# the 18 GB base pull and unpack, the resume smoke) and tail (export q4_k_m, stage, push). An A100 is about 2x.
+H100_S_PER_UPDATE = 12.0  # r4: 601 updates in 6,498 s of SFT (10.8 s); r5 measured 2.4 H100-hours an arm
+ARM_FIXED_S = 900
+JOB_HEAD_S = 1800
+JOB_TAIL_S = 2700
+WINDOW_S = 43200  # the workflow's Vertex timeout (train_timeout_hours, 12)
+
+
+def arm_tag(kind: str, seed: int) -> str:
+    """The arm's folder name: s<seed> from the base (the TRAIN_SEEDS layout), w<seed> from the warm-start adapter."""
+    return f"{'s' if kind == 'base' else 'w'}{seed}"
+
+
+def _seed_list(v) -> list[int]:
+    parts = v if isinstance(v, list) else [p for p in re.split(r"[,\s]+", str(v)) if p]
+    out = []
+    for p in parts:
+        if isinstance(p, bool) or not re.fullmatch(r"\d{1,9}", str(p).strip()):
+            raise ValueError(f"a seed must be a whole number 0 or more, not {p!r}")
+        out.append(int(str(p).strip()))
+    if len(set(out)) != len(out):
+        raise ValueError(f"a seed is listed twice: {out}")
+    return out
+
+
+def _arm_list(v) -> list[tuple[str, int]]:
+    """TRAIN_ARMS / trigger.train.arms → [(kind, seed)]: a list, or a string separated by commas or spaces, of
+    "base:<seed>" / "warm:<seed>" (a bare "base" or "warm" is seed 3407)."""
+    parts = v if isinstance(v, list) else [p for p in re.split(r"[,\s]+", str(v)) if p]
+    out: list[tuple[str, int]] = []
+    for p in parts:
+        m = re.fullmatch(r"(base|warm)(?::(\d{1,9}))?", str(p).strip()) if isinstance(p, str) else None
+        if not m:
+            raise ValueError(f"an arm is base:<seed> or warm:<seed> (e.g. base:3407, warm:3407), not {p!r}")
+        out.append((m.group(1), int(m.group(2)) if m.group(2) is not None else RECIPE["seed"]))
+    if not out:
+        raise ValueError("TRAIN_ARMS lists no arm")
+    dup = sorted({f"{k}:{s}" for k, s in out if out.count((k, s)) > 1})
+    if dup:
+        raise ValueError(f"an arm is listed twice: {', '.join(dup)}")
+    if len(out) > MAX_ARMS:
+        raise ValueError(f"{len(out)} arms: at most {MAX_ARMS} fit one 12 h training job")
+    return out
+
+
+def window_estimate(n_arms: int, updates: int | None, *, a100: bool = False) -> dict:
+    """The train job's wall time for `n_arms` arms of `updates` updates each (every arm trains on the same rows), on
+    the H100 (a100: about 2x), against the 12 h Vertex window. A planning figure: pipeline-train.sh's own guard
+    measures the arms it actually trains."""
+    per_arm = (updates or 0) * H100_S_PER_UPDATE * (2 if a100 else 1) + ARM_FIXED_S
+    total = JOB_HEAD_S + n_arms * per_arm + JOB_TAIL_S
+    return {"n_arms": n_arms, "updates_per_arm": updates, "arm_h": round(per_arm / 3600, 2),
+            "total_h": round(total / 3600, 2), "window_h": WINDOW_S / 3600, "fits": total <= WINDOW_S,
+            "fit_arms": max(0, int((WINDOW_S - JOB_HEAD_S - JOB_TAIL_S) // per_arm)) if per_arm else None}
+
+
+def pipeline_config(env, file_cfg: dict | None, bucket: str) -> dict:
+    """The training settings of a pipeline round, from the environment (TRAIN_SEED, TRAIN_SEEDS, TRAIN_ARMS,
+    INIT_ADAPTER, INIT_LR, TRAIN_GEN_CHECK; an empty value is unset) over runs/<id>/train-config.json (seed, seeds,
+    arms, init_adapter, init_lr, gen_check), over today's defaults: one arm, base:3407 (train.py's seed, no --seed
+    passed, from the base), no generation check. ValueError on a bad value.
+
+    arms: ["base:3407", "base:2", "warm:3407"] trains those arms in turn; a warm arm needs init_adapter, and an
+    init_adapter needs a warm arm. Without arms, seed / seeds give base arms (warm ones with init_adapter: r6's first
+    form, every seed from the adapter). arms and seed / seeds are exclusive.
+    init_adapter: gs://<the pipeline bucket>/runs/… or …/base/…, a bucket path (runs/… or base/…, the trainer's
+    readable prefixes), or a run id (rt-…: that round's trained adapter, runs/<id>/train/adapter/adapter). INIT_LR is
+    the warm arms' --lr (default WARM_LR); base arms keep the recipe's lr."""
+    file_cfg = dict(file_cfg or {})
+    unknown = sorted(set(file_cfg) - set(PIPELINE_ENV.values()))
+    if unknown:
+        raise ValueError(f"train-config.json: unknown key(s) {', '.join(unknown)} (known: "
+                         f"{', '.join(PIPELINE_ENV.values())})")
+    got, source = {}, {}
+    for var, key in PIPELINE_ENV.items():
+        v = env.get(var)
+        if v is not None and str(v).strip() != "":
+            got[key], source[key] = str(v).strip(), "env " + var
+        elif file_cfg.get(key) not in (None, "", []):
+            got[key], source[key] = file_cfg[key], "train-config.json"
+    if "seed" in got and "seeds" in got:
+        raise ValueError("TRAIN_SEED and TRAIN_SEEDS are both set: one seed, or a list")
+    if "arms" in got and ("seed" in got or "seeds" in got):
+        raise ValueError("TRAIN_ARMS and TRAIN_SEED(S) are both set: the arms name their seeds (base:<seed>, warm:<seed>)")
+    seeds = _seed_list(got["seeds"]) if "seeds" in got else _seed_list([got["seed"]]) if "seed" in got else []
+    if "seeds" in got and not seeds:
+        raise ValueError("TRAIN_SEEDS lists no seed")
+    if len(seeds) > MAX_ARMS:
+        raise ValueError(f"{len(seeds)} seeds: at most {MAX_ARMS} fit one 12 h training job")
+    arms = _arm_list(got["arms"]) if "arms" in got else []
+    b = bucket.rstrip("/")
+    b = b if b.startswith("gs://") else "gs://" + b
+    url = ""
+    if "init_adapter" in got:
+        v = str(got["init_adapter"]).strip().rstrip("/")
+        if v.startswith("gs://"):
+            # only the pipeline bucket's runs/ and base/: the trainer's service account reads nothing else, so any
+            # other path would fail after the image pull, on the GPU (r6 review)
+            if not v.startswith((f"{b}/runs/", f"{b}/base/")):
+                raise ValueError(f"INIT_ADAPTER {v!r}: the trainer reads only {b}/runs/… and {b}/base/…")
+            url = v
+        elif v.startswith(("runs/", "base/")):
+            url = f"{b}/{v}"
+        elif re.fullmatch(r"rt-[A-Za-z0-9-]+", v):
+            url = f"{b}/runs/{v}/train/adapter/adapter"
+        else:
+            raise ValueError(f"INIT_ADAPTER {v!r}: gs://…, runs/… or base/… in the pipeline bucket, or a run id (rt-…)")
+        if not _GS_SAFE.match(url):
+            raise ValueError(f"INIT_ADAPTER {url!r} is not a plain gs:// object path")
+    if "init_lr" in got and not url:
+        raise ValueError("INIT_LR is the warm start's learning rate: set INIT_ADAPTER too")
+    if arms:
+        warm = [f"{k}:{s}" for k, s in arms if k == "warm"]
+        if warm and not url:
+            raise ValueError(f"arm(s) {', '.join(warm)} start from the warm-start adapter: set INIT_ADAPTER "
+                             "(init_adapter) too")
+        if url and not warm:
+            raise ValueError("INIT_ADAPTER is set but no arm is warm: add a warm:<seed> arm, or drop init_adapter")
+    else:
+        arms = [("warm" if url else "base", s) for s in (seeds or [RECIPE["seed"]])]
+    multi = len(arms) > 1
+    lr = None
+    if url:
+        try:
+            lr = float(got.get("init_lr", WARM_LR))
+        except (TypeError, ValueError):
+            raise ValueError(f"INIT_LR {got.get('init_lr')!r} is not a number") from None
+        if not 0 < lr < 1:
+            raise ValueError(f"INIT_LR {lr} must be above 0 and below 1")
+    gen = got.get("gen_check", GEN_CHECK_MULTI if multi else 0)
+    if isinstance(gen, bool) or not re.fullmatch(r"\d{1,4}", str(gen).strip()):
+        raise ValueError(f"TRAIN_GEN_CHECK {gen!r} must be a whole number 0-9999")
+    return {"seeds": [s for _, s in arms], "seed_flag": bool(seeds) or "arms" in got, "multi": multi,
+            "init_adapter": url, "init_lr": repr(lr) if lr is not None else "", "gen_check": int(str(gen).strip()),
+            "arms": [{"arm": f"{k}:{s}", "start": k, "seed": s, "tag": arm_tag(k, s),
+                      "lr": lr if k == "warm" else RECIPE["lr"]} for k, s in arms],
+            "source": source}
+
+
+def pipeline_config_main(argv: list[str]) -> int:
+    """pipeline-train.sh's resolver: `pipeline_config_main [CONFIG_FILE] BUCKET` prints KEY=value lines (SEEDS,
+    SEED_FLAG, MULTI, INIT_ADAPTER, INIT_LR, GEN_CHECK, ARMS) and the resolved settings as JSON on stderr; exit 2 on a bad
+    setting."""
+    import os
+
+    path, bucket = (argv[0], argv[1]) if len(argv) == 2 else ("", argv[0])
+    try:
+        file_cfg = json.loads(Path(path).read_text(encoding="utf-8")) if path else None
+        if file_cfg is not None and not isinstance(file_cfg, dict):
+            raise ValueError("train-config.json must be a JSON object")
+        c = pipeline_config(os.environ, file_cfg, bucket)
+    except (OSError, ValueError) as e:
+        print(f"training settings: {e}", file=sys.stderr)
+        return 2
+    print(f"SEEDS={' '.join(str(s) for s in c['seeds'])}")
+    print(f"SEED_FLAG={int(c['seed_flag'])}")
+    print(f"MULTI={int(c['multi'])}")
+    print(f"INIT_ADAPTER={c['init_adapter']}")
+    print(f"INIT_LR={c['init_lr']}")
+    print(f"GEN_CHECK={c['gen_check']}")
+    print(f"ARMS={' '.join(a['arm'] for a in c['arms'])}")
+    print("training settings: " + json.dumps(c), file=sys.stderr)
+    return 0
+
+
 def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None = None) -> dict:
     """The resolved plan: what --dry-run prints and run.json records. With
     the rows, their counts and estimated sizes (bytes/3 — the base's
@@ -258,15 +722,23 @@ def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None
         "warmup_ratio": args.warmup_ratio, "weight_decay": args.weight_decay, "packing": False,
         "eval_steps": args.eval_steps, "save_steps": args.save_steps, "val_max_rows": args.val_max_rows,
         "checkpoint_steps": args.checkpoint_steps, "resume": args.resume,
-        "seed": args.seed, "tiled_mlp": tiled, "thinking": args.thinking, "data": str(args.data),
+        "seed": args.seed, "val_seed": args.val_seed, "gen_check": args.gen_check,
+        "init_adapter": None, "start": "base",
+        "tiled_mlp": tiled, "thinking": args.thinking, "data": str(args.data),
         "config": getattr(args, "config", None), "render": serving.DESCRIPTION,
         "manifest_hash": dataset_manifest(args.data).get("manifest_hash"),
     }
+    if args.init_adapter is not None:
+        try:
+            d["init_adapter"] = init_adapter_info(args.init_adapter)
+        except ValueError as e:
+            d["init_adapter"] = {"path": str(args.init_adapter), "error": str(e)}
+        d["start"] = "init_adapter"
     if train_rows is not None:
         d["fields_context"] = fields_context_of(args, train_rows, val_rows or [])
         est = [estimate_tokens(r) for r in train_rows]
         val_rows = val_rows or []
-        val_n = len(val_subset(val_rows, args.val_max_rows, args.seed))
+        val_n = len(val_subset(val_rows, args.val_max_rows, args.val_seed))
         d["rows"] = {"train": len(train_rows), "val": len(val_rows), "val_scored": val_n,
                      "followups": sum(1 for r in train_rows + val_rows if history_turns(r)),
                      "over_length_estimate": sum(1 for n in est if n > args.max_seq_length)}
@@ -280,7 +752,8 @@ PLAN_ORDER = ("kind", "base", "name", "output", "adapter", "data", "config", "ma
               "precision", "lora",
               "lr", "epochs", "max_steps", "updates", "batch", "grad_accum", "effective_batch", "max_seq_length",
               "optim", "scheduler", "warmup_ratio", "weight_decay", "packing", "tiled_mlp", "thinking", "eval_steps",
-              "save_steps", "checkpoint_steps", "resume", "val_max_rows", "seed", "rows", "tokens_estimate")
+              "save_steps", "checkpoint_steps", "resume", "val_max_rows", "seed", "val_seed", "start", "init_adapter",
+              "gen_check", "rows", "tokens_estimate")
 
 
 def render_plan(p: dict) -> str:
@@ -289,6 +762,9 @@ def render_plan(p: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["select"]:
+        return select_main(argv[1:])
     args = parse_args(argv)
     if args.thinking:
         die("--thinking: the rows render in the served form (serving.py: Ollama's qwen3.5 renderer with thinking "
@@ -303,6 +779,11 @@ def main(argv: list[str] | None = None) -> int:
     mismatch = check_fields_context(p["fields_context"], args.data)
     if mismatch:
         die(mismatch)
+    if p["init_adapter"] and p["init_adapter"].get("error"):
+        die(p["init_adapter"]["error"])
+    bad_init = check_init_adapter(p["init_adapter"], args)
+    if bad_init:
+        die(bad_init)
     say(render_plan(p))
     if p["rows"]["followups"]:
         say(f"{p['rows']['followups']} rows are follow-ups: their earlier replies are masked out of the loss.")
@@ -375,7 +856,7 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         return kept, texts, lengths, dropped, unservable
 
     train_kept, train_texts, train_lens, train_dropped, train_unservable = render(train_rows)
-    val_rows_used = val_subset(val_rows, args.val_max_rows, args.seed)
+    val_rows_used = val_subset(val_rows, args.val_max_rows, args.val_seed)
     val_kept, val_texts, val_lens, val_dropped, val_unservable = render(val_rows_used)
     say(f"Rendered as the served student sees it ({serving.DESCRIPTION}): {len(train_texts)} train / "
         f"{len(val_texts)} val rows fit; {train_dropped + val_dropped} longer than {args.max_seq_length:,} tokens "
@@ -398,6 +879,12 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         finetune_mlp_modules=True, r=args.rank, lora_alpha=args.alpha, lora_dropout=0, bias="none",
         use_gradient_checkpointing="unsloth", random_state=args.seed,
     )
+    init_loaded = None
+    if args.init_adapter is not None:
+        # a warm start: the fresh LoRA takes the saved one's weights (a --resume then overwrites them with the
+        # checkpoint's, which began from these)
+        init_loaded = load_init_adapter(model, args.init_adapter)
+        say(f"Warm start: {init_loaded['tensors']} LoRA tensors loaded from {trainkit.rel(args.init_adapter)}.")
 
     loss_log = (out / "loss.jsonl").open("a", encoding="utf-8")
     evals: list[tuple[int, float]] = []  # (update, validation loss)
@@ -498,7 +985,7 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
     else:
         if args.resume:
             say("--resume: no checkpoint yet under checkpoints/ — starting from the beginning.")
-        run_validation(0, 0.0)  # the base model's own loss on the validation rows, before any update
+        run_validation(0, 0.0)  # the start's own loss on the validation rows (the base's, or the init adapter's)
     say("Training — the loss should fall over the first few dozen steps (Ctrl-C stops; --checkpoint-steps saves).")
     torch.cuda.reset_peak_memory_stats()
     t_train = time.monotonic()
@@ -516,6 +1003,14 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
     except torch.OutOfMemoryError as e:  # the adapter is safe; report and go on
         say(f"the final validation ran out of GPU memory ({e.__class__.__name__}); the adapter is saved")
         torch.cuda.empty_cache()
+    gen = None
+    if args.gen_check:
+        items = gen_check_items(val_rows, args.gen_check, args.val_seed)
+        say(f"Generation check: the first turn of {len(items)} fixed validation rows, greedy ...")
+        gen = generation_check(model, tok, items, torch, FastModel)
+        log_line({"step": trainer.state.global_step, "gen_check": {k: v for k, v in gen.items() if k != "failed_ids"}})
+        say(f"Generation check: {gen['match']}/{gen['scored']} first turns match"
+            + (f" ({gen['error']})" if gen.get("error") else "") + f" in {gen['seconds']}s.")
     loss_log.close()
     losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
     run = {
@@ -530,10 +1025,17 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
                  "dropped_unservable": train_unservable + val_unservable},
         "tokens": {"train_total": sum(train_lens), "train_max": max(train_lens), "val_total": sum(val_lens)},
         "steps": trainer.state.global_step,
+        # the updates this process continued from (0: a fresh start): `minutes` covers only the rest, which
+        # pipeline-train.sh's 12 h window guard scales up to a whole arm
+        "resumed_from_step": int(Path(resume_from).name.rsplit("-", 1)[-1]) if resume_from else 0,
         "train_loss": getattr(stats, "training_loss", None),
         "first_loss": losses[0] if losses else None,
         "last_loss": losses[-1] if losses else None,
-        "base_eval_loss": evals[0][1] if evals and evals[0][0] == 0 else None,
+        # the step-0 loss is the base's on a fresh start, the init adapter's on a warm one
+        "base_eval_loss": evals[0][1] if evals and evals[0][0] == 0 and args.init_adapter is None else None,
+        "start_eval_loss": evals[0][1] if evals and evals[0][0] == 0 else None,
+        "init_adapter_loaded": init_loaded,
+        "gen_check": gen,
         "last_eval_loss": evals[-1][1] if evals else None,
         "eval_losses": [{"step": st, "eval_loss": v} for st, v in evals],
         "train_seconds": round(train_seconds, 1),

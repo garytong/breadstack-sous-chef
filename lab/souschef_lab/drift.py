@@ -336,14 +336,27 @@ def impact(sd: dict, old_m: Manifest, new_m: Manifest, exam_rows: list[dict], tr
 # ═════════════════════════════════════════ probe (arm P) ═════════════════════════════════════════
 
 def probe_rows(new_m: Manifest, keys: list[str], *, state: dict, per_key: int = 4, max_keys: int = 40, seed: int = 0,
-               engine: Any = None) -> tuple[list[dict], dict[str, int]]:
+               engine: Any = None, stats: dict | None = None) -> tuple[list[dict], dict[str, int]]:
     """Up to `per_key` exam-style rows per new key from the deterministic
-    generator: the vintage state first (set/toggle/enum/reset kinds), the
-    default home rows for what it lacks (list kinds, section types not on the
-    vintage home). With `engine`, cases whose ops the engine refuses are
-    dropped. Rows are scored by keys (exam.score_turn)."""
-    from .cases import Generator, measure_one
+    generator: `state` (the eval / drift site state) first — with a home row
+    added for each section type a key names that it lacks (probe.augment_state:
+    perksCards, perksIcons, newsletter …, preset so the keys are visible) —
+    for set/toggle/enum/reset kinds, update cases for scalar list items the
+    generator never writes (probe.scalar_list_cases: gallery imagesLink[]),
+    then the default home for what is still short (list kinds, more sections).
+
+    Every row carries the state its case was generated on (`site_state`) and
+    the runners run it there (probe.run_state): the section it targets and
+    the context it shows are that state's. Cases that write a field their
+    state hides (probe.case_visible) or a closed-gate variant are never
+    picked; with `engine`, cases whose ops the engine refuses on that state
+    are dropped too (probe.accepted_on) — r5's probe skipped this and 7 of 17
+    rows were unpassable. `stats` (a dict) receives per key the candidates
+    and the drop reasons. Rows are scored by keys (exam.score_turn)."""
+    from . import probe as PR
+    from .cases import Generator
     from .exam import touches_of
+    from .state import build_state
 
     keys = list(keys)[:max_keys]
     want = set(keys)
@@ -370,31 +383,50 @@ def probe_rows(new_m: Manifest, keys: list[str], *, state: dict, per_key: int = 
                     seen_ids.add((a, c.id))
                     cands[a].append(c)
 
+    base, _added = PR.augment_state(new_m, state, keys)
     try:
-        consider(Generator(new_m, seed=seed, template="vintage", base_state=state).all_cases(PROBE_KINDS_STATE))
+        consider(Generator(new_m, seed=seed, template="vintage", base_state=base).all_cases(PROBE_KINDS_STATE))
     except (IndexError, KeyError, ValueError):
         pass
+    consider(PR.scalar_list_cases(new_m, base, keys, seed=seed, per_list=per_key))
     if any(len(cands[k]) < per_key for k in keys):
-        g2 = Generator(new_m, seed=seed, template="vintage")
+        home2, _ = PR.augment_state(new_m, build_state(new_m, template="vintage"), keys)
+        g2 = Generator(new_m, seed=seed, template="vintage", base_state=home2)
         for kinds in (PROBE_KINDS_STATE, PROBE_KINDS_LIST):
             try:
                 consider(g2.all_cases(kinds))
             except (IndexError, KeyError, ValueError):
                 continue
+        consider(PR.scalar_list_cases(new_m, home2, keys, seed=seed, per_list=per_key))
     picked: dict[str, list] = {}
+    used: set[str] = set()  # a case another key already asks (imagesLink[] and imagesLink[].value share cases)
     for k in keys:
         by_kind: dict[str, list] = defaultdict(list)
         for c in cands[k]:
             by_kind[c.kind].append(c)
+        dropped: Counter = Counter()
         chosen: list = []
         while len(chosen) < per_key and any(by_kind.values()):  # round-robin over kinds: set, toggle, reset …
             for kind in sorted(by_kind):
                 if by_kind[kind] and len(chosen) < per_key:
-                    c = by_kind[kind].pop(0)
-                    if engine is not None and not measure_one(c, engine)[0]:
+                    c = by_kind[kind].pop(next((j for j, x in enumerate(by_kind[kind]) if x.id not in used), 0))
+                    why = None
+                    if (c.meta or {}).get("gate_closed"):
+                        why = "gate_closed"
+                    elif not PR.target_present(c.to_row(), c.site_state):
+                        why = "target_missing"
+                    else:
+                        why = PR.case_visible(new_m, c)[1]
+                        if why is None and engine is not None:
+                            why = PR.accepted_on(c, engine)[1]
+                    if why:
+                        dropped[why] += 1
                         continue
                     chosen.append(c)
+                    used.add(c.id)
         picked[k] = chosen
+        if stats is not None:
+            stats[k] = {"candidates": len(cands[k]), "picked": len(chosen), "dropped": dict(dropped)}
     rows, coverage = [], {}
     for k in keys:
         coverage[k] = len(picked[k])
@@ -407,13 +439,12 @@ def probe_rows(new_m: Manifest, keys: list[str], *, state: dict, per_key: int = 
                     e = {"target": t["target"], "key": t["key"], "list": t["list"]}
                     if e not in ek:
                         ek.append(e)
-            rid = f"p{abs(hash((k, c.id))) % 10**8:08d}-{i}"
-            rows.append({"id": rid, "set": "probe", "kind": "phrasing", "target": c.target, "fields": c.fields,
-                         "site_state": None, "context": c.context, "request": c.request, "history": [],
-                         "expected": {"ops": [], "diff": [], "keys": ek, "alt": [], "out_of_scope": None},
+            rows.append({"id": PR.row_id(k, c.id, i), "set": "probe", "kind": "phrasing", "target": c.target,
+                         "fields": c.fields, "site_state": c.site_state, "context": c.context, "request": c.request,
+                         "history": [], "expected": {"ops": [], "diff": [], "keys": ek, "alt": [], "out_of_scope": None},
                          "holdout": True, "manifest_hash": new_m.hash, "template": "vintage",
                          "meta": {"class": "probe", "probe_key": k, "kind": c.kind, "page": (c.context or {}).get("page"),
-                                  "source_case": c.id, "generator_ops": c.expected.get("ops")}})
+                                  "source_case": c.id, "generator_ops": c.expected.get("ops"), "own_state": True}})
     return rows, coverage
 
 
@@ -558,6 +589,7 @@ class Target:
                  probe: bool = False, home: dict | None = None) -> list[dict]:
         """Every row once (`sample` = the replicate number) → trimmed rows."""
         from . import collect as C
+        from . import probe as PR
         from .exam import run_row, vintage_state
 
         if not rows:
@@ -584,8 +616,8 @@ class Target:
                                 return
                             case = pending.pop()
                         try:
-                            row = run_row(case, client, engine, state=state, route=route, sample=sample, assets=assets,
-                                          fields=fields, history_mode="live", site_prefix=site_prefix)
+                            row = run_row(case, client, engine, state=PR.run_state(case, state), route=route, sample=sample,
+                                          assets=assets, fields=fields, history_mode="live", site_prefix=site_prefix)
                         except C.FieldsContextMismatch as e:
                             with lock:
                                 errors.append(str(e))
@@ -593,6 +625,8 @@ class Target:
                         except Exception as e:  # noqa: BLE001 — one row's lab bug must not lose the arm
                             row = {"status": "error", "code": "lab_exception", "error": f"{type(e).__name__}: {e}"[:500]}
                         t = trim(row, case, m)
+                        if probe:  # the conversation next to its result: a dodged key can be explained
+                            t["trajectory"] = PR.trajectory(row, case)
                         with lock:
                             out.append(t)
                             n = len(out)
@@ -1241,10 +1275,19 @@ def _measure(job: Job, mode: str, tgt: Target, dep: dict, model: dict, digest: s
     # rule that fires is confirmed in the same run instead of a second pass later
     for k in range(1, max(1, int(th.get("arm_d_replicates", 1))) + 1):
         run_d(k)
-    # probe
+    # probe: rows checked by the engine on the state each one runs on (r5's ran unchecked: 7/17 unpassable)
     probe_keys = list(imp.get("new_keys") or [])
-    p_rows, coverage = probe_rows(new_m, probe_keys, state=_vintage(d_path, home), per_key=int(th["probe_cases_per_key"]),
-                                  max_keys=int(th["probe_max_keys"]))
+    p_rows, coverage, p_stats = [], {}, {}
+    if probe_keys:
+        p_engine, p_closer = tgt.engine_for(d_path, new_m, 1)
+        try:
+            p_rows, coverage = probe_rows(new_m, probe_keys, state=_vintage(d_path, home), per_key=int(th["probe_cases_per_key"]),
+                                          max_keys=int(th["probe_max_keys"]), engine=p_engine, stats=p_stats)
+        finally:
+            if p_closer is not None:
+                p_closer.close()
+        from . import probe as PR
+        job.put("exam/P-plan.json", PR.plan_summary(p_rows, coverage, p_stats))
     probe_reps: list[list[dict]] = []
     for k in range(1, int(th["probe_samples"]) + 1 if p_rows else 1):
         job.progress(f"arm P sample {k}: {len(p_rows)} rows for {len(probe_keys)} new key(s)")

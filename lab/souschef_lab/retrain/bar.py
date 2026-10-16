@@ -7,6 +7,9 @@ per-row ghost-write counts and out-of-scope `where` flags, the current model's
 baseline (σ) and the thresholds. Per set:
 
   tol_s = max(1 row, ⌈2 σ_Δ,s⌉),   σ_Δ,s = σ_run,s · sqrt(1/m_current + 1/m_candidate)
+          or, with thresholds sigma_seed[s] (retrain/noise.py's measured retrain spread of ONE model, rows):
+  tol_s = max(1 row, ⌈2 sqrt(σ_Δ,s² + 2 σ_seed,s²)⌉)
+          (both the candidate and the live model are retrain draws, so Var(Δ) holds σ_seed² twice)
 
 with σ_run,s from the CURRENT model's baseline over the set's rows
 (baseline.sigma_run: the row pass rates, the observed SD, or the prior flip rate).
@@ -67,10 +70,19 @@ def set_row(name: str, variant: str, cur: list[dict[str, int]], cand: list[dict[
     sig, how = sigma_run(keys, baseline, th) if n else (0.0, "empty")
     sd = sig * math.sqrt(1 / max(len(cur), 1) + 1 / max(len(cand), 1))
     tol = max(1, math.ceil(2 * sd)) if n else 0
+    # seed-aware tolerance (docs/RETRAIN.md R6/R10): thresholds `sigma_seed` {set: rows}, measured by
+    # retrain/noise.py, adds how much a retrain of the same data moves ONE model's score on the set. The bar compares
+    # two trained models (candidate and live), each a seed draw, so Var(Δ) gets 2·σ_seed²:
+    # max(1, ⌈2·sqrt(σ_Δ² + 2·σ_seed²)⌉)
+    ss = (th.get("sigma_seed") or {}).get(name) if isinstance(th.get("sigma_seed"), dict) else None
+    extra: dict[str, Any] = {}
+    if n and isinstance(ss, (int, float)) and ss > 0:
+        tol = max(1, math.ceil(2 * math.sqrt(sd ** 2 + 2 * float(ss) ** 2) - 1e-9))
+        extra = {"sigma_seed": round(float(ss), 3), "tol_eval_only": max(1, math.ceil(2 * sd))}
     mc, mk = _mean(cur, keys), _mean(cand, keys)
     b, c = paired(cur, cand, keys)
     return {"set": name, "variant": variant, "n": n, "current": round(mc, 2), "candidate": round(mk, 2),
-            "delta": round(mk - mc, 2), "tol": tol, "sigma_delta": round(sd, 3), "sigma_how": how,
+            "delta": round(mk - mc, 2), "tol": tol, "sigma_delta": round(sd, 3), "sigma_how": how, **extra,
             "b": b, "c": c, "mcnemar_p": round(mcnemar_p(b, c), 4), "bar": bar and n > 0,
             "m": [len(cur), len(cand)], "_keys": keys}
 

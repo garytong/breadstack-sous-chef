@@ -112,6 +112,7 @@ class Arms:
              script_rows: list[dict] | None = None, script_m: Manifest | None = None, home: dict | None = None) -> list[dict]:
         """Exam-style rows (keys scoring) once on `arm` → trimmed rows."""
         from .. import collect as C
+        from .. import probe as PR
         from ..drift import home_context
         from ..exam import oracle_script, run_row, vintage_state
         if not rows:
@@ -141,8 +142,8 @@ class Arms:
                                 return
                             case = pending.pop()
                         try:
-                            row = run_row(case, client, engine, state=state, route=arm, sample=sample, assets=assets,
-                                          fields=fields, history_mode="live", site_prefix=prefix)
+                            row = run_row(case, client, engine, state=PR.run_state(case, state), route=arm, sample=sample,
+                                          assets=assets, fields=fields, history_mode="live", site_prefix=prefix)
                         except C.FieldsContextMismatch as e:
                             with lock:
                                 errors.append(str(e))
@@ -150,6 +151,8 @@ class Arms:
                         except Exception as e:  # noqa: BLE001 — one row's lab bug must not lose the arm
                             row = {"status": "error", "code": "lab_exception", "error": f"{type(e).__name__}: {e}"[:500]}
                         t = trim(row, case, m, set_name)
+                        if set_name == "probe":  # the conversation next to its result: a failing key can be explained
+                            t["trajectory"] = PR.trajectory(row, case)
                         with lock:
                             out.append(t)
 
@@ -218,8 +221,11 @@ def results(rows: list[dict]) -> dict[str, int]:
 
 # --- the stage --------------------------------------------------------------------------------------------------------
 
-def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, progress: Callable[[str], None]) -> dict:
-    """Every set's rows and manifests (module docstring)."""
+def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, progress: Callable[[str], None],
+              engine_path: str | None = None, probe_engine: Any = None) -> dict:
+    """Every set's rows and manifests (module docstring). The probe's cases are
+    checked by the engine (`probe_engine`, else a PersistentEngine on the
+    deployed manifest) on the state each row runs on."""
     from .. import drift as DR
     from ..examrebase import rebase_exam
     from ..exam import MANIFEST_FILE, load_set
@@ -237,12 +243,24 @@ def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, pr
     raw_rows = {s: load_set(s) for s in EXAM_SETS}
     out: dict[str, Any] = {"dep_path": dep_path, "dep_m": dep_m, "exam_m": exam_m, "exam_path": Path(MANIFEST_FILE),
                            "sets": {}, "recorded": {}, "stale": [], "renames": sd.get("renames") or []}
+    from ..r4score import apply_font_policy, policy_of
+    font = policy_of()["font"]  # "all" (default since r6-3): the amended "the font" rows as exam.AMENDMENTS wrote them; as_authored: the old key
+    out["font_policy"] = {"policy": font, "rows": []}
+
+    def by_font(rows: list[dict]) -> list[dict]:
+        res = []
+        for r in rows:
+            r2, note = apply_font_policy(r, font)
+            if note and r.get("id") not in out["font_policy"]["rows"]:
+                out["font_policy"]["rows"].append(r.get("id"))
+            res.append(r2)
+        return res
     for s, rows in raw_rows.items():
         rows = rows[:lim] if lim else rows
         rb, stale, rep = rebase_exam(rows, dep_m, sd.get("renames"), old_manifest=exam_m)
         DR.rederive(rb, dep_path, DR.home_context(rows) or DR.home_context(raw_rows["paraphrase"]))
-        out["sets"][s] = rb
-        out["recorded"][s] = [r for r in rows if r["id"] not in {x["id"] for x in stale}]
+        out["sets"][s] = by_font(rb)
+        out["recorded"][s] = by_font([r for r in rows if r["id"] not in {x["id"] for x in stale}])
         out["stale"] += [row_key(s, r["id"]) for r in stale]
     cases_path = local / "cases.jsonl"
     if not store.download(f"{pre}/prepare/cases.jsonl", cases_path):
@@ -262,12 +280,26 @@ def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, pr
     out["dodged_keys"] = list(((rep or {}).get("verdict") or {}).get("dodged_keys") or [])
     out["probe"] = []
     if new_keys:
+        from .. import probe as PR
         from ..exam import vintage_state
         state = vintage_state(dep_path, DR.home_context(raw_rows["paraphrase"]))
-        rows, coverage = DR.probe_rows(dep_m, new_keys, state=state, per_key=int(th.get("probe_cases_per_key", 4)),
-                                       max_keys=int(th.get("probe_max_keys", 40)))
+        eng, closer = probe_engine, None
+        if eng is None:
+            from ..engine import PersistentEngine
+            eng = closer = PersistentEngine(engine_path, manifest_path=dep_path, size=1)
+        stats: dict = {}
+        try:
+            rows, coverage = DR.probe_rows(dep_m, new_keys, state=state, per_key=int(th.get("probe_cases_per_key", 4)),
+                                           max_keys=int(th.get("probe_max_keys", 40)), engine=eng, stats=stats)
+        finally:
+            if closer is not None:
+                closer.close()
         out["probe"] = rows[:lim] if lim else rows
         out["probe_coverage"] = coverage
+        out["probe_dropped"] = stats
+        (local / "eval").mkdir(parents=True, exist_ok=True)
+        (local / "eval" / "probe-plan.json").write_text(json.dumps(PR.plan_summary(out["probe"], coverage, stats)),
+                                                        encoding="utf-8")
     # the newest deployed manifest, when it moved during the round with a hard change
     newest = store.read_json("state/deployed.json") or {}
     out["stale_round"] = False
@@ -304,7 +336,14 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
     th = PC.load_thresholds(store.b)
     model = model_state(store)
     base_cur = store.read_json(f"baselines/{model.get('digest')}/baseline.json") if model.get("digest") else None
-    sets = plan_sets(store, run_id, mode=mode, local=local, th=th, progress=progress)
+    from .. import r4score as R4S
+    try:  # trigger.score_policy / font_policy → the scorer's environment (F0H / F9H, and the exam's font rows). The
+        # eval's base is STRICT_POLICY (every relaxation off): the r4 rules the stored calibration replicates and the
+        # live model's earlier evals were scored with; a trigger key turns one back on deliberately
+        R4S.adopt_trigger_policy(load_run(store, run_id).get("trigger"), base=R4S.STRICT_POLICY)
+    except ValueError as e:
+        raise ConfigError(f"scoring policy: {e}") from e
+    sets = plan_sets(store, run_id, mode=mode, local=local, th=th, progress=progress, engine_path=engine_path)
     reps = 1 if smoke else 2
     dep_m, dep_path = sets["dep_m"], sets["dep_path"]
     # the current arm in DRY is scripted from the rows on the current model's own training manifest (it never saw the
@@ -449,8 +488,12 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
     eval_info = {"wall_s": round(wall_s), "replicates": reps, "stale_rows": sets["stale"], "stale_round": sets["stale_round"],
                  "trigger_rules": sets["trigger_rules"], "dodged_keys": sets["dodged_keys"],
                  "newest_manifest": (sets.get("newest") or {}).get("hash"),
-                 "probe_coverage": sets.get("probe_coverage"), "renames": sets["renames"],
+                 "probe_coverage": sets.get("probe_coverage"), "probe_dropped": sets.get("probe_dropped"),
+                 "renames": sets["renames"], "font_policy": sets.get("font_policy"),
+                 "score_policy": {**R4S.policy_of(), "version": R4S.POLICY_VERSION},
                  "harness": harness.describe() if harness is not None else {"dry": True},
-                 "candidate_baseline_digest": cand_digest, "tolerated_errors": arms.tolerated}
+                 "candidate_baseline_digest": cand_digest, "tolerated_errors": arms.tolerated,
+                 # the round's training arms (base seeds and a warm start), each scored on the validation rows
+                 "training_arms": REP.training_arms(store.read_json(f"{pre}/train/progress.json") or {})}
     store.write_json(f"{pre}/eval/info.json", eval_info)
     return REP.build(store, run_id, mode=mode, bar=bar, eval_info=eval_info)

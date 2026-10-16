@@ -579,3 +579,63 @@ def test_build_round_trips_a_small_study(tmp_path):
     (why / "paraphrase-cases.jsonl").write_text(json.dumps(bad) + "\n", encoding="utf-8")
     with pytest.raises(X.ExamError, match="noSuchKey"):
         X.build_sets(why, tmp_path / "exam2")
+
+
+# --- answer-key amendments (2026-10-15: "the font" = every site font; vague → ask) ------------------------------------
+
+def ok(ops: list[dict]) -> dict:
+    return row(*[(o, True) for o in ops])
+
+
+def test_the_font_rows_expect_every_site_font_under_new_ids():
+    amended = {(r["set"], r["meta"]["superseded"]["id"]): r for name in SIZES for r in X.load_set(name)
+               if (r.get("meta") or {}).get("answer_key")}
+    assert set(amended) == set(X.AMENDMENTS)
+    for (s, old_id), r in amended.items():
+        assert r["id"] == old_id + X.AMENDED_ID_SUFFIX and r["meta"]["answer_key"] == X.ANSWER_KEY
+    raw = {r["id"] for r in X.load_set("followup", amended=False)}
+    assert "p150" in raw and "p150.k2" not in raw
+    p150 = amended[("followup", "p150")]
+    assert [k["key"] for k in p150["expected"]["keys"]] == list(X.SITE_FONTS_VINTAGE)
+    g = {"kind": "global", "panel": "TypographyColorsSection"}
+    every = [sf({"kind": "global"}, **{k: "Lora" for k in X.SITE_FONTS_VINTAGE})]
+    assert X.score_turn(p150, ok(every))["verdict"] == "pass"
+    # the inheriting cart / footer fonts may be written too; one or two fonts are partial now; a hidden one is stray
+    assert X.score_turn(p150, ok([sf({"kind": "global"}, **{k: "Lora" for k in X.SITE_FONTS_VINTAGE},
+                                      cartBodyFont="Lora")]))["verdict"] == "pass"
+    assert X.score_turn(p150, ok([sf(g, bodyFont="Lora")]))["verdict"] == "partial"
+    assert X.score_turn(p150, ok([sf(g, bodyFont="Lora", headingFont="Lora", navFont="Lora")]))["verdict"] == "partial"
+    assert X.score_turn(p150, ok([sf({"kind": "global"}, **{k: "Lora" for k in X.SITE_FONTS_VINTAGE},
+                                      shopMenuFont="Lora")]))["verdict"] == "stray_writes"
+    # h059: the history asked "headings and body?", the merchant said both: those two, or every font
+    h059 = amended[("holdout", "h059")]
+    assert X.score_turn(h059, ok([sf(g, bodyFont="Inter", headingFont="Inter")]))["verdict"] == "pass"
+    assert X.score_turn(h059, ok(every))["verdict"] == "pass"
+    # a named part is unchanged
+    p012 = next(r for r in X.load_set("paraphrase") if r["id"] == "p012")
+    assert [k["key"] for k in p012["expected"]["keys"]] == ["headingFont"]
+
+
+def test_i_dont_like_the_font_may_be_answered_with_a_question():
+    p013 = next(r for r in X.load_set("paraphrase") if r["id"] == "p013.k2")
+    assert p013["expected"]["ask_ok"] is True
+    asked = {**ok([]), "reply": "Which font would you like instead? Lora, Inter or Montserrat?"}
+    assert X.score_turn(p013, asked)["verdict"] == "clarify_ok"
+    assert X.score_turn(p013, {**ok([]), "reply": "Okay."})["verdict"] == "no_write"
+    # p150's first turn is the same words; only p013 is single-turn — the follow-up must write every font
+    p150 = next(r for r in X.load_set("paraphrase") if r["id"] == "p150.k2")
+    assert not p150["expected"].get("ask_ok") and X.score_turn(p150, asked)["verdict"] == "no_write"
+
+
+def test_a_value_less_request_may_be_answered_with_a_question():
+    p031 = next(r for r in X.load_set("paraphrase") if r["id"] == "p031.k2")
+    assert p031["expected"]["ask_ok"] is True and p031["fields"] == ["footerCopyrightText"]
+    assert [k["key"] for k in p031["expected"]["keys"]] == ["footerCopyrightText"]  # the key is unchanged
+    asked = {**row(), "reply": "What should the copyright line say?"}
+    assert X.score_turn(p031, asked)["verdict"] == "clarify_ok"
+    wrote = ok([sf({"kind": "global", "panel": "FooterSection"}, footerCopyrightText="© 2026")])
+    assert X.score_turn(p031, wrote)["verdict"] == "pass"
+    reported = {**asked, "tool_calls": [{"name": "report_unsupported", "input": {"where": "support"}}]}
+    assert X.score_turn(p031, reported)["verdict"] == "no_write"
+    # a request that gives its value is not amended
+    assert not any(r["id"].startswith("p002") and r["expected"].get("ask_ok") for r in X.load_set("paraphrase"))

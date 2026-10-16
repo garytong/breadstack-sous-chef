@@ -51,7 +51,7 @@ from typing import Any, Iterable
 
 from . import collect as C
 from . import render
-from .r4score import PASSING, RULE_VERSION, score
+from .r4score import PASSING, RULE_VERSION, excuse_divergences, score
 
 ROUTE_MODELS = {"default": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
 ID_RE = re.compile(r'^\{"id": "([^"]+)"')
@@ -258,6 +258,10 @@ def run_r4_case(case: dict, client: Any, engine: Any, *, route: str | None, fiel
         "verdict": "error", "reasons": [f"error:{row.get('code')}"], "mode": final["score"]["mode"], "flags": [],
         "passed": False, "usable": False, "rule_version": RULE_VERSION, "info": []}
     sc["info"] = list(sc.get("info") or []) + info
+    divergences, excused = excuse_divergences(final, hist_rows, divergences, sc, engine=engine, manifest=manifest,
+                                              row=row)
+    if excused:
+        sc["history_excused"] = excused
     if divergences:
         sc["history_diverged"] = divergences
         sc["flags"] = sorted(set(sc["flags"]) | {"history_diverged"})
@@ -353,6 +357,8 @@ def oracle_scripts(cases: list[dict], site_prefix: str) -> dict:
             turns.append([[("text.delta", {"text": f"Which one do you mean: {', '.join(cands)}?"}), done()]])
         elif mode == "answer":
             turns.append([[("text.delta", {"text": "Your options include " + ", ".join(map(str, (exp.get("reply_any") or [])[:3])) + "."}), done()]])
+        elif mode == "ask":
+            turns.append([[("text.delta", {"text": "Happy to change that — what would you like instead?"}), done()]])
         else:
             ops = c["meta"].get("oracle_ops") or exp.get("ops") or []
             turns.append(write_turn(ops, "Done — that's changed. Save when you're happy with it."))

@@ -92,7 +92,10 @@ func TestRules_ContextContractAndRealTurnFixes(t *testing.T) {
 		`{"kind":"global","panel":"BrandingSection"}`,
 		`"Site name", "store name" and "the title of my site" mean storeName`,
 		`"Site Title"`, "do not change it for these requests",
-		"bodyFont and headingFont on panel TypographyColorsSection",
+		"means EVERY site font, all set to the same font: headingFont, bodyFont, navFont and buttonFont on panel TypographyColorsSection",
+		"productTitleFont and productBodyFont on panel ProductCardSection", "announcementBar.fontFamily on panel HeaderSection",
+		`A font for a named part ("the heading font", "the buttons") means only that setting.`,
+		"When a request is too vague to act on", "ask one short question instead of guessing. When it gives enough to act, act.",
 		"ShopMenuSection: shopMenuMaxItems",
 		"put it back",
 		// FAQ (depth audit)

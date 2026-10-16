@@ -128,3 +128,24 @@ def test_rows_an_arm_errored_on_are_left_out_of_both():
     del arms["candidate"]["paraphrase"][0]["paraphrase:r000"]
     b = BAR.evaluate(arms, baseline=None, th=TH, oos_where=where_all(arms))
     assert {r["set"]: r for r in b["sets"]}["paraphrase"]["n"] == 39
+
+
+def test_a_measured_seed_spread_widens_only_its_own_set():
+    # steady baseline: a 5-row dip fails on eval noise alone, passes once σ_seed (rows) is folded in
+    steady = {"replicates": [{"rows": {f"paraphrase:r{j:03d}": 1 for j in range(40)}} for _ in range(3)]}
+    arms = arms_equal(paraphrase=reps("paraphrase", 40, 29))
+    b0 = BAR.evaluate(arms, baseline=steady, th=TH, oos_where=where_all(arms))
+    p0 = next(r for r in b0["sets"] if r["set"] == "paraphrase")
+    assert not rule(b0, "sets")["pass"] and "sigma_seed" not in p0
+    th = {**TH, "sigma_seed": {"paraphrase": 2.5, "holdout": 9.0}}
+    b1 = BAR.evaluate(arms, baseline=steady, th=th, oos_where=where_all(arms))
+    by = {r["set"]: r for r in b1["sets"]}
+    assert rule(b1, "sets")["pass"], by["paraphrase"]
+    assert by["paraphrase"]["sigma_seed"] == 2.5 and by["paraphrase"]["tol_eval_only"] == p0["tol"]
+    assert by["paraphrase"]["tol"] >= 5 and "sigma_seed" not in by["out_of_scope"]
+    # both models are seed draws: σ_seed counts twice, ⌈2·sqrt(σ_Δ² + 2·σ_seed²)⌉
+    import math
+    sd = by["paraphrase"]["sigma_delta"]
+    assert by["paraphrase"]["tol"] == max(1, math.ceil(2 * math.sqrt(sd ** 2 + 2 * 2.5 ** 2) - 1e-9))
+    from souschef_lab.retrain import noise as N
+    assert by["paraphrase"]["tol"] == N.seed_aware_tol(sd, 2.5)

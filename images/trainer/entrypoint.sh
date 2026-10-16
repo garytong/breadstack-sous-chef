@@ -10,6 +10,13 @@
 #
 # Env from the workflow: PIPELINE_BUCKET, GOOGLE_CLOUD_PROJECT, TRAIN_RUNG,
 # TRAIN_ATTEMPT, TRAIN_NONCE (the job's one-off `create` label), TRAIN_IMAGE.
+# Optional, read by pipeline-train.sh (unset: one arm, base:3407, as r4/r5):
+# TRAIN_ARMS (base:<seed> / warm:<seed>, e.g. base:3407,base:2,warm:3407: each
+# trained in turn, the best on validation kept), TRAIN_SEED, TRAIN_SEEDS,
+# INIT_ADAPTER, INIT_LR, TRAIN_GEN_CHECK, TRAIN_WINDOW_S, TRAIN_TAIL_S — or
+# the same keys (arms, seed, seeds, init_adapter, init_lr, gen_check) in
+# runs/<id>/train-config.json, which needs no change to the workflow's job
+# spec (pipeline-train.sh's header has the details).
 # No secret: the trainer's account reads and writes the pipeline bucket only.
 #
 # bash, not sh: pipeline-train.sh reads PIPESTATUS (the r4 lesson).

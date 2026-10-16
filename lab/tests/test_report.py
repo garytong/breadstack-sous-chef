@@ -153,3 +153,27 @@ def test_approved_needs_a_real_digest(tmp_path):
     s.write_json(f"runs/{RUN}/model/image.json", {"tag": "x"})
     with pytest.raises(ConfigError):
         decide.approved(s, RUN)
+
+
+def test_the_training_arms_go_into_the_decision_and_its_message(tmp_path):
+    """r6: from-base seeds and a warm start in one round; every arm's validation scores reach the decision."""
+    s = seeded(tmp_path)
+    s.write_json(f"runs/{RUN}/train/progress.json", {
+        "eval_loss_last": 0.221, "arm": "warm:3407",
+        "seeds": [{"arm": "base:3407", "start": "base", "seed": 3407, "lr": 2e-4, "eval_loss": 0.2311, "gen_match": 20,
+                   "gen_n": 32, "selected": False},
+                  {"arm": "warm:3407", "start": "warm", "seed": 3407, "lr": 5e-5, "eval_loss": 0.2207, "gen_match": 21,
+                   "gen_n": 32, "selected": True}],
+        "selection": {"selected_arm": "warm:3407", "rule": "r", "by": "gen_check+loss",
+                      "skipped": [{"arm": "base:2", "reason": "the 12 h window"}]}})
+    arms = arms_equal()
+    bar = BAR.evaluate(arms, baseline=None, th=TH, oos_where=where_all(arms))
+    res = REP.build(s, RUN, mode="full", bar=bar, eval_info={}, now=datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc))
+    t = s.read_json(f"runs/{RUN}/decision.json")["results"]["training"]["arms"]
+    assert t["selected"] == "warm:3407" and [a["arm"] for a in t["arms"]] == ["base:3407", "warm:3407"]
+    assert t["skipped"] == [{"arm": "base:2", "reason": "the 12 h window"}]
+    msg = res["notification"]["summary"]
+    assert msg.startswith("Every bar rule passes (6). Training arms (same validation rows): ")
+    assert "base:3407 loss 0.2311, gen 20/32; warm:3407 loss 0.2207, gen 21/32. Kept warm:3407." in msg
+    assert "Not trained: base:2 (the 12 h window)." in msg
+    assert REP.training_arms({"eval_loss_last": 0.2}) is None and REP.arms_text(None) == ""

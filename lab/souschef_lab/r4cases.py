@@ -20,6 +20,8 @@ the dataset builder share:
   where    no write and report_unsupported.where ∈ expected.out_of_scope.expected_where
   clarify  no write, a question naming ≥ 2 of meta.candidates (verify's clarify_ok)
   answer   no write, the reply names one of expected.reply_any
+  ask      no write and a question: a request too vague to act on (r4score.score_ask; contrast.py's vague requests
+           and the follow-up family's vague first turns as scored turns)
 
 F0 (the verbatim cases) is REBASED onto the cases' common manifest (the exam's
 `fixtures/exam/manifest-real.json`, PLAN §0.3 fallback): the state gets the
@@ -51,8 +53,8 @@ from typing import Any
 
 from . import FIXTURES_DIR
 
-MODES = ("exact", "keys", "where", "clarify", "answer")
-FAMILY_ORDER = ("F0", "F1", "F2", "F3", "F4", "F5", "F6", "F0H", "F0X")
+MODES = ("exact", "keys", "where", "clarify", "answer", "ask")
+FAMILY_ORDER = ("F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F0H", "F9H", "F0X")  # F7 authored, F8 contrast.py
 TEMPLATE_POOL = ("vintage", "vintage", "bold", "boutique", "cozy", "editorial", "elegant", "playful", "pluto", "retro", "sweet")
 DEFAULT_MANIFEST = FIXTURES_DIR / "exam" / "manifest-real.json"
 WHERE_DEFAULT = "support"

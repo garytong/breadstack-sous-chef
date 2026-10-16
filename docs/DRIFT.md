@@ -77,7 +77,7 @@ The exam is **paired**: the same rows, the same model image, two manifests.
 |---|---|---|---|
 | **T** (training) | the real-phrasing exam, all six sets, 252 rows; for a model trained on another manifest than the exam's (every model after r4) the rows are first rebased from the exam's manifest onto the training manifest (`drift.exam_on`) | re-derived on the training manifest (`exam.rederive_contexts`), today's browser mirror | training; the training-time engine. This is the baseline arm, measured by calibration and once a week, not on every check |
 | **D** (deployed) | the same rows, rebased from the exam's manifest onto deployed (`drift.exam_on` → `examrebase.rebase_exam`: `manifest_hash` replaced, `meta.rebased_from` added) | re-derived with `state.context_of` on deployed | deployed manifest and engine. Rows in `stale_exam_rows` are not asked; they are counted as `stale` |
-| **P** (probe) | for each new, renamed **or retyped** key with no exam row, up to 4 generated cases (`cases.py` kinds that fit its type: set a literal, toggle, pick an enum value, reset) | built on the vintage state | deployed; each case is asked twice. A key whose probes pass < 50 % is a **dodged key** |
+| **P** (probe) | for each new, renamed **or retyped** key with no exam row, up to 4 generated cases (`cases.py` kinds that fit its type: set a literal, toggle, pick an enum value, reset; update cases for scalar list items) | each row on **its own state**: the vintage state, plus a home row for any section type the key names that it lacks, preset so the key shows (§3.4) | deployed; each case is checked by the engine on its state, then asked twice. A key whose probes pass < 50 % is a **dodged key** |
 
 The **weekly** run also asks the 233 F0H holdout cases, rebased onto both
 manifests (for a model after r4, from r4's manifest onto its training manifest
@@ -137,6 +137,66 @@ So a skipped condition never fires again by itself every Monday.
 Every report shows both comparisons: against the training manifest and
 against the ack. An Approve deletes the ack.
 
+### 3.4 The new-key probe
+
+**What went wrong before r6.** The probe that started r5 (drift run
+`dr-20261014-0115-502d48-check`) and the probe that judged r5's candidate
+were built by the same code, and neither checked its rows. Every row ran on
+one shared state, the vintage home of the exam, while the generator wrote
+some rows for sections that home does not have (contentBlock-2/-3/-features,
+newsletter). The engine refused those rows whatever the model did: 7 of 17
+rows, so `stackedImageHeight` could reach at most 25 % and `ctaFontSize`
+0 %. Every passable row passed. r4 probably already handled these keys, and
+rule (d) fired on the harness, not the model.
+
+**What the probe does now** (`souschef_lab/probe.py`, `drift.probe_rows`;
+the retrain eval's `probe` set uses the same code):
+
+- every row carries the state it was generated on (`site_state`) and runs on
+  it, so the section it targets is there and its context matches;
+- section types a key names but the state lacks (perksCards, perksIcons,
+  newsletter …) get a home row with the settings that make the key visible
+  (perks `stackedImage*` need `style: image-text`, `imagePosition: top`);
+- a list with scalar items and no add op (gallery `imagesLink[]`) gets
+  update cases, so those keys are probed at all;
+- a case is dropped when it writes a field its own state hides, when its
+  gate is closed, when its target is not on its state, or when the engine
+  refuses its ops there (`engine=`, now passed by both callers);
+- each probe turn's conversation is stored next to its result
+  (`trajectory` in `exam/P-<k>.jsonl` and in the eval's rows), so a 0 % can
+  be read instead of guessed at.
+
+`drift/<run>/exam/P-plan.json` (the eval: `eval/info.json` `probe_dropped`)
+lists every row asked (key, kind, target, request, expected keys, the
+sections of its state) and, per key, the candidates and why any were
+dropped. A key with no passable case has coverage 0: it is reported, and
+never counted as dodged.
+
+**Re-checking a past probe, offline** (no model, no network; `--engine`
+needs node and `COOKIE_CUTTER_DIR`). It rebuilds the rows a past run asked,
+pairs them with the stored results, marks a row unpassable when its section
+is not on the shared state or the engine refuses its own expected ops, and
+scores each key on its passable rows only. Verdicts: `false_alarm` (dodged
+as run, not on its passable rows), `unmeasured`, `dodged`, `ok`. It also
+lists what the fixed probe would ask:
+
+```bash
+D=dr-20261014-0115-502d48-check; R=rt-20261014-0708-7cac28-1184ff9a; T=$(mktemp -d)
+gcloud storage cp $PIPE/runs/$R/prepare/manifest.json $PIPE/drift/$D/report.json "$PIPE/drift/$D/exam/P-*.jsonl" $T/
+cd lab && .venv/bin/python -m souschef_lab.probe_recheck --manifest $T/manifest.json --report $T/report.json \
+  --rows $T/P-1.jsonl --rows $T/P-2.jsonl --engine --json $T/recheck.json
+```
+
+To confirm on the model itself, run a check on the same manifest against
+live r4 with the fixed lab image
+(`gcloud workflows execute souschef-drift … --data='{"mode":"check","force":true}'`,
+§8.3): about 2–3 h on the eval L4 (about US$3), no Claude spend. If r4 now
+passes ≥ 75 % on these keys, r5's trigger was a false alarm.
+
+**Cost.** The probe asks what it asked before plus rows for keys that had
+none (the perks and gallery link keys): up to 4 rows a key, twice, at about
+8 s a turn on the L4, so a dozen new keys add about 13 minutes to a check.
+
 ## 4. Baselines, noise and calibration
 
 **Baselines are per model image digest:** `baselines/<sha256-digest>/baseline.json`.
@@ -166,7 +226,18 @@ baseline is calibrated:
 - **auto-retrain is disabled**, whatever `pipeline_retrain_auto` says.
 
 Every weekly run adds one arm-T replicate and keeps the newest 5, so σ follows
-the service build as well. An Approve installs the candidate's own paired-eval
+the service build as well.
+
+**Seed noise is a different thing.** σ_run is how much **one** model's
+answers vary between passes. Drift compares one model on two manifests, so
+σ_run is the right noise for every rule here. A retrain compares two
+**trainings**, which differ even on the same data and recipe; the retrain
+bar's seed-aware tolerance adds σ_seed, measured by the seed-noise experiment
+([RETRAIN.md R10](RETRAIN.md#r10-the-seed-noise-experiment)), twice: the
+candidate and the live model are both seed draws, so
+`tol = max(1, ⌈2·sqrt(σ_Δ² + 2·σ_seed²)⌉)`. If
+`config/thresholds.json` carries `sigma_seed`, only the retrain bar reads it;
+drift verdicts ignore it. An Approve installs the candidate's own paired-eval
 rows (2 replicates on the deployed manifest) as the new model's baseline, so
 calibration is not needed after a pipeline rollout.
 
@@ -175,7 +246,12 @@ calibration is not needed after a pipeline rollout.
 - a new service build that changes the prompt, retrieval or route settings;
 - a model rolled out by hand (`make model-rollout`), unless it is a rollback to
   a digest that already has a baseline;
-- a change of Ollama settings in the model image.
+- a change of Ollama settings in the model image;
+- a change of the scoring policy that scores the exam or F0H (a round's
+  `trigger.score_policy` / `font_policy` that turns a relaxation on for the
+  eval, whose default is the r4 rules;
+  [RETRAIN.md R2a](RETRAIN.md#r2a-scoring-policy-r4score)): the baseline's rows
+  were scored under the old rule.
 
 ```bash
 make pipeline-drift MODE=calibrate   # = gcloud workflows execute souschef-drift … --data='{"mode":"calibrate","force":true}'
@@ -398,7 +474,7 @@ configuration or precondition error (no retry).
 | `$PIPE/drift/<run>/result.json` | `{verdict, deployed, changed, debounce_until, notification, retrain_reason}` |
 | `$PIPE/drift/<run>/static.json` | the classes, renames, impact columns, field lists (500 per class at most) |
 | `$PIPE/drift/<run>/report.json` | per-set arms, Δ, σ, McNemar, the rule lines that fired, both comparisons when an ack exists |
-| `$PIPE/drift/<run>/exam/*`, `logs/*` | the exam rows as run, the harness and service logs |
+| `$PIPE/drift/<run>/exam/*`, `logs/*` | the exam rows as run (probe rows `P-<k>.jsonl` with each turn's `trajectory`), the probe's plan `P-plan.json` (§3.4), the harness and service logs |
 
 ```bash
 gcloud storage ls $PIPE/drift/ | tail -5

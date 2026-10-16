@@ -31,7 +31,7 @@ W=$PIPE/runs/$RUN
 |---|---|---|---|---|
 | — | init: lock, resolve images, pin the deployed manifest (`run.json → deployed`; every stage reads it), `retrain_started` | workflow | 1 min | `runs/<id>/run.json` |
 | R1 | prepare: rebase every family, author new-field cases | job `souschef-prepare` | 30–60 min | `prepare/{cases.jsonl,report.json,leak-report.json}` |
-| R2 | teacher collection, 3 passes | job `souschef-collect` | 1.8–2.2 h | `collect/*` |
+| R2 | carry-forward of earlier rows, then teacher collection of the rest, 3 passes | job `souschef-collect` | about 1 h with the carry (estimate); 1.8–2.2 h without | `collect/*` |
 | R3 | dataset + parity gate | job `souschef-dataset` | 15 min | `dataset/*`, `model/context.tar.gz` |
 | R4 | SFT + export + stage | Vertex custom job | 2.4–2.8 h + any capacity wait | `train/{adapter,export,stage,progress.json,DONE}` |
 | R5 | model image | Cloud Build | 15–25 min | `model/image.json`, `model:c-<id>` |
@@ -41,6 +41,113 @@ W=$PIPE/runs/$RUN
 
 Total about 9–12 h from the drift to the decision message. Any failure posts
 `stage_failed` with the mention, releases the lock and keeps every artifact.
+
+**What changed for r6** (r5, 2026-10-14, retrained r4's data and lost 3.5 rows
+on holdout; the analysis found a training-run reroll read as a loss, a probe
+no model could pass, and authoring that produced no positive cases). Each
+change below says what a person runs and what it costs:
+
+| change | where | switch | section |
+|---|---|---|---|
+| authoring targets real section instances, opens gates, rejects hidden writes, keeps the oracle's error text, tops up to 8 positives | prepare | none (always on) | [R1](#r1-prepare) |
+| trainable pool cases that write a field the editor hides in their state are dropped after the rebase (`report.json` `hidden_write_dropped`; r5 trained 58) | prepare | on; `"trigger": {"pool_hidden": "keep"}` | [R1](#r1-prepare) |
+| trainable cases that expect a bare e-mail address on a link field expect `mailto:` instead (`report.json` `mailto_fixed`; r4-F3-0413) | prepare | none (always on) | [R1](#r1-prepare) |
+| carry-forward: an earlier round's accepted row is re-verified and kept instead of re-asking the teacher; a carried row that writes a field whose gate is closed is re-asked | collect | on in full rounds; `"trigger": {"carry": "off"}`, `"carry": "required"` (a carry that cannot run fails the stage instead of asking everything), `"carry_hidden": "keep"` | [R2](#r2-teacher-collection) |
+| scorer relaxations (collect: `mailto` one way, `same_control` only for the key the editor writes; `refused_corrected` and `acted_first_turn` off) and the font policy; the **eval scores with the r4 rules** (every relaxation off) | collect, dataset, eval | `"trigger": {"score_policy": {…}, "font_policy": "…"}` | [R2a](#r2a-scoring-policy-r4score) |
+| new-key positives gate, the font-pair count, `stats.json` rewritten after every drop | dataset | `"trigger": {"min_new_key_positives": N, "new_key_positives_waive": [addresses], "font_pair": "drop"}`, or `SOUSCHEF_MIN_NEW_KEY_POSITIVES`, `SOUSCHEF_NEW_KEY_POSITIVES_WAIVE`, `SOUSCHEF_FONT_PAIR` | [R3](#r3-dataset-and-the-parity-gate) |
+| training arms: from-base seeds **and** a warm start from r4 in the same round, each scored on the same validation rows, the best kept (the user's decision, 2026-10-15); every value and the warm adapter checked by the dataset stage before any GPU; an A100 rung trains no extra arm; an arm that would not end inside the 12 h window is not started | train | `"trigger": {"train": {"arms": ["base:3407", "warm:3407", "base:2"], "init_adapter": "base/adapters/r4-sft"}}` (the dataset stage checks it and writes it to `runs/<id>/train-config.json`), or that file by hand; unset = one arm, `base:3407`, as r4/r5 | [R4](#r4-training) |
+| the probe runs each row on its own state, checked by the engine, and keeps its conversations | eval (and drift) | none | [R6](#r6-candidate-and-the-paired-eval), [DRIFT.md §3.4](DRIFT.md#34-the-new-key-probe) |
+| a seed-aware bar tolerance, measured by the seed-noise experiment; both models count as seed draws (`2·σ_seed²`) | eval | `config/thresholds.json` `sigma_seed` (`bar.py` reads it; empty by default) | [R6](#r6-candidate-and-the-paired-eval), [R10](#r10-the-seed-noise-experiment) |
+| contrast cases for look-alike fields (F8), generated from field metadata, no model call; a case that writes an exam item's field or its look-alike with the exam's value or page is dropped | prepare (every full round) | on; `"trigger": {"contrast": "off"}` | [R1](#r1-prepare) |
+
+Every `trigger` key above goes in the workflow input's `trigger` object (it is
+copied into `run.json`, and a resume reuses the stored trigger: retrain.yaml
+`context`). **Change a running round's switches in its `run.json`, never on a
+job.** Edit `trigger` in `runs/<id>/run.json`, then `resume_from` the stage
+that reads it:
+
+```bash
+gcloud storage cat $W/run.json | jq '.trigger.new_key_positives_waive = ["<address>"]' > /tmp/run.json
+gcloud storage cp /tmp/run.json $W/run.json --content-type=application/json
+gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGION \
+  --data="{\"mode\":\"full\",\"resume_from\":\"dataset\",\"run_id\":\"$RUN\"}"
+```
+
+The stages also read environment variables (`SOUSCHEF_SCORE_POLICY`,
+`SOUSCHEF_FONT_POLICY`, `SOUSCHEF_FONT_PAIR`,
+`SOUSCHEF_MIN_NEW_KEY_POSITIVES`, `SOUSCHEF_NEW_KEY_POSITIVES_WAIVE`,
+`COLLECT_CARRY*`, `TRAIN_*`), which win over the trigger. Use them only as a
+per-execution override on a stage run by hand (`gcloud run jobs execute …
+--update-env-vars=…`). Never set them with `gcloud run jobs update`: the value
+would stay on the job template for every later round, and the next
+`terraform apply` would silently revert it.
+
+### Running r6, in order
+
+The r6 code is uncommitted when this is written. Each step names its cost;
+nothing here needs a Terraform apply or a workflow change.
+
+1. **Deploy.** Commit and push, so CI builds the new `sous-chef-lab` image
+   (every stage's code changed) and `sous-chef-trainer` (the slow, about
+   15 GB build; `pipeline-train.sh`, `train.py`, `selftest.py` changed).
+   Without the new trainer image, `TRAIN_SEED(S)` and `INIT_ADAPTER` are
+   ignored, and a `train-config.json` with `arms` fails the train stage at
+   step `settings` (`unknown key`). Cloud Build minutes only. Deploy the
+   `sous-chef` service in the same push: its prompt carries the new font
+   ("the font" = every site font) and ask-when-vague rules that collect's
+   teacher must see, and the live r5 model gets them on deploy. The service
+   also adds `create_page`, which the editor's engine must support first
+   (the cookie-cutter launcher change), and which makes exam row p137
+   ("create a new page for events", key: report_unsupported `pages`) out of
+   date. The prompt fixtures (`lab/fixtures/prompt/`, `parity/served.json`)
+   were re-captured from this service tree on 2026-10-15; re-capture again
+   (`tests/capture_real.py --from`, then `make -C lab parity-write`) if
+   `rules.go` or the tools change before the push.
+2. **Put r4's adapter in the pipeline bucket** (a person; minutes, no
+   GPU). The warm arm starts from it, and the dataset stage refuses an
+   `init_adapter` that is not there. The procedure is in
+   [R4, "r4's adapter in the pipeline bucket"](#r4s-adapter-in-the-pipeline-bucket).
+   Do it before about 2026-11-10, when the training bucket's copy expires.
+3. **SMOKE round with both kinds of arm** (about US$10–15, 2–6 h):
+
+   ```bash
+   gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGION --data='{"mode":"smoke",
+     "trigger":{"reason":"r6 smoke","train":{"arms":["base:3407","warm:3407"],"init_adapter":"base/adapters/r4-sft"}}}'
+   ```
+
+   It proves the generation check, the arm selection and the warm-start load
+   of r4's adapter on a real GPU before about US$50 of three-arm training.
+4. **Seed-noise experiment, setup → train → build** (R10; about US$47–57 for
+   two arms, no Claude spend). Training and builds can overlap the r6
+   round's early stages.
+5. **Drift re-check with the fixed probe** (about US$3, under 1 h; [DRIFT.md
+   §3.4](DRIFT.md#34-the-new-key-probe)): confirms r5's trigger was the
+   probe and that the fixed probe passes r4 where it should.
+6. **Noise eval and analyze** (about 3 h of L4 an arm, one arm at a time):
+   it cannot run while a round holds the retrain lock (about 13–17 h for a
+   three-seed round), so run it before step 7 or after the round. Then copy
+   `noise/<exp>/result.json` `thresholds_override` into
+   `config/thresholds.json` if the decision rule says so.
+7. **r6 round** with `gcloud workflows execute … --data` (`make
+   pipeline-retrain` cannot pass trigger keys):
+
+   ```bash
+   gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGION --data='{"mode":"full",
+     "trigger":{"reason":"r6","carry":"required",
+                "train":{"arms":["base:3407","warm:3407","base:2"],"init_adapter":"base/adapters/r4-sft"}}}'
+   ```
+
+   Two from-base seeds and one warm start from r4 (lr 5e-5), each on the
+   whole dataset, scored on the same validation rows; the best goes to the
+   eval and the decision message lists all three (R4). The warm arm is
+   second so that a 12 h window cut (which drops the arms not yet started)
+   still leaves one arm of each kind. About US$100–120 and 13–17 h (R9).
+   The font and vague-request decisions are the defaults (R2a): no scoring
+   key is needed in the trigger.
+8. **Recalibrate drift** after the r6 decision (minutes of L4): `drift
+   calibrate --fresh-baseline` on the live model, or let the approved
+   candidate's eval baseline replace it. Until then the 19 re-keyed exam
+   rows (`.k2` ids) are left out of drift comparisons.
 
 Workflow input: `{mode: "full" | "smoke", trigger: {drift_run, reason},
 dry_rollout: bool, resume_from?: "<stage>", run_id?: "<id>"}`.
@@ -227,11 +334,24 @@ thermometer's throwaway MySQL (its README, 127.0.0.1:13399).
      it is not authored (and paid for) again after a Skip.
    - Only the prepare job's account (`souschef-author`) reads the Anthropic
      key; collect and dataset run as `souschef-prep` without it.
-   - 8 cases per field: 2 verbatim-ish, 2 colloquial (aliases from
-     `service/internal/fields/vocab.txt`), 1 short or relative command, 1
-     focus case (the section open, no target named), 1 two-turn follow-up, 1
-     near-miss or out-of-editor where the neighbourhood invites one. A new
-     section, panel or page also gets 6 container cases.
+   - 10–13 cases per field (r6; r5 asked 8): 2 verbatim-ish, 2 colloquial
+     (aliases from `service/internal/fields/vocab.txt`), 1 short command, 1
+     relative value (`keys`), 1 focus case (the section open, no target
+     named), 1 two-turn follow-up, 1 reset (when the field can be reset), 1
+     near-miss or out-of-editor where the neighbourhood invites one. A
+     **gated** field (`conditional_on` / `hidden_when`, such as
+     `contentBlock.stackedImageGap`, shown only while `imagePosition` is `top`)
+     adds 2 `prereq` cases (the gate closed in the state; the oracle opens it
+     in the same `set_fields`, gate key first) and 1 `gate_only` case (the
+     merchant asks for the layout that reveals it). A new section, panel or
+     page also gets 6 container cases.
+   - **Op targets name a real section instance** of the fixture home
+     (`contentBlock-1`), never the bare type: r5 targeted `"contentBlock"`,
+     which no state holds, and kept 0 positive cases for
+     `contentBlock.stackedImage*`. The instance whose state already opens most
+     of the field's gates is preferred.
+   - **A field short of 8 kept positive writes** (`MIN_POSITIVE`) after the
+     re-ask gets a top-up ask (at most 3 rounds in all).
    - Model `claude-opus-5-5`, effort high, JSON-schema output, streaming,
      server-side fallback, prompt caching on the fixed rules, 8 at a time.
    - The rules are r4's: realistic merchant phrasing, no "preview", British
@@ -239,10 +359,62 @@ thermometer's throwaway MySQL (its README, 127.0.0.1:13399).
      never shown to the author.**
    - Validation, every rejection counted: keys exist on the deployed manifest;
      oracle ops apply through the engine with a non-empty diff; a literal value
-     means `exact`, an authored or relative value means `keys`; the
-     `preview_claim` rule; the hold-out filter against the exam and the study's
-     conversations; dedup against the pool. A rejected case is re-asked once
-     with the reason, then dropped.
+     means `exact`, an authored or relative value means `keys`; **no write lands
+     on a field the case's state hides** unless the case says so
+     (`expected.expect_hidden`; r5 kept 22 perks rows that taught hidden
+     writes); the `preview_claim` rule; the hold-out filter against the exam
+     and the study's conversations; dedup against the pool. A rejected case is
+     re-asked with the reason, then dropped. The full reason, the engine's
+     error text included, is in `prepare/author-report.json` per target
+     (`reject_details`) and in the re-ask (r5 kept only the prefix, so the
+     gallery `imagesLink[]` failures could not be explained).
+   - **Contrast cases (family F8, r6; `souschef_lab/contrast.py`).** Cases for
+     the look-alike fields both r4 and r5 confuse, in 7 pairs: `links`
+     (Typography link colour and nav size vs the Shop Menu's "Link Color" /
+     "Link Font Size"), `fonts` (the site's body font vs one section's body
+     copy font), `names` (a nav item's name vs a custom link vs checkout
+     order-type text), `grid` (ProductCard `cardsPerRow` vs the products page
+     `gridCols`), `footer` (`footerTextColor` vs `footerBodyTextColor`),
+     `picker` (`locationPickerTitle` vs its description), `logo`
+     (`logoMaxHeight` vs `…Mobile`). Each side is asked as a literal value, a
+     relative change, a request that names the other side to rule it out, and
+     with its panel open: 153 cases asked from 20 sides, 120 kept on
+     `1184ff9a` (after the exam-answer rule below). They are
+     **generated, not authored**: the words come from the manifest's labels,
+     help and container names (never from the exam; `check_templates`
+     enforces it), the values from the field's type and options, and the same
+     manifest always gives the same cases. No model call, so no authoring
+     cost. Every case is validated like an authored one (the oracle through
+     the engine, a write behind a closed gate drops it, `keys` mode for an
+     untyped value, generator hold-out keys dropped, the hold-out filter plus
+     a margin of Jaccard 0.5 against any exam text, dedup) plus an
+     **exam-answer rule**: a case that writes an exam item's field, or a
+     look-alike of it (any side of the same pair), with the value that exam
+     item states or, for a per-page key (`pageVisibility.<page>.…`,
+     `orderTypeText.<page>.…`), for the same page, is dropped
+     (`contrast-report.json` `exam_answer_clashes`; 18 on `1184ff9a`, from
+     h019, h047, h056, p011, p080, p094). The wording can be far from the
+     exam while the answer is the same: "change Shop to 'Menu' in the footer
+     only" is Jaccard 0.33 from h019 "rename Shop in the navigation to
+     Menu". Collecting them
+     costs about US$0.03 a case asked, about US$4, once: their ids
+     (`contrast1-F8-nnnn`) do not depend on the manifest, so carry-forward
+     (R2) keeps an unchanged one in later rounds. **Prepare builds them in
+     every full round** (not SMOKE) on the deployed manifest, after authoring,
+     and adds them to `prepare/cases.jsonl` only — they are regenerated, never
+     pooled (`prepare/contrast-report.json`; `report.json` `contrast`). Off for
+     a round: `"trigger": {"contrast": "off"}`. To look at them by hand:
+
+     ```bash
+     cd lab && .venv/bin/python -m souschef_lab.contrast --manifest $WORK/manifest.json --out $WORK/f8.jsonl \
+         --why <study folder> --pool $WORK/cases.jsonl --report $WORK/f8-report.json
+     ```
+
+     The F0H and F9H hold-outs and the leak check must not drop on a round
+     that adds them; the per-key slices of paraphrase and holdout for the
+     pairs' keys show whether they helped.
+   - Cost: the extra styles make authoring about 1.3–1.6× r5's tokens, still a
+     few US$ a round (`prepare/report.json`).
    - **Hold-out**: targets with `sha1(field_key) % 100 < 20` go to
      `cases/exam-ext/<round>.jsonl` as family **F9H**, never collected or
      trained, and scored in R6.
@@ -312,6 +484,67 @@ r4's `collect.sh` did it:
   logs refer to its ids (r4 rule).
 - 6 workers (`COLLECT_WORKERS`; int runs 8 concurrent turns an instance, so 6 leave merchants room instead of 503 busy), task timeout 24 h, 2 retries.
 
+**Carry-forward (r6; `retrain/carry.py`), before pass 1.** r5 paid US$101.57 to
+re-ask the teacher r4's whole pool: the teacher re-worded 97.6 % of the
+replies, 172 shared cases changed their writes, and 30 cases dropped out and
+24 came in by teacher luck. That churn is not the round's intended change, and
+it is a large part of why one round's model differs from the last. Now a case
+keeps the row it was last **trained** on (the live model's dataset, from
+`state/model.json` `dataset`), or failing that the row a parked round accepted
+(`state/parked/`, newest first, at most 2), whenever that row still applies
+on the round's manifest. The teacher is asked only for new, changed and
+failing cases. A row applies when all of these hold (the first that fails is
+the case's reason in `carry-report.json`):
+
+| check | means |
+|---|---|
+| `rules_changed` | the system prompt's rules are the round's |
+| `case_changed` | the case is the one the row was collected for (request, history, kind, target, state, score mode, expected; a rebase rename or relabel changes these) |
+| `turns_changed` | the row has the case's number of user turns |
+| `block_parity` | the row's candidate-fields block is reproduced from its turn inputs on the source manifest |
+| `target_changed` | no field, list or container the row writes or the case expects changed its spec between the manifests |
+| `server_result_stale` | no `lookup_fields` / `describe_target` result names a container whose spec changed |
+| replay | the row's own calls, replayed through the round's engine and manifest, send the same text and context, get byte-identical tool results, and score usable under r4score on the round's case |
+| `hidden_write` | no write to a field whose gate is closed after the op (`r4score.closed_gate_writes`, from the engine's `hidden[].byValue`; a bare `W_HIDDEN` comes with every gated write), unless the case lists it. On by default; `"carry_hidden": "keep"` carries them. On r5's inputs 64 of 2,688 carried rows hit it, most of them cases prepare already drops |
+| `excluded` | `meta.no_carry` on the case, or its id in `trigger.carry_exclude` / `COLLECT_CARRY_EXCLUDE` |
+
+A carried row goes into the attempt's logs as `pass0-carry.jsonl` (the
+collector's log format, so `status`, `plan3`, `--prior` and the dataset build
+read it like any pass). The dataset build re-renders it on the round's
+manifest (system turn, tools, the scored turn's candidate-fields block;
+`r4dataset.rerender_carried`) and applies every keep rule again; the
+teacher's words and every tool result stay byte for byte, and a carried row
+wins over a fresh one for the same case.
+
+- **Switch.** On in full rounds, off in SMOKE (a rehearsal must ask the
+  teacher). First set wins: `COLLECT_CARRY=on|off|required` on the
+  execution, then the round's `trigger.carry` (`"on"` / `"off"` /
+  `"required"`) or `trigger.reask_all: true`. **A carry that cannot run**
+  (no tools, an engine error, no source) **asks every case**, about US$100
+  instead of US$40–50, and only `metrics.carry.why` says so; with
+  `"carry": "required"` it fails the collect stage instead
+  (`carry_required`), before any teacher call. Use `required` for r6. A
+  change to the service's system rules re-asks everything too
+  (`rules_changed`), by design.
+  The workflow copies its input's `trigger` into `run.json`, so a round
+  started by hand turns it off with
+  `--data='{"mode":"full","trigger":{"reason":"…","carry":"off"}}'`, with no
+  workflow change.
+- **Read.** `gcloud storage cat $W/collect/carry-report.json | jq` gives
+  counts by reason, family and source, and the teacher spend not asked.
+  Target: 85 % or more carried on a round whose manifest changed only a few
+  fields.
+- **Cost.** Per case asked, about US$0.03 for one that passes in pass 1 and
+  about US$0.10 for one that goes through passes 2 and 3 (r5: US$101.57 over
+  3,408 asked cases). r6, with r4 and r5 as sources, measured offline on r5's
+  inputs: 2,688 of 3,408 carried (79 %); still asked: 258 cases rejected in
+  every source (US$28.39, the stable reject core), 451 cases r4's caps cut
+  (US$10.02), 11 changed (about US$1); plus the 120 F8 cases (about US$4)
+  and the new authored F7 cases (about US$3–8). **r6 collect: about
+  US$45–50.** From r7 the capped cases are kept in `dataset/capped.jsonl`
+  and carried, so collect falls to about US$30–40. The carry's replay is
+  CPU on the collect job (about a minute; no model, no API).
+
 **By hand** (spends Claude on int; about US$135–175 for a full round). The
 lab tools need the binaries and service tree of the **deployed** build, or
 every row shows block drift. Take them from the lab image rather than your
@@ -373,6 +606,102 @@ gcloud storage cp $WORK/*.jsonl $WORK/*.ids $W/collect/      # hand the logs bac
 
 `DRY=1`-style rehearsal: replace `--url $URL` with `--fake --oracle --fake-blocks`.
 
+## R2a. Scoring policy (r4score)
+
+r4score decides which teacher rows are usable (collect, the carry's replay,
+the dataset build) and scores the eval's generated holdouts (F0H, F9H). r6
+adds relaxations for cases that failed on Sonnet, Opus and Sonnet alike
+because the case or the scorer was too strict. Each one only turns a failing
+turn into a passing one, so a `verify-3` pass is still a pass
+(`RULE_VERSION` unchanged, `POLICY_VERSION` `r6-3`); the one that applied is
+named in the row's `info` and `relaxed`. **A relaxation may accept only an
+answer that is right on the site.** The r6 review found the first versions
+accepted wrong ones, so the defaults are narrow:
+
+| switch | collect default | does |
+|---|---|---|
+| `refused_corrected` | **off** | `exact`: an op the engine refused and a later batch of the same turn re-sent accepted is not `invalid_op` (r4-F1-1127). Off: the training row keeps the refused call and its error, so it would teach sending an invalid op first; the case is re-asked instead (12 rows on r5) |
+| `mailto` | on | `exact`: the answer wrote `mailto:x@y` where the case expected the bare `x@y`, on a link field. **One way only**: the site renders these as the href itself (the footer's social e-mail icon is `href={socialLinks.email}`, a gallery link gets `https://` prefixed), so a bare address is a broken link. Prepare also rewrites such expectations to `mailto:` (r4-F3-0413) |
+| `same_control` | on | one editor control that writes one of several keys by the section's layout: the content-block "Text Alignment" writes `splitContentAlign` on split, `contentTextAlign` on feature columns (perksCards / perksIcons default there), `textAlign` otherwise (launcher `BasicEditor.jsx` `contentAlignKey`). Only the key **the editor would write in the case's state** is accepted for an expected sibling. r5's 18 rows it first recovered wrote `contentTextAlign` on image-text sections, which changes nothing on the page; they stay rejected |
+| `acted_first_turn` | **off** | a follow-up whose vague first turn the teacher acted on instead of asking is excused when those writes are the case's own keys (`keys`) or on its targets (`target`), wrote no closed-gate field, **wrote no text the user never gave** (a text / richtext field or a list item's text: r4-F2-0102/0103 invented a 5-star review), and **every one of them was written again by the scored turn**. Off by default: an excused row still trains "act on a vague request instead of asking", the direction r5 drifted (no_write 39 → 28, wrong_target 59 → 88). Kept off by the user's 2026-10-15 decision (vague requests: ask) |
+| `font` | `all` | the answer key of "the font", not a relaxation: see below |
+
+**The eval scores with the r4 rules.** Its base is `STRICT_POLICY` (every
+relaxation off): the rules the live model's stored calibration replicates
+and earlier evals were scored with. A round's `trigger.score_policy` keys
+are laid over it, so turning one on for the eval is a deliberate choice,
+and then the calibration replicates need re-scoring ([DRIFT.md
+§4](DRIFT.md#4-baselines-noise-and-calibration)). `eval/info.json` and
+`result-collect.json` record the policy used.
+
+**Measured on r5's collect logs** (offline, no teacher; 947 rows not usable,
+257 cases with no usable row):
+
+| policy | rows recovered | never-usable cases recovered |
+|---|---|---|
+| collect default | 3 (`mailto`) | 1 (F3) |
+| + `acted_first_turn: "keys"` (guarded) | 38 (35 acted, 3 mailto) | 16 (F2 15, F3 1) |
+| + `acted_first_turn: "target"` (guarded) | 40 | 17 (F2 16, F3 1) |
+| + `refused_corrected: true` | 15 (12 refused, 3 mailto) | 5 (F1 3, F3 1, F4 1) |
+| eval (`STRICT_POLICY`) | 0 | 0 |
+
+The first version recovered 78 rows and 34 cases, most of them through the
+rules above that accepted wrong answers.
+
+**The font policy (decided 2026-10-15, the user after the demo: "font - change
+everything").** A font request that names no part of the site ("i don't like
+the font", "use lora", "Roboto everywhere") changes **every** site font to the
+same font; a request that names a part ("the heading font", "the buttons")
+means only that setting. `r4score.site_font_fields` reads the fonts from the
+manifest and the case's state: **required** = the six theme fonts (heading,
+body, navigation, buttons, product title, product description) plus any other
+shown global font family the site has set (the announcement bar's, on every
+template: 7 in practice); **optional** = shown but unset fonts that inherit
+anyway (cart, footer); a write to a **hidden** one (the shop-menu fonts outside
+the modern menu) is stray. `score_site_fonts` needs every required font written
+with the asked value; when the merchant named no font, all the written fonts
+must be the same one (mixed values are `wrong_value`). A bare "all" does not
+widen a request that names its parts ("set the body and headings all to Lora"
+is those two). Since 2026-10-15 the service prompt (`service/internal/prompt/rules.go`,
+"Where things live") says the same, so the teacher writes every font in collect.
+
+| `SOUSCHEF_FONT_POLICY` / `trigger.font_policy` | training rows (r4score) | exam |
+|---|---|---|
+| `all` (**default**, collect, eval and the noise arms) | a generic font request with the authored body + heading answer expects every site font (prepare's `fix_site_fonts` converts the 18 r4-F6 cases; F8 adds `site_fonts` contrast cases) | the 7 "the font" rows (p011, p013, p150 ×2, r02, r04, h059) carry the new key under new ids `<id>.k2` (exam.AMENDMENTS); h059 keeps body + heading required with every font as the alternative |
+| `as_authored` | as authored (the r4 / r5 key) | the amended rows back to their old ids and keys: for re-scoring old runs |
+| `body_only`, `body_or_both` | r6-2 options, kept for re-scoring | as authored first |
+
+**Vague requests (decided 2026-10-15: "vague requests - ask").** A request too
+vague to act on is answered with one short question: `ask` mode (a question in
+the reply and nothing written passes; any write, even a refused one, is
+`wrote`). Prepare's F8 adds single-turn ask cases (the follow-up family's vague
+first turns, `askfirst-1`, and label-built vague requests, `vague-1`, both
+through the leak filter). The exam lets 12 value-less rows and p013 be answered
+with a question (`ask_ok`) while a write there still passes, so a good direct
+action is never marked down. `acted_first_turn` stays off.
+
+The dataset stage counts the rows that write both fonts for one request in
+`stats.json` `font_pair` (and `font_pair.site_fonts`, the rows whose case
+expects every font) and keeps them (`SOUSCHEF_FONT_PAIR=keep`, the default);
+`SOUSCHEF_FONT_PAIR=drop` moves them to `rejects.jsonl` (reason
+`font_pair_policy`). The exam's own answer key is not changed by either.
+A teacher row that also writes the optional footer font is dropped by the
+dataset's hold-out rule (`footerBodyTextFontFamily` is a held-out exam key);
+the prompt does not name it, so few should.
+
+**Setting a policy for a round.** Put it in the round's trigger:
+`"trigger": {"font_policy": "body_only", "score_policy": {"acted_first_turn": "keys"}, "font_pair": "drop"}`.
+Collect and eval adopt `font_policy` / `score_policy` (an unknown value stops
+the stage before anything is scored), the dataset stage reads `font_pair`.
+For a round already running, edit `trigger` in `runs/<id>/run.json` and
+resume from `collect` (see "Change a running round's switches" at the top);
+the stored trigger then reaches collect, dataset and eval alike, so the
+dataset never re-scores what collect kept under another rule. A policy that also changes how the exam or F0H is scored makes
+the live model's baseline incomparable: recalibrate it
+([DRIFT.md §4](DRIFT.md#4-baselines-noise-and-calibration)). Costs nothing by
+itself. Each relaxation recovers cases that would otherwise be re-asked
+(about 50–90 cases, mostly F1 and F2, by the r5 analysis).
+
 ## R3. Dataset and the parity gate
 
 **Automated** (`souschef-dataset`). `r4dataset` with the deployed manifest,
@@ -388,11 +717,27 @@ final hold-out check. Gates, each of which fails the stage:
    follow-up block, `thinking: disabled`. If this fails, the rows would teach
    the student a prompt the service never sends.
 2. `stats.json`: `block_drift_rows == 0`, `preview_claim_kept == 0`,
-   `where_missing == 0`.
+   `where_missing == 0`. `stats.json` is rewritten from the final files after
+   every drop (r5's bucket copy still read the pre-drop 2,465 / 2,679 rows; the
+   files held 2,455 + 214).
 3. The row checks of `tools/run-r4.sh`: blocks present, follow-ups > 0, no
    reply mentioning the preview (`r4score.mentions_preview`: preview,
    previews, previewed, previewing).
 4. `train --dry-run`: rows, tokens, updates, none over 32,768 tokens.
+5. **New-key positives** (r6). Every new or retyped key of the round
+   (`prepare/report.json` targets; F9H holdout keys apart) needs at least 6
+   train rows that **write** it on a field the row's state shows. Rows that
+   write it while it is hidden do not count. r5 trained 0 rows for
+   `contentBlock.stackedImage*` and `gallery.imagesLink[]`, and nothing said
+   so. `stats.json` lists every key's count by kind (set, reset, relative).
+   SMOKE is exempt. The floor is `trigger.min_new_key_positives` (default 6;
+   0 turns it off). A key a person has looked at and accepts short is waived
+   by adding it to `trigger.new_key_positives_waive` in
+   `runs/<id>/run.json`, then `resume_from dataset` (the resume reads the
+   stored trigger; never set the matching environment variable on the job). A read-only or JSON field is exempt by
+   itself. When it fails, read `stats.json` and `prepare/author-report.json`
+   (`reject_details`) for why authoring came up short; a re-run of prepare
+   for the round reads its authored file back and does not re-author.
 
 It also writes `model/context.tar.gz` (the image's `lab/model-image/`) for R5,
 so Cloud Build needs no repository access.
@@ -468,6 +813,122 @@ base, fp32 LoRA r16/α16, lr 2e-4, 1 epoch, batch 1 × grad_accum 4,
 adamw_8bit, warmup 3 %, max_seq 32,768, `--eval-steps 150 --val-max-rows 150
 --checkpoint-steps 50 --resume`. One epoch on purpose: a second epoch on
 authored paraphrases teaches their wording rather than the mapping.
+
+**Seeds, seed selection and warm starts (r6).** A round that sets nothing
+trains exactly as r4 and r5 did: one seed (3407), from the base. The settings
+come from the trainer's environment, else from `runs/<id>/train-config.json`
+(the trainer reads `runs/`; no change to the workflow's job spec is needed),
+resolved by `train.py pipeline_config`:
+
+| setting | `train-config.json` key | effect |
+|---|---|---|
+| `TRAIN_ARMS=base:3407,warm:3407,base:2` | `"arms": ["base:3407", "warm:3407", "base:2"]` | each arm in turn in the same job, on the same dataset: `base:<seed>` a fresh LoRA from the base at the recipe's lr (2e-4), `warm:<seed>` from `init_adapter` at `init_lr` (5e-5). Each is resumable on its own (`train/checkpoints/<tag>/`, finished arms under `train/seeds/<tag>/`; tag `s<seed>` from the base, `w<seed>` warm); the best is kept as `train/adapter`. At most 4; exclusive with `seed` / `seeds`; a warm arm needs `init_adapter`, and `init_adapter` needs a warm arm. A bare `base` or `warm` is seed 3407 |
+| `TRAIN_SEED=2` | `"seed": 2` | one arm, `base:2` (`train.py --seed`: the LoRA init and the data order) |
+| `TRAIN_SEEDS=3407,2,3` | `"seeds": "3407,2,3"` | the arms `base:3407,base:2,base:3` (all `warm:` when `init_adapter` is set: r6's first form) |
+| `TRAIN_GEN_CHECK=32` | `"gen_check": 32` | after each SFT, the first call on 32 fixed validation first turns, scored; the default with several arms |
+| `INIT_ADAPTER=rt-…` (or `runs/…`, `base/…`, `gs://<pipeline bucket>/runs/…` or `…/base/…`) | `"init_adapter": …` | a warm start: that adapter's LoRA weights before the first update (same rank and alpha). Any other `gs://` path is refused: the trainer's account cannot read it |
+| `INIT_LR=5e-5` | `"init_lr": 5e-5` | the warm arms' learning rate (default 5e-5; only with `INIT_ADAPTER`); base arms keep 2e-4 |
+| `TRAIN_WINDOW_S=43200`, `TRAIN_TAIL_S=2700` | (env only) | the 12 h window guard below: the job's Vertex timeout, and the time kept for the export, stage and push |
+
+- **Selection never reads the bar's sets.** With several arms, `train.py
+  select` keeps the arms within 1 match of the best generation check, then
+  the lowest final validation loss; a tie goes to the earlier arm. The
+  validation subset no longer follows the seed (`--val-seed` 3407), so every
+  arm, from the base or warm, is scored on the same rows and the same 32
+  generation-check first turns. Every arm's scores are in
+  `train/adapter/run.json` and `progress.json` (`seeds`: one entry per arm
+  with `arm`, `start`, `lr`, `eval_loss`, `gen_match`; `selection`:
+  `selected_arm`, `rule`, `skipped`), in `eval/info.json`
+  `training_arms`, in `decision.json` `results.training.arms`, and as one
+  line of the decision message ("Training arms (same validation rows):
+  base:3407 loss 0.2311, gen 20/32; … Kept warm:3407."). The bar then runs
+  once, on the kept arm.
+- **Is the warm arm's validation loss fair?** The split is a hash of each
+  case's group (`r4dataset.h100`), so a case r4 trained on that is carried
+  into this round lands in `train` again, not in `val`. A case whose id
+  changed (a rebase rename, a re-authored case) can still sit in `val`
+  with a near-copy in r4's training set and flatter the warm arm a little;
+  the bar, which runs on the exam sets, is the check that counts.
+- **The 12 h window.** Every arm trains on the same rows, so arms take
+  about the same time (2.0–2.4 h each on an H100 for an r4/r5-sized set).
+  Before it starts an arm, `pipeline-train.sh` checks the time this attempt
+  has used plus the longest finished arm (its `run.json` minutes, scaled up
+  when that arm was resumed part-way) plus 45 min for the export against
+  12 h; an arm that would not fit is **not started** and is recorded in
+  `selection.skipped` (and the decision message). The first arm always
+  trains. A later attempt (after a preemption) gets a fresh 12 h and trains
+  what is left. The dataset stage writes the plan's estimate to
+  `result-dataset.json` `train_window` (`total_h`, `fits`, `fit_arms`;
+  `train.window_estimate`: 12 s an update, plus a fixed part per arm and
+  for the job) and logs a warning when the arms do not fit.
+- **An A100 rung** (about 2× slower) trains no new extra arm: it keeps the
+  arms an earlier attempt finished and, when none has, trains only the
+  first arm. Put the arm you most want first.
+- **To use it for a round**, put the keys in the workflow input's trigger,
+  `"trigger": {"train": {"seeds": "3407,2,3"}}`: the dataset stage checks the
+  keys and every value with the trainer's own resolver (`train.pipeline_config`:
+  seeds, `init_lr`, `gen_check`, an `init_adapter` inside the pipeline
+  bucket's `runs/` or `base/`, the only prefixes the trainer can read) and
+  that a warm-start adapter exists there; a bad one fails the dataset stage,
+  not the GPU. It writes them to
+  `runs/<id>/train-config.json` when that file is not there yet
+  (`result-dataset.json` `train_config`). For a round already past dataset,
+  write the file by hand before `resume_from train`:
+
+  ```bash
+  echo '{"arms": ["base:3407", "warm:3407", "base:2"], "init_adapter": "base/adapters/r4-sft"}' |
+    gcloud storage cp - $W/train-config.json --content-type=application/json
+  ```
+
+  The dataset stage also reads the warm adapter's `adapter_config.json` from
+  the bucket and refuses one whose LoRA is not r16/α16 on
+  `unsloth/Qwen3.5-9B` (what `train.py` would refuse after loading the base
+  on the GPU).
+
+- **Warm starts run beside from-base seeds** (the user's decision,
+  2026-10-15: "do both", keep the best on validation). The warm arm trains
+  on the round's whole dataset, like the base arms, at lr 5e-5 from r4's
+  adapter. Selection picks between them on validation only; the bar decides
+  whether the kept one ships. A round that keeps a warm arm is a model two
+  steps from the base: keep at least one `base:` arm in every round so
+  warm starts cannot keep drifting unchecked.
+- **Cost.** Each extra arm adds one SFT (2.0–2.4 H100-hours for an
+  r4/r5-sized set, about US$15–20 at the recorded Spot rate) plus a
+  generation check of a few minutes; a warm arm costs the same as a base
+  arm, because it trains on the same rows. Three arms make the train stage
+  about 7–8.5 h instead of 2.4–2.8 h.
+
+### r4's adapter in the pipeline bucket
+
+The warm arm reads `$PIPE/base/adapters/r4-sft/`. `base/` has no lifecycle
+rule in the pipeline bucket, so the copy stays; `runs/` and the training
+bucket's `runs/adapters/` copy do expire (the training bucket's copy around
+**2026-11-10**). A person runs this with an account that can read
+`$TRAIN` and write `$PIPE/base/` (the trainer's service account cannot write
+`base/`). It is a server-side copy: nothing passes through the workstation.
+
+```bash
+export PIPE=gs://breadstack-sous-chef-int-pipeline TRAIN=gs://breadstack-sous-chef-int-training
+SRC=$TRAIN/runs/adapters/r4-sft
+DST=$PIPE/base/adapters/r4-sft
+# 1. what is there: adapter/{adapter_config.json, adapter_model.safetensors, tokenizer…}, run.json, loss.jsonl
+#    (and checkpoints/ if the VM pushed them: not needed for a warm start)
+gcloud storage ls -r "$SRC/" | grep -v '/checkpoints/'
+gcloud storage cat "$SRC/adapter/adapter_config.json" | jq '{peft_type, r, lora_alpha, base_model_name_or_path}'
+#    expect LORA, 16, 16, "unsloth/Qwen3.5-9B"
+# 2. the copy, bucket to bucket, without the checkpoints
+gcloud storage rsync --recursive --exclude='^checkpoints/' "$SRC" "$DST"
+# 3. check it: the same bytes as the workstation's copy (lab/runs/adapters/r4-sft, 185 MB)
+gcloud storage hash --hex "$DST/adapter/adapter_model.safetensors"
+gcloud storage hash --hex lab/runs/adapters/r4-sft/adapter/adapter_model.safetensors   # the md5 lines must match
+gcloud storage cat "$DST/run.json" | jq '{name, seed, steps, last_eval_loss}'      # r4-sft, 3407, 601, 0.2287
+```
+
+If the training bucket's copy has already expired, upload the
+workstation's copy instead (the same layout):
+`gcloud storage rsync --recursive --exclude='^checkpoints/' lab/runs/adapters/r4-sft $PIPE/base/adapters/r4-sft`.
+The trainer pulls the folder and uses its `adapter/` (with `run.json` beside
+it, which the warm arm's `run.json` records as `init_adapter.run`).
 
 **The machine ladder.** A rung is left at once on no capacity — a create that
 says so, a job that ends for lack of resources, or a job that has **not
@@ -609,6 +1070,21 @@ or re-run the pipeline's own build for the round:
 | F9H, every round's authored new-key holdout | built | 2 | when n ≥ 10 |
 | the new-key probe | built | 2 | when keys were dodged |
 
+**The probe (r6).** r5's probe could not be passed: 7 of its 17 rows
+targeted sections the shared eval state does not have (contentBlock-2/-3/
+-features, newsletter), so the engine refused them whatever the model did,
+and the trigger rule had ceilings of 25 % and 0 %. Now every probe row
+carries the state it was generated on and runs there; the engine checks each
+case on that state before it is asked; section types a key names but the
+state lacks (perksCards, perksIcons, newsletter) get a home row preset so the
+key shows; gallery `imagesLink[]` gets update cases; and each probe row keeps
+its conversation (`trajectory`) next to its result in
+`eval/<arm>/rows.jsonl`. What was dropped and why is in `eval/info.json`
+`probe_dropped`. Details and the offline re-check of a past probe:
+[DRIFT.md §3.4](DRIFT.md#34-the-new-key-probe). It adds no cost beyond the
+rows asked (the perks and gallery keys now get rows: up to 4 a key, twice,
+at about 8 s a turn).
+
 **The bar** (`retrain/bar.py`). `tol_s = max(1 row, ⌈2 σ_Δ,s⌉)` from the
 current model's baseline. The candidate passes when all hold:
 
@@ -620,6 +1096,30 @@ current model's baseline. The candidate passes when all hold:
    current; a round triggered by exam drift: the deployed-manifest total
    improves by ≥ σ_Δ;
 6. ghost writes ≤ current.
+
+**The tolerance counts eval noise only, not training noise.** `σ_Δ,s` is how
+much the same weights vary between two passes over the exam. A retrain of the
+same data with the same recipe lands on other weights, and nobody had
+measured how far that moves a set: r5 retrained r4's data and lost 3.5 rows
+on holdout against a tolerance of 2 (σ_Δ 1.0), a loss its pooled McNemar
+test (b 32 / c 20, p 0.13) could not tell from a reroll. The proposed
+seed-aware tolerance is
+
+    tol_s = max(1, ⌈2 · sqrt(σ_Δ,s² + 2 σ_seed,s²)⌉)
+
+`σ_seed,s` is one trained model's seed spread; the bar compares two trained
+models (the candidate and live), each a seed draw, so the variance of their
+difference holds it twice.
+
+with `σ_seed,s` measured per set by the seed-noise experiment
+([R10](#r10-the-seed-noise-experiment)). The experiment writes it as
+`{"sigma_seed": {"<set>": rows, …}}` for `config/thresholds.json`, which
+`bar.py` reads: a set with a positive `sigma_seed` gets the wider `tol_s`
+(`bar.json` then shows `sigma_seed` and `tol_eval_only` beside `tol`); a set
+without one keeps `max(1, ⌈2 σ_Δ,s⌉)`. The committed default
+(`lab/pipeline/thresholds.json`) is `{}`, so the bar is unchanged until a
+person copies the experiment's `thresholds_override` in. R10's `analyze
+--compare <round>` shows what a round's bar would say with it first.
 
 The bar is **advisory**: you can Approve a failing candidate, behind a typed
 confirmation. If the launcher changed again during the round (R3 drift
@@ -791,7 +1291,12 @@ engine/{index.json, <sha>/{snapshot.tar.zst, engine.json}}   manifests/<hash>.js
 runs/<rt-run>/run.json                     the round: trigger, images, manifest, engine
               result-<stage>.json          each stage's {status, stage, run_id, notification?, metrics, artifacts[]}
               prepare/  collect/  dataset/  train/{checkpoints/,adapter/,export/,stage/,progress.json,DONE}
+              collect/{pass0-carry.jsonl, carry-report.json}   the carried rows (r6)
+              train-config.json            seeds / warm start for the trainer (r6; optional)
+              train/{seeds/<tag>/, checkpoints/<tag>/}   a several-arm round's per-arm runs (tag s<seed> from the base, w<seed> warm)
               model/{context.tar.gz,image.json}  eval/  report.json  decision.json
+runs/<nz-exp>-<data>-s<seed>/              a seed-noise arm (R10): a round's layout + noise.json
+noise/<nz-exp>/{plan.json, result.json}    a seed-noise experiment: its arms, σ_seed and the proposed tolerances
 ```
 
 **First look:**
@@ -851,6 +1356,11 @@ which the thermometer treats as a duplicate, and its expiry is kept. With
 | failure | meaning | fix |
 |---|---|---|
 | `rebase_loss` | a family lost > 20 % on rebase | read `prepare/report.json`; accept with `--accept-rebase-loss` or revise (R1) |
+| dataset gate: new-key positives | a new or retyped key has fewer than 6 train rows that write it visibly (`stats.json` per key) | read `prepare/author-report.json` `reject_details`; fix the authored cases (R1, edit `cases/pool/authored/$RUN.jsonl`) and resume from `prepare`, or waive a key you accept short (`trigger.new_key_positives_waive` in `run.json`, R3) and resume from `dataset` |
+| dataset: `trigger.train` | an arm list, seed list, learning rate, generation check or adapter path the trainer would refuse (a `warm:` arm without `init_adapter`, an `init_adapter` without a `warm:` arm, `arms` beside `seeds`, more than 4 arms), an `init_adapter` with no `adapter_config.json` in the bucket, or one that is not r16/α16 on the recipe's base | fix `trigger.train` in `run.json` (R4; upload the adapter first: [r4's adapter](#r4s-adapter-in-the-pipeline-bucket)), resume from `dataset`. Checked here so it never fails on the GPU |
+| `arm … not started: the 12 h window` (train log; `selection.skipped`) | the arms trained so far left no room for another before the export | nothing to fix for this round: the best of the finished arms is kept and the decision message names the arm not trained. For a later round, fewer arms, or the arm you most want first |
+| collect: `carry_required` | `"carry": "required"` and the carry could not run (`result-collect.json` error) | fix the cause (the lab image's tools, the sources in `state/`), or set `"carry": "on"` to let it ask everything (about US$100), then resume from `collect` |
+| `train-config.json: unknown key` / a bad `TRAIN_ARMS` or `TRAIN_SEEDS` (training `fatal` at step `settings`) | the round's arm, seed or warm-start settings do not parse | fix `runs/<id>/train-config.json` (R4), resume from `train` |
 | collect smoke-check not OK, block drift | int is not serving the retrieval in the lab image | the lab image or the service tag is wrong; `/version` vs `/opt/sous-chef/BUILD_ID` |
 | `teacher_changed` twice | int was redeployed twice during collection | wait for deploys to settle, resume from `collect` |
 | parity gate | the rows would not match what the service sends | a service change the lab render does not know; stop, fix the lab, re-run dataset |
@@ -884,17 +1394,181 @@ Locks are only ever broken by a person, after checking
 | stage | duration | cost |
 |---|---|---|
 | prepare | 30–60 min | Anthropic authoring: a few US$ per round (reported in `prepare/report.json`) |
-| collect | 2.2–2.8 h at 6 workers | US$100–175 (*recorded* r4 estimate: pass 1 ≈ US$95–110, pass 2 ≈ US$30–50, pass 3 ≈ US$10–15) |
+| collect | about 1 h with the carry (estimate); 2.2–2.8 h at 6 workers without | r6 with the carry about **US$45–50** (R2: US$39.58 of r5's cases still asked, plus F8 and the new F7); about US$30–40 from r7; without it US$100–175 (r5 asked 3,408 cases for US$101.57) |
 | dataset | 15 min | — |
-| train + export | 2.4–2.8 h + 0–4 h Flex-start wait | about 3 H100-hours (the training VM's Spot rate was US$6.57/h; Vertex bills its own rate per scheduling) |
+| train + export | 2.4–2.8 h + 0–4 h Flex-start wait; about 2.2 h more per extra arm, base or warm (three arms: 7–8.5 h of H100, inside the 12 h attempt; an A100 rung trains no extra arm) | about 3 H100-hours, plus 2.0–2.4 a seed. **The rate is not verified**: US$6.57/h is the training VM's Spot rate (TRAIN-REMOTE.md); Vertex bills its own Flex-start / Spot rate. Read r5's job `customJobs/5995030053153406976` in the billing report before quoting a budget |
 | image | 15–25 min | Cloud Build minutes; about US$0.90/month per kept tag |
 | candidate + paired eval | 2–3 h on two L4s | about US$1.05/h each |
-| **round** | **about 9–12 h** | **about US$120–230** |
+| **round** | **about 9–12 h** (about 13–17 h with three seeds) | **r6 with three seeds: about US$100–120** (about US$50 Claude, US$46–56 H100 at the recorded rate, US$7 L4); one seed about US$70–80; without the carry about US$120–230 |
+| seed-noise experiment (R10, once) | about 10–12 h (training in parallel, evals one at a time) | about US$47–57 for two arms (2.4 H100-hours an arm measured on r5, at the recorded rate; US$11.55 of L4), no Claude spend; each further arm about US$24–29 |
 | SMOKE | 2–6 h (the trainer image pull, the base tar, up to 30 min of Flex-start) | about US$2 of API, 1 H100-hour, 30 L4-minutes (about US$10–15) |
 
-Collection is the big line and recurs every round: every case is re-collected
-because the system index and the candidate-fields blocks are specific to the
-manifest. Cost is reported per round, never a reason to stop (user decision).
+Collection was the big line and recurred every round: every case was
+re-collected because the system index and the candidate-fields blocks are
+specific to the manifest. From r6 the carry re-renders an earlier row on the
+round's manifest and re-verifies it instead (R2), so a case is re-asked only
+when it is new, changed or fails. Cost is reported per round, never a reason
+to stop (user decision).
+
+## R10. The seed-noise experiment
+
+**The question.** How far does a retrain of the **same** data with the
+**same** recipe move each bar set? The bar's tolerance counts only how much
+one model's answers vary between two passes over the exam (R6). r5 retrained
+r4's data (plus 58 new-key rows) with r4's recipe and seed and lost 3.5 rows
+on holdout against a tolerance of 2, and nobody had ever trained one dataset
+twice, so nobody could say whether that was a real loss. This experiment
+trains r4's exact dataset with other seeds, evaluates each one against live
+r4 the way a round's candidate is evaluated, and measures `σ_seed` per set.
+
+Code: `lab/souschef_lab/retrain/noise.py` (one command per step, each one
+idempotent) and `lab/tools/noise-run.sh` (all of them in order).
+
+**What it does.** An *arm* is `DATA@SEED`: `r4@2` trains
+`cases/pool/r4/dataset` with seed 2. Each arm gets a run folder
+`runs/<exp>-<data>-s<seed>/` laid out like a round's, so the trainer, the
+model build and the eval stage run unchanged:
+
+| step | does | runs on |
+|---|---|---|
+| `plan` | the arms, the commands and the cost; writes nothing | workstation |
+| `setup` | `dataset/` copied from DATA (bucket to bucket); `run.json`, `prepare/manifest.json`, `prepare/cases.jsonl` and `model/context.tar.gz` from a base round (r5's by default: its deployed manifest `1184ff9a` is the eval's manifest, and its trigger keeps the new-key probe); `train-config.json` `{"seed": N}`; `noise/<exp>/plan.json` | workstation (bucket writes) |
+| `train` | one Vertex custom job per arm, the job the workflow's `vertex_attempt` sends (the trainer image, args `[<arm>, full]`, its env plus `TRAIN_SEED`, labelled `purpose=sous-chef-noise`), on a rung of `infra/config.json`'s ladder (default `h100-flex`). A Spot preemption, or a job that ends without `DONE`, is resubmitted and resumes from the checkpoints (up to 4 attempts); a trainer failure stops. The ladder is walked as the workflow walks it: a job that **never started** (a Flex-start wait that ran out: no `startTime`, no progress) or a rung that used its own `attempts` moves to the next rung (`h100-flex` → `h100-spot-usc1` …), so a Flex rung without capacity costs one wait, not four. After `DONE` it checks that `train/adapter/run.json` recorded the arm's seed | Vertex, arms in parallel |
+| `build` | `gcloud builds submit` of the arm's context with the bucket's `infra/cloudbuild-model.json` (the pinned build) → `model:c-<arm>`; `model/image.json` | Cloud Build |
+| `eval` | one arm at a time: takes `state/locks/retrain.json` (no round may re-point the candidate service) and `state/locks/gpu-eval.json` (no drift check shares the eval GPU); checks production still serves `state/model.json`'s digest; points `sous-chef-model-eval` at it and `sous-chef-model-cand` at the arm; warms both; runs job `souschef-eval` (`eval --run-id <arm> …`); releases both locks | the two L4 services, job `souschef-eval` |
+| `analyze` | σ_seed per bar set, the proposed tolerances, the thresholds override → `noise/<exp>/result.json` | workstation |
+
+Every arm's progress is in `runs/<arm>/noise.json` (jobs and attempts,
+build, eval execution, the digests the eval compared, the eval job's lab
+image). `status` prints one line per arm.
+
+**Before you start.**
+
+1. **A trainer image that honours `TRAIN_SEED`**: one built from a tree with
+   r6's `pipeline-train.sh` (`make trainer-image TAG=<tag>`). r5's trainer
+   (`eac87f9`, the base round's default) ignores it and would train seed
+   3407. `train` catches that after training (`seed_mismatch`: the arm is
+   stopped and left out of the analysis), but the GPU hours are spent by
+   then. Pass the image as `TRAINER_IMAGE` / `--trainer-image`.
+2. **The live model is r4** (`state/model.json` tag `r4`) and production
+   serves its digest. `eval` refuses otherwise: the arms must share one
+   reference.
+3. **No round running** (`state/locks/retrain.json` absent). `eval` refuses
+   while a round holds it, and stops (exit 2, nothing changed) while a drift
+   check holds `gpu-eval`: run it again later. While an arm's eval runs, a
+   drift check waits for its next poll, a `retrain` verdict starts nothing
+   ("a retrain round is in progress"), and a round started by hand stops at
+   init with `retrain_locked`.
+4. **One lab image for every arm's eval.** `souschef-eval` runs the image
+   the last round pointed it at. Use the r6 lab image (the probe fix) and
+   pass `--lab-image` so every arm's eval refuses any other.
+5. H100 quota for two jobs at once (preemptible: 64 in us-central1).
+
+**Run it** (a person, in bash, inside tmux: about 10–12 h):
+
+```bash
+cd ~/projects/breadstack-sous-chef
+export PIPELINE_BUCKET=$PIPE
+TRAINER_IMAGE=$REGION-docker.pkg.dev/$PROJECT/sous-chef/sous-chef-trainer:<r6 tag> \
+LAB_IMAGE=$REGION-docker.pkg.dev/$PROJECT/sous-chef/sous-chef-lab:<r6 tag> \
+  bash lab/tools/noise-run.sh nz-$(date -u +%Y%m%d)            # r4@2 and r4@3; prints the plan and asks first
+```
+
+Step by step (the same thing; each command can be re-run after any stop):
+
+```bash
+N() { (cd lab && .venv/bin/python -m souschef_lab.retrain.noise "$@"); }
+E=nz-20261015; A=(--arm r4@2 --arm r4@3)
+N plan    --exp $E "${A[@]}"
+N setup   --exp $E "${A[@]}" --trainer-image <r6 trainer image>
+N train   --exp $E "${A[@]}" --wait                    # or without --wait, then `N status` now and then
+N build   --exp $E "${A[@]}" --wait
+N eval    --exp $E "${A[@]}" --lab-image <r6 lab image>
+N analyze --exp $E "${A[@]}" --compare rt-20261014-0708-7cac28-1184ff9a
+```
+
+Rehearsal with no network and no spend: `DRY=1 bash lab/tools/noise-run.sh
+nz-20261015` (or `noise dry --workdir <dir>`), which runs every step on a
+local bucket with a fake Vertex, Cloud Build and eval job.
+
+**Further arms.**
+
+- `r4@3407`: r4's own seed, retrained on the Vertex trainer image. Live r4
+  was trained on the training VM with `run-r4.sh`, so this arm tells
+  "another seed" apart from "another machine and software build".
+- r5's data with seed 2 (the 2×2 of data × seed in r5why PLAN §2a):
+  `--arm r5=runs/rt-20261014-0708-7cac28-1184ff9a/dataset@2`, then at
+  analyze `--extra rt-20261014-0708-7cac28-1184ff9a=r5@3407` (r5's own
+  candidate as a second draw of its data; its current arm adds two more
+  replicates of live r4).
+
+**Reading the result** (`analyze` prints a table; `--json` the whole
+document).
+
+| column | means |
+|---|---|
+| `n` | the rows every replicate of every model answered |
+| `df` | the degrees of freedom of the spread: draws of one dataset − 1, summed over datasets (2 for live r4 + two arms) |
+| `σ_eval` | the bar's own `σ_Δ,s` for the set (median over the arms' evals): today's noise model |
+| `σ_seed` | `sqrt(max(0, S² − e))`: `S²` is the sample variance of the models' mean set scores within one dataset (live r4 counted as one more draw of r4's data; its replicates pooled over every arm's current arm), `e` the eval noise in those means (each model's unbiased per-replicate variance `K/(K−1) Σ p(1−p)` over K) |
+| `(hi)` | the one-sided 90 % upper bound of σ_seed (chi-square on `df`): with df 2 it is about 3× the estimate, so read it as "how large it could plausibly be" |
+| `tol now` → `seed` | today's `max(1, ⌈2 σ_eval⌉)` and the seed-aware `max(1, ⌈2 sqrt(σ_eval² + 2 σ_seed²)⌉)` (what `bar.py` computes from `sigma_seed`); the next column uses the upper bound |
+| Δ vs live | each arm's paired delta against live r4 in its own eval |
+
+`result.json` also holds `tol_one_draw` (the tolerance if only the candidate
+were a seed draw: `sqrt(σ_eval² + σ_seed²)`, for reference), each model's per-replicate
+counts, and `compare`: for each `--compare` round, every bar set's delta with
+the tolerance it had and the seed-aware one, and whether it passes under
+each.
+
+**The decision rule** (r5why PLAN §2a), printed as `holdout_verdict`:
+
+- a reseeded r4 moves holdout by **3 rows or more** against live r4 → r5's
+  loss is within what a retrain does on its own: put `thresholds_override`
+  into `config/thresholds.json` (`bar.py` reads `sigma_seed`; a person
+  writes `config/`; the drift and retrain jobs pick it up at their next run,
+  no rebuild);
+- every reseeded r4 stays within **±1 row** → the noise explanation is
+  weakened: look harder at the data links (the font pair, the lost
+  cardsPerRow row, re-collection churn) and the train/serve path;
+- in between → inconclusive: read `σ_seed` and its upper bound, and add the
+  r6 round's own seeds (a `TRAIN_SEEDS` round gives more draws of one
+  dataset) before changing the bar.
+
+**What it costs.** Training: about 3.5 H100-hours an arm (an r4-sized SFT is
+2.0–2.4 h, plus the base pull, the resume smoke and the export), US$23 at the
+recorded Spot rate of US$6.57/h; Vertex bills its own rate for Flex-start and
+Spot, so read the billing report for the real figure. Eval: about 2.75 h an
+arm on two L4s (2 × US$1.05/h), about US$5.80. Builds: about US$0.15 each.
+**Two arms: about US$57, no Claude or Anthropic spend.** Each model tag
+(about 6.4 GB) costs about US$0.90 a month until pruned. Wall time: training
+3–5 h in parallel (plus up to 4 h of Flex-start wait), then about 3 h of
+eval per arm, one after the other. The eval also runs the newest-manifest
+set when the launcher has moved with a hard change since the base round
+(three `packFilterDisplay` fields since `1184ff9a`): about 40 minutes more
+an arm, reported only.
+
+**Scoring.** Every arm's `run.json` pins `trigger.score_policy` to the r4
+rules (`STRICT_POLICY`), the eval's default anyway: replicates are pooled
+across the arms, live r4 and `--extra` rounds, which must all be scored
+alike.
+
+**Afterwards.**
+
+- The arms' run folders expire with `runs/` (180 days). `noise/<exp>/` has no
+  lifecycle: keep it, it is the record behind the bar's `sigma_seed`.
+- The `c-nz-…` images stay (immutable tags); prune them as in R7 when the
+  result is recorded.
+- `sous-chef-model-eval` is left on production's digest (as after any
+  check); `sous-chef-model-cand` on the last arm's image (the next round
+  re-points it). Both scale to zero.
+- Each arm's eval leaves `report.json`, `decision.json` and a
+  `result-eval.json` with a `candidate_ready` notification in its own
+  folder. Only the workflow posts notifications, so nothing reaches Slack or
+  the thermometer, and no decision row is created.
+- An interrupted `eval` (Ctrl-C between polls) releases both locks; run it
+  again and it takes them back and keeps polling the same execution. A
+  killed shell leaves the locks to expire (8 h).
 
 ## Lessons from r4 that apply to every round
 
@@ -912,4 +1586,16 @@ manifest. Cost is reported per round, never a reason to stop (user decision).
   (`where_missing` flags the rest); the bar's out-of-scope rule scores `where`.
 - **Name the route** on int; the in-house model is the default route there.
 - **Never regenerate a round's case file mid-collection.**
+
+From r5 (2026-10-14):
+
+- **A 2–4 row delta can be a reroll.** Two trainings of one dataset differ;
+  read a set's delta against its seed-aware tolerance (R6, R10) and the
+  pooled McNemar, not the raw number.
+- **A probe row must be passable.** Check every generated exam row through
+  the engine on the state it runs on, before it can fail a model.
+- **Count what a round teaches a new key**: positive, visible writes per key
+  (the R3 gate), not cases authored.
+- **Re-asking the teacher is not free of change**: it rewords and rerolls.
+  Carry what still applies (R2).
 - **Keys from the environment only**, never argv, never echoed.

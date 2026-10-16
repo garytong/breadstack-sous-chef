@@ -586,15 +586,109 @@ def inflate(row: dict, contexts: dict, *, with_selected: bool = False) -> dict:
     return row
 
 
+# --- answer-key amendments -------------------------------------------------------------------------------------------------
+#
+# The sets are built from the study (`exam build`); a product decision that changes what is RIGHT for a row is an
+# amendment here, applied by load_set, so a rebuild keeps it. An amended row gets a new id (`<id>.<rev>`): a drift
+# baseline or an earlier eval scored on the old key never pairs with it (it leaves every Δ until re-calibrated), and
+# its old id, keys and alt stay in meta.superseded (r4score.apply_font_policy "as_authored" restores them).
+#
+# font-all (2026-10-15, the user after the demo): a font request that names no part of the site changes EVERY site
+# font (r4score.site_font_fields on this manifest and the vintage state: the six theme fonts plus the announcement
+# bar's, which vintage sets; the cart and footer fonts are unset there and inherit, so writing them is allowed, not
+# required; shopMenuFont is hidden on vintage's grid menu). Writing one of them is now `partial`. p013 ("i don't
+# like the font", no font named) may also be answered with a question (`ask_ok`): asking which font is what the
+# study's own follow-up p150 does on that same first turn. h059's history asked "headings and body?" and the
+# merchant said "both": those two stay required, every site font is an alternative.
+ANSWER_KEY = "font-all+vague-ask-2026-10-15"
+AMENDED_ID_SUFFIX = ".k2"
+_G = {"kind": "global"}
+SITE_FONTS_VINTAGE = ("headingFont", "bodyFont", "navFont", "buttonFont", "productTitleFont", "productBodyFont",
+                      "announcementBar.fontFamily")
+SITE_FONTS_VINTAGE_OPTIONAL = ("footerBodyTextFontFamily", "cartTitleFont", "cartBodyFont", "cartButtonFont")
+
+
+def _keys(names: Iterable[str]) -> list[dict]:
+    return [{"target": dict(_G), "key": k, "list": ""} for k in names]
+
+
+def _site_fonts_key(ask_ok: bool = False) -> dict:
+    out = {"keys": _keys(SITE_FONTS_VINTAGE), "alt": [], "optional": _keys(SITE_FONTS_VINTAGE_OPTIONAL),
+           "site_fonts": {"value": None, "required": list(SITE_FONTS_VINTAGE),
+                          "optional": list(SITE_FONTS_VINTAGE_OPTIONAL), "must": list(SITE_FONTS_VINTAGE)}}
+    if ask_ok:
+        out["ask_ok"] = True
+    return out
+
+
+def _both_or_all() -> dict:
+    tp = {"kind": "global", "panel": "TypographyColorsSection"}
+    return {"keys": [{"target": tp, "key": "bodyFont", "list": ""}, {"target": tp, "key": "headingFont", "list": ""}],
+            "alt": [_keys(SITE_FONTS_VINTAGE)], "optional": _keys(SITE_FONTS_VINTAGE_OPTIONAL)}
+
+
+# vague-ask (2026-10-15, the same decisions: "vague requests - ask"): a single-turn request that names a field but
+# gives no value a write could use (a text, a colour, a font, a link the merchant did not give) may be answered with a
+# question (`ask_ok`; a write still passes — the exam cannot tell an offered draft from a guess). Before, asking there
+# was `no_write` (a fail) and inventing a copyright line passed; the r6 training rows ask on such turns
+# (contrast.py's vague family, the follow-up family's first turns), so the exam must not count that against them.
+VAGUE_ASK_OK = (("paraphrase", "p031"),   # change the copyright line at the bottom
+                ("paraphrase", "p048"),   # change the description google shows for my site
+                ("paraphrase", "p109"),   # change the button color
+                ("paraphrase", "p129"),   # update our instagram and tiktok links
+                ("holdout", "h024"),      # hover color for the category links
+                ("holdout", "h027"),      # change the description of the vaporizers category
+                ("holdout", "h033"),      # change the checkout button font in the side cart
+                ("holdout", "h036"),      # set the default page title for search results
+                ("holdout", "h037"),      # edit robots.txt
+                ("holdout", "h044"),      # change the subtitle under the hero headline
+                ("holdout", "h048"),      # change the instagram feed title color
+                ("holdout", "h055"))      # change the forgot password text
+
+# (set, id) → the expected members that replace the built row's (keys, alt, optional, ask_ok, site_fonts)
+AMENDMENTS: dict[tuple[str, str], dict] = {**{k: {"ask_ok": True} for k in VAGUE_ASK_OK}, **{
+    ("paraphrase", "p011"): _site_fonts_key(),            # change the font everywhere to Lora
+    ("paraphrase", "p013"): _site_fonts_key(ask_ok=True),  # i don't like the font
+    ("paraphrase", "p150"): _site_fonts_key(),            # i don't like the font | okay, lora
+    ("followup", "p150"): _site_fonts_key(),
+    ("real", "r02"): _site_fonts_key(),                   # … | i don't like the font, change it to something else
+    ("real", "r04"): _site_fonts_key(),                   # show me the available fonts | okay, lora
+    ("holdout", "h059"): _both_or_all(),                  # change the font | Inter for both
+}}
+
+
+def amend(row: dict, set_name: str | None = None) -> dict:
+    """The row under today's answer key (AMENDMENTS); unchanged when it has none."""
+    s = str(row.get("set") or set_name or "")
+    a = AMENDMENTS.get((s, str(row.get("id"))))
+    if a is None:
+        return row
+    r = copy.deepcopy(row)
+    e = r.setdefault("expected", {})
+    meta = r.setdefault("meta", {})
+    meta["superseded"] = {"id": row.get("id"), "keys": copy.deepcopy(e.get("keys") or []),
+                          "alt": copy.deepcopy(e.get("alt") or []), "fields": copy.deepcopy(row.get("fields"))}
+    meta["answer_key"] = ANSWER_KEY
+    for k in ("optional", "ask_ok", "site_fonts"):
+        e.pop(k, None)
+    e.update(copy.deepcopy(a))
+    if "keys" in a:
+        r["fields"] = [x["key"] or x["list"] for x in e.get("keys") or []]
+    r["id"] = f"{row.get('id')}{AMENDED_ID_SUFFIX}"
+    return r
+
+
 def load_set(name_or_path: str | Path, *, exam_dir: Path = EXAM_DIR, manifest: Path | None = None,
-             with_selected: bool = False) -> list[dict]:
-    """The rows of a set, contexts inflated. With `manifest`, every row's
-    `manifest_hash` must be that file's (the manifest is recorded by hash)."""
+             with_selected: bool = False, amended: bool = True) -> list[dict]:
+    """The rows of a set, contexts inflated, under today's answer key (AMENDMENTS; `amended=False`: as built).
+    With `manifest`, every row's `manifest_hash` must be that file's (the manifest is recorded by hash)."""
     path = set_path(name_or_path, exam_dir)
     if not path.is_file():
         raise ExamError(f"{path} is missing (make -C lab exam-build WHY=… builds the sets)")
     contexts = load_contexts(path.parent if path.parent.joinpath(CONTEXTS_FILE.name).is_file() else exam_dir)
     rows = [inflate(r, contexts, with_selected=with_selected) for r in read_jsonl(path)]
+    if amended:
+        rows = [amend(r, path.stem) for r in rows]
     if manifest is not None:
         have = manifest_hash_of(manifest)
         wrong = sorted({str(r.get("manifest_hash")) for r in rows if r.get("manifest_hash") and r["manifest_hash"] != have})
@@ -608,6 +702,24 @@ def expected_sets(case: dict) -> list[list[dict]]:
     exp = case.get("expected") or {}
     keys = list(exp.get("keys") or [])
     return ([keys] if keys else []) + [list(s) for s in exp.get("alt") or [] if s]
+
+
+def optional_keys(case: dict) -> list[dict]:
+    """expected.optional: (target, key, list) a right answer MAY also write (not stray, never required) — the site
+    fonts that inherit the new font anyway (AMENDMENTS)."""
+    return [e for e in (case.get("expected") or {}).get("optional") or [] if isinstance(e, dict)]
+
+
+# a sign-off question ("Anything else?", "Is there anything else I can help with?") asks nothing about the request
+SIGN_OFF_Q = re.compile(r"\b(anything else|what else|something else i can|else i can (?:help|do)|more i can (?:help|do))\b",
+                        re.IGNORECASE)
+
+
+def asks_a_question(text: Any) -> bool:
+    """The reply asks the merchant something about the request: a sentence ending in "?" that is not a sign-off
+    ("Done — anything else?"). `ask` mode and the exam's ask_ok rows."""
+    qs = re.findall(r"[^.!?\n]*\?", str(text or ""))
+    return any(q.strip(" ?") and not SIGN_OFF_Q.search(q) for q in qs)
 
 
 def is_out_of_scope(case: dict) -> bool:
@@ -919,9 +1031,13 @@ def score_turn(case: dict, row: dict) -> dict:
     if not sets:
         return {"verdict": None, "reasons": ["unlabelled"], "written": written}
     if not touches:
+        if not refused and (case.get("expected") or {}).get("ask_ok") and asks_a_question(row.get("reply")) \
+                and not any(c.get("name") == "report_unsupported" for c in row.get("tool_calls") or []):
+            # the request left the value open and the turn asked for it (AMENDMENTS: p013)
+            return {"verdict": "clarify_ok", "reasons": [], "asked": True, "refused": 0}
         return {"verdict": "invalid_op" if refused else "no_write", "reasons": ["refused_ops"] if refused else ["asked_or_answered"],
                 "refused": len(refused)}
-    allowed = [e for s in sets for e in s]
+    allowed = [e for s in sets for e in s] + optional_keys(case)
     # A write is stray when nothing at or under its root matched (`categories: {pre-rolls: {name}}` writes
     # `categories`, `categories.pre-rolls` and `categories.pre-rolls.name`; the leaf's match covers the rest).
     ok_roots = {t["root"] for t in touches if any(touch_matches(t, e, page) for e in allowed)}

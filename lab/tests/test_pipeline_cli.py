@@ -81,6 +81,13 @@ def test_retrain_dry_smoke_end_to_end(tmp_path, capsys):
     assert cb["source"] == "candidate-eval" and cb["replicates"] and cb["digest"] == "sha256:dry-candidate"
     assert all(k.split(":", 1)[0] in ("paraphrase", "holdout", "real", "followup", "out_of_scope", "out_of_scope_holdout")
                for k in cb["replicates"][0]["rows"])
+    # the eval scores F0H / F9H with the r4 rules (every relaxation off) unless the round's trigger says otherwise;
+    # collect scores with the collect default
+    from souschef_lab import r4score as R4S
+    pol = s.read_json(f"runs/{run_id}/eval/info.json")["score_policy"]
+    assert {k: pol[k] for k in R4S.STRICT_POLICY} == R4S.STRICT_POLICY
+    cpol = s.read_json(f"runs/{run_id}/result-collect.json")["metrics"]["score_policy"]
+    assert {k: cpol[k] for k in R4S.DEFAULT_POLICY} == R4S.DEFAULT_POLICY
 
 
 def test_a_full_prepare_adds_the_round_to_the_pool(tmp_path):
@@ -94,7 +101,7 @@ def test_a_full_prepare_adds_the_round_to_the_pool(tmp_path):
     idx = s.read_json("cases/pool/index.json")
     paths = [f["path"] for f in idx["files"]]
     authored = s.read_jsonl(f"cases/pool/authored/{run_id}.jsonl") + s.read_jsonl(f"cases/exam-ext/{run_id}.jsonl")
-    assert len(authored) == 8 and all(c["meta"]["target_address"].endswith("buttonShadowColor") for c in authored)
+    assert len(authored) == 9 and all(c["meta"]["target_address"].endswith("buttonShadowColor") for c in authored)
     if s.exists(f"cases/pool/authored/{run_id}.jsonl"):
         new = next(f for f in idx["files"] if f["path"] == f"cases/pool/authored/{run_id}.jsonl")
         assert new["trained_in"] is None and new["manifest"]

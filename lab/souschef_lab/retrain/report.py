@@ -43,6 +43,35 @@ def candidate_id(run_id: str) -> str:
     return f"c-{run_id}"
 
 
+def training_arms(prog: dict) -> dict | None:
+    """A several-arm round's training arms (r6: from-base seeds and a warm start, train.py select), from the
+    trainer's progress.json: every arm's validation scores, the one kept and the planned arms not trained. None for
+    a one-arm round."""
+    arms = prog.get("seeds") if isinstance(prog, dict) else None
+    if not isinstance(arms, list) or not arms:
+        return None
+    sel = prog.get("selection") if isinstance(prog.get("selection"), dict) else {}
+    return {"selected": sel.get("selected_arm") or prog.get("arm"), "rule": sel.get("rule"), "by": sel.get("by"),
+            "arms": [{k: a.get(k) for k in ("arm", "start", "seed", "lr", "eval_loss", "gen_match", "gen_n", "selected")}
+                     for a in arms if isinstance(a, dict)],
+            "skipped": sel.get("skipped") or []}
+
+
+def arms_text(arms: dict | None) -> str:
+    """One line for the decision message: each arm's final validation loss and generation check, the kept one."""
+    if not arms or len(arms.get("arms") or []) < 2 and not arms.get("skipped"):
+        return ""
+    parts = []
+    for a in arms["arms"]:
+        loss = a.get("eval_loss")
+        gen = f", gen {a['gen_match']}/{a['gen_n']}" if a.get("gen_match") is not None else ""
+        parts.append(f"{a.get('arm')} loss {loss:.4f}{gen}" if isinstance(loss, (int, float)) else f"{a.get('arm')} loss ?{gen}")
+    line = f"Training arms (same validation rows): {'; '.join(parts)}. Kept {arms.get('selected')}."
+    if arms.get("skipped"):
+        line += " Not trained: " + "; ".join(f"{k.get('arm')} ({k.get('reason')})" for k in arms["skipped"]) + "."
+    return line
+
+
 def _training(store: Store, pre: str, ds: dict) -> dict:
     prog = store.read_json(f"{pre}/train/progress.json") or {}
     job = store.read_json(f"{pre}/train/job.json") or {}
@@ -52,7 +81,7 @@ def _training(store: Store, pre: str, ds: dict) -> dict:
             "eval_loss_last": prog.get("eval_loss_last"), "machine": job.get("machine"), "scheduling": job.get("scheduling"),
             "region": job.get("region"), "wall_h": job.get("wall_h") or prog.get("wall_h"),
             "preemptions": job.get("preemptions", 0), "peak_mem_gb": prog.get("peak_mem_gb"),
-            "tokens_per_s": prog.get("tokens_per_s")}
+            "tokens_per_s": prog.get("tokens_per_s"), "arms": training_arms(prog)}
 
 
 def _cases(store: Store, pre: str, prep: dict) -> dict:
@@ -113,9 +142,12 @@ def summary_text(res: dict, *, smoke: bool, expires: datetime) -> str:
     bar), the table from results.sets, the stale-round and SMOKE notes and the expiry itself. This is the
     failing bar rules, or a one-line all-clear; the full text for the playbook stays in report.json."""
     failed = [r for r in res["bar"]["rules"] if not r["pass"]]
+    arms = arms_text((res.get("training") or {}).get("arms"))
     if failed:
-        return "Bar rules failing: " + "; ".join(f"{r['name']}: {r['detail']}" for r in failed)
-    return f"Every bar rule passes ({len(res['bar']['rules'])})."
+        text = "Bar rules failing: " + "; ".join(f"{r['name']}: {r['detail']}" for r in failed)
+    else:
+        text = f"Every bar rule passes ({len(res['bar']['rules'])})."
+    return text + (" " + arms if arms else "")
 
 
 def summary_full(res: dict, *, smoke: bool, expires: datetime) -> str:

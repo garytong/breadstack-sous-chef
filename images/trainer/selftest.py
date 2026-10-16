@@ -5,7 +5,10 @@ Proves, in about a minute, what an hour of training would otherwise find
 out: the GPU is visible to torch under this host driver (with the CUDA
 forward-compatibility library when the driver is older than the cu130
 wheels want), bf16 works, Unsloth / TRL / PEFT import, the pinned llama.cpp
-quantizer and converter run, and gcloud is there.
+quantizer and converter run, gcloud is there, and the lab's seed tools
+(TRAIN_SEEDS' and TRAIN_ARMS' settings and selection, the generation check's parser) and
+warm start (--init-adapter: a saved LoRA loaded into a fresh one, on a tiny
+CPU model through the same train.load_init_adapter) work in this image.
 
   python /opt/trainer/selftest.py [--no-gpu] [--upload <run id>]
 
@@ -100,6 +103,80 @@ def check_lab() -> dict:
     return {"lab": "/opt/lab", "pipeline_train": os.path.isfile(entry)}
 
 
+def check_seed_tools() -> dict:
+    """The r6 seed tools of this image's train.py, without torch: the pipeline settings' defaults are r4's (one seed,
+    3407, from the base), a TRAIN_SEEDS list and a TRAIN_ARMS list (base and warm arms) resolve, selection picks the
+    lowest loss and names its arm, and the generation check's parser reads a qwen3.5 tool call."""
+    from souschef_lab import train
+
+    d = train.pipeline_config({}, None, "gs://b")
+    if (d["seeds"], d["seed_flag"], d["multi"], d["init_adapter"], d["gen_check"]) != ([3407], False, False, "", 0):
+        raise RuntimeError(f"the default training settings changed: {d}")
+    m = train.pipeline_config({"TRAIN_SEEDS": "3407,2,3", "INIT_ADAPTER": "base/a"}, None, "gs://b")
+    if m["seeds"] != [3407, 2, 3] or not m["multi"] or m["init_adapter"] != "gs://b/base/a":
+        raise RuntimeError(f"TRAIN_SEEDS / INIT_ADAPTER resolve wrongly: {m}")
+    a = train.pipeline_config({"TRAIN_ARMS": "base:3407,base:2,warm:3407", "INIT_ADAPTER": "base/a"}, None, "gs://b")
+    if [(x["arm"], x["tag"], x["lr"]) for x in a["arms"]] != [("base:3407", "s3407", train.RECIPE["lr"]),
+                                                            ("base:2", "s2", train.RECIPE["lr"]),
+                                                            ("warm:3407", "w3407", train.WARM_LR)] or not a["multi"]:
+        raise RuntimeError(f"TRAIN_ARMS resolves wrongly: {a}")
+    sel = train.select_seed([{"seed": 3407, "last_eval_loss": 0.3},
+                             {"seed": 3407, "last_eval_loss": 0.2, "start": "init_adapter"}])
+    if sel["selected"] != 1 or sel["seeds"][1]["arm"] != "warm:3407":
+        raise RuntimeError(f"select_seed kept the wrong arm: {sel}")
+    call = '<tool_call>\n<function=f>\n<parameter=a>\n{"x": 1}\n</parameter>\n</function>\n</tool_call>'
+    if train.parse_tool_calls(call) != [("f", {"a": {"x": 1}})]:
+        raise RuntimeError("the generation check cannot parse a qwen3.5 tool call")
+    return {"default_seeds": d["seeds"], "arms": [x["arm"] for x in a["arms"]], "select": "ok", "gen_check_parse": "ok"}
+
+
+def check_warm_start() -> dict:
+    """--init-adapter's loader on a tiny CPU model: a saved LoRA's weights land in a fresh LoRA exactly, and an
+    adapter with other target modules is refused (train.load_init_adapter, the function the SFT calls after Unsloth's
+    get_peft_model)."""
+    import contextlib
+    import io
+    import tempfile
+
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from souschef_lab import train
+
+    cfg = LlamaConfig(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=1, num_attention_heads=2,
+                      num_key_value_heads=2, max_position_embeddings=64)
+
+    def lora(seed: int, targets: list[str]):
+        torch.manual_seed(0)
+        base = LlamaForCausalLM(cfg)
+        torch.manual_seed(seed)
+        return get_peft_model(base, LoraConfig(r=4, lora_alpha=4, target_modules=targets, lora_dropout=0.0))
+
+    src = lora(1, ["q_proj", "v_proj"])
+    with torch.no_grad():
+        for n, p in src.named_parameters():
+            if "lora_" in n:
+                p.normal_()
+    with tempfile.TemporaryDirectory() as tmp:
+        src.save_pretrained(tmp)
+        dst = lora(2, ["q_proj", "v_proj"])
+        got = train.load_init_adapter(dst, tmp)
+        want = {n: p for n, p in src.named_parameters() if "lora_" in n}
+        have = {n: p for n, p in dst.named_parameters() if "lora_" in n}
+        if set(want) != set(have) or any(not torch.equal(want[n], have[n]) for n in want):
+            raise RuntimeError("the init adapter's LoRA weights did not land in the fresh LoRA")
+        refused = False
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):  # the refusal's own message: expected here
+                train.load_init_adapter(lora(3, ["q_proj", "k_proj"]), tmp)
+        except SystemExit:
+            refused = True
+        if not refused:
+            raise RuntimeError("an adapter with other target modules was loaded")
+    return {"tensors": got["tensors"], "mismatch_refused": True}
+
+
 def check_gcloud() -> dict:
     g = shutil.which("gcloud")
     if not g:
@@ -115,7 +192,7 @@ def main() -> int:
     ns = ap.parse_args()
 
     checks = [("train_env", check_train_env_cpu), ("llama_cpp", check_llama_cpp), ("lab", check_lab),
-              ("gcloud", check_gcloud)]
+              ("seed_tools", check_seed_tools), ("warm_start", check_warm_start), ("gcloud", check_gcloud)]
     if not ns.no_gpu:
         checks = [("driver", check_driver), ("torch_gpu", check_torch_gpu), ("unsloth", check_unsloth)] + checks
 

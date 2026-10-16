@@ -8,15 +8,37 @@
      to cases/pool/authored/<run>.jsonl (+ cases/exam-ext/<run>.jsonl) and the pool
      index BEFORE collection, so a Skip keeps them and the next big drift batches
      them; a retried job reuses the round's authored file instead of paying twice
-  3. runs/<id>/prepare/{cases.jsonl, report.json, leak-report.json, manifest.json}:
-     every case on the deployed manifest — trainable F0–F7 and the holdouts F0H / F9H
+  3. the F8 contrast family (contrast.py: look-alike fields, built from the manifest without a
+     model call) — regenerated every round on the deployed manifest, never pooled;
+     prepare/contrast-report.json. Off: trigger.contrast "off" or $SOUSCHEF_CONTRAST=off
+  4. runs/<id>/prepare/{cases.jsonl, report.json, leak-report.json, manifest.json}:
+     every case on the deployed manifest — trainable F0–F8 and the holdouts F0H / F9H
      (tagged meta.key_seen against the round's trainable cases)
 
-SMOKE: 10 pool cases (at least one per family) rebased and one target × 4 cases authored.
+Trainable pool cases whose expected ops write a field the editor hides in the case's
+state (author.hidden_writes; not a deliberate closed-gate case) are dropped after the
+rebase (report.json `hidden_write_dropped`; r5 trained 58 such rows). Keep them:
+trigger.pool_hidden "keep" or $SOUSCHEF_POOL_HIDDEN=keep.
+
+Trainable cases that expect a bare e-mail address on a link field (socialLinks.email, a
+button / gallery link …) expect `mailto:<address>` instead (fix_bare_mailto; report.json
+`mailto_fixed`): the site renders those fields as the href itself, so the bare address
+is a broken link (r4-F3-0413 taught it). A fixed case's expectation changed, so
+carry-forward re-asks it.
+
+Trainable cases that ask for "the font" without naming a part of the site (r4score.generic_font_request on the
+r4-F6 "site's text → body + heading" shape) expect EVERY site font under the font policy "all" (the default since
+2026-10-15: r4score.site_font_fields on the case's state; fix_site_fonts, report.json `site_fonts_fixed`); the
+changed expectation makes carry-forward re-ask them. Policy as_authored ($SOUSCHEF_FONT_POLICY / trigger.font_policy)
+leaves them as authored.
+
+SMOKE: 10 pool cases (at least one per family) rebased and one target × 4 cases authored;
+no contrast family.
 """
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable
@@ -32,7 +54,85 @@ SEED_POOL = "cases/pool/r4/cases-all.jsonl"
 EXAM_EXT = "cases/exam-ext"
 WHY = "cases/why"
 DROP_FOR_AUTHORING = ("exact_refused", "exact_empty", "oracle_refused", "remeasure_exact_refused")
-FAMILY_SORT = ("F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F0H", "F9H")
+FAMILY_SORT = ("F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F0H", "F9H")
+
+
+def switch(run_file: dict, env_name: str, trigger_key: str, default: str, env: dict | None = None) -> str:
+    """A round's switch: $<env_name>, else run.json trigger.<trigger_key>, else `default` (lower-cased)."""
+    env = os.environ if env is None else env
+    v = env.get(env_name) or ((run_file or {}).get("trigger") or {}).get(trigger_key) or default
+    return str(v).strip().lower()
+
+
+def drop_hidden_writes(cases: list[dict], m: Manifest) -> tuple[list[dict], dict]:
+    """(cases without the trainable ones that write a hidden field, {count, by_family, ids})."""
+    keep, dropped = [], []
+    for c in cases:
+        if not c.get("holdout") and A.hidden_writes(c, m):
+            dropped.append(c)
+        else:
+            keep.append(c)
+    return keep, {"count": len(dropped), "by_family": dict(Counter(str((c.get("meta") or {}).get("family")) for c in dropped)),
+                  "ids": sorted(str(c.get("id")) for c in dropped)[:100]}
+
+
+def fix_bare_mailto(cases: list[dict]) -> dict:
+    """Trainable cases (not holdouts: the exam stays as scored) whose expected writes put a bare e-mail address on a
+    link field get `mailto:<address>` in their ops, oracle ops, alt_exact and exact diff. In place; the report."""
+    from .. import r4score as R4S
+
+    def fix_ops(ops) -> int:
+        n = 0
+        for o in ops or []:
+            if o.get("op") == "set_fields" and isinstance(o.get("values"), dict):
+                for k, v in list(o["values"].items()):
+                    if isinstance(v, str) and R4S._is_link_path(k) and R4S.EMAIL.match(v.strip()):
+                        o["values"][k] = "mailto:" + v.strip()
+                        n += 1
+        return n
+
+    def fix_diff(diff) -> None:
+        for d in diff or []:
+            if isinstance(d, dict) and isinstance(d.get("after"), str) and R4S._is_link_path(str(d.get("path") or "")) \
+                    and R4S.EMAIL.match(d["after"].strip()):
+                d["after"] = "mailto:" + d["after"].strip()
+            elif isinstance(d, list) and len(d) == 2 and R4S._is_link_path(str(d[0])):  # [path, canonical JSON]
+                v = R4S._unquote(d[1])
+                if isinstance(v, str) and R4S.EMAIL.match(v.strip()):
+                    d[1] = json.dumps("mailto:" + v.strip())
+    ids = []
+    for c in cases:
+        if c.get("holdout"):
+            continue
+        e = c.get("expected") or {}
+        n = fix_ops(e.get("ops")) + fix_ops((c.get("meta") or {}).get("oracle_ops"))
+        for alt in e.get("alt_exact") or []:
+            n += fix_ops(alt.get("ops"))
+            fix_diff(alt.get("diff"))
+        if n:
+            fix_diff(e.get("diff"))
+            c.setdefault("meta", {})["fixed"] = sorted(set(list(c["meta"].get("fixed") or []) + ["mailto"]))
+            ids.append(str(c.get("id")))
+    return {"count": len(ids), "ids": ids[:50]}
+
+
+def fix_site_fonts(cases: list[dict], m: Manifest, policy: str = "all") -> dict:
+    """Under font policy "all": every trainable generic font case (r4score.apply_font_policy notes font:all on a
+    "both"-shaped case) expects every site font on its own state (r4score.to_all_fonts). In place; the report."""
+    from .. import r4score as R4S
+    if policy != "all":
+        return {"policy": policy, "count": 0, "ids": []}
+    ids = []
+    for i, c in enumerate(cases):
+        if c.get("holdout") or R4S.site_font_case(c, any_words=True) != "both":
+            continue
+        c2, note = R4S.apply_font_policy(c, "all", m)
+        if note != "font:all":
+            continue
+        c2.setdefault("meta", {})["fixed"] = sorted(set(list(c2["meta"].get("fixed") or []) + ["site_fonts"]))
+        cases[i] = c2
+        ids.append(str(c.get("id")))
+    return {"policy": policy, "count": len(ids), "ids": ids[:50]}
 
 
 def pool_files(store: Store) -> list[dict]:
@@ -176,6 +276,20 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
                            notification_=note)
         raise ConfigError("rebase_loss: " + fams, reason="rebase_loss", details={"result": res})
 
+    hidden_rep: dict = {"count": 0, "policy": switch(run_file, "SOUSCHEF_POOL_HIDDEN", "pool_hidden", "drop")}
+    if hidden_rep["policy"] != "keep":
+        kept, h = drop_hidden_writes(kept, m_new)
+        hidden_rep.update(h)
+        if h["count"]:
+            progress(f"prepare: dropped {h['count']} pool case(s) that write a hidden field {h['by_family']}")
+
+    mailto_rep = fix_bare_mailto(kept)
+    if mailto_rep["count"]:
+        progress(f"prepare: {mailto_rep['count']} case(s) now expect mailto: on a link field {mailto_rep['ids'][:5]}")
+    fonts_rep = fix_site_fonts(kept, m_new, switch(run_file, "SOUSCHEF_FONT_POLICY", "font_policy", "all"))
+    if fonts_rep["count"]:
+        progress(f"prepare: {fonts_rep['count']} generic font case(s) now expect every site font {fonts_rep['ids'][:5]}")
+
     # 2. authoring
     # SMOKE never touches the pool: its authored cases stay in the run's folder
     rel_auth = f"{pre}/prepare/authored-smoke.jsonl" if smoke else f"cases/pool/authored/{run_id}.jsonl"
@@ -226,9 +340,28 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
     else:
         arep = {"targets": 0, "cases_trainable": 0, "cases_holdout": 0, "anthropic_usd": 0.0}
 
-    # 3. the case file
+    # 3. the contrast family (deterministic, no model call: regenerated each round)
     from ..r4cases import tag_seen
-    allc = kept + authored + holdout_new
+    contrast: list[dict] = []
+    crep: dict = {"skipped": "smoke"} if smoke else {}
+    cpol = switch(run_file, "SOUSCHEF_CONTRAST", "contrast", "on")
+    if not smoke and cpol in ("off", "0", "false", "no"):
+        crep = {"skipped": "off"}
+    elif not smoke:
+        import copy
+        from .. import contrast as CT
+        from ..leak import ExamIndex
+        base = kept + authored + holdout_new
+        exam = copy.deepcopy([c for c in base if c.get("holdout") and (c.get("meta") or {}).get("family") == "F0H"])
+        tag_seen(exam, [c for c in base if not c.get("holdout")], m_new)
+        contrast, crep = CT.contrast_round(m_new, engine, extras, leak_index=ExamIndex(why=why_dir),
+                                           pool=[c for c in base if not c.get("holdout")], exam_cases=exam,
+                                           progress=progress)
+        progress(f"prepare: contrast family F8 {len(contrast)}/{crep.get('asked')} kept")
+    store.write_json(f"{pre}/prepare/contrast-report.json", crep)
+
+    # 4. the case file
+    allc = kept + authored + holdout_new + contrast
     trainable = [c for c in allc if not c.get("holdout")]
     holdouts = [c for c in allc if c.get("holdout")]
     seen = tag_seen(holdouts, trainable, m_new)
@@ -244,6 +377,8 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
     report = {"run_id": run_id, "mode": mode, "manifest": m_new.hash, "training_manifest": model["training_manifest"],
               "engine": engine_info, "pool": pool_rep,
               "rebase": {k: v for k, v in rb.items() if k not in ("dropped", "leak")},
+              "hidden_write_dropped": hidden_rep, "mailto_fixed": mailto_rep, "site_fonts_fixed": fonts_rep,
+              "contrast": {k: v for k, v in crep.items() if k not in ("per_side",)},
               "targets": trep, "target_list": targets, "author": {k: v for k, v in arep.items() if k != "per_target"},
               "seen": seen, "families": dict(sorted(fam.items())),
               "totals": {"cases": len(allc), "trainable": len(trainable), "holdout": len(holdouts),
@@ -255,6 +390,7 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
     metrics = {"cases": len(allc), "trainable": len(trainable), "holdout": len(holdouts), "families": dict(fam),
                "rebase_dropped": rb["totals"]["dropped"], "targets": len(targets),
                "authored_trainable": len(authored), "authored_holdout": len(holdout_new),
+               "contrast": len(contrast), "hidden_write_dropped": hidden_rep["count"],
                "anthropic_usd": arep.get("anthropic_usd", 0.0)}
     return write_result(store, run_id, "prepare", "ok", metrics=metrics,
                         artifacts=[f"{pre}/prepare/cases.jsonl", f"{pre}/prepare/report.json", rel_auth])
