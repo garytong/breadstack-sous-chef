@@ -70,6 +70,16 @@ single-turn `ask` cases of their own (ask_first_cases: ids `askfirst1-<family>-<
 page, view and split group). Collect masks a follow-up's earlier replies out of the loss, so before these the
 only trained "ask instead of guessing" turns were the ~7 clarify rows; the r5 drift went the other way.
 
+r7 (askrule, the spec's §1–2): only a VAGUE text is an ask (no value, no direction, no action). A vague case that
+drifts out of that is dropped (`ask_rule:…`); an ask-first source whose first turn is NOT vague becomes a WRITE case on
+the source's field (`askfirst1r-…`, relabel_first_turn) instead of an ask — only on evidence (askrule.write_evidence:
+the oracle's literal in the turn, a direction on a colour / number, a toggle named by its label); a clear turn without
+it is left out (`unsure`), and texts relabelled to different fields leave together (`conflicting_keys`). Every ask gets
+WRITE twins in its split group, linked both ways by meta.ask_pair (the dataset trains an ask only beside a kept twin):
+two per vague case (build_vague_twin: the same text plus "…, it's too light" / "…, try #hex" / "…, 24px" / "…, use
+<font>", ids from VAGUE_TWIN_BASE) and, on a colour / number field, a third in the other direction (VAGUE_TWIN2_BASE);
+one per ask-first case (ask_pair_case: both user turns as one request, `askpair1-…`).
+
 Deterministic: the same manifest gives the same cases, no model call. Ids (`contrast1-F8-<nnnn>`, the
 generator's version and the case's place in SIDES) do not depend on the manifest, so carry-forward can carry
 a case whose request, state and answer did not change from one round to the next (a changed one is re-asked).
@@ -307,6 +317,21 @@ PLACE_WORDS = {"ShopMenuSection": "shop menu", "FooterSection": "footer", "Heade
                "SidebarCartSection": "side cart", "TypographyColorsSection": "site's"}
 PAGE_PLACE = {"products": "shop page", "checkout": "checkout"}
 ASK_FIRST_GENERATOR = "askfirst-1"
+ASK_PAIR_GENERATOR = "askpair-1"  # r7 §2.1: an ask-first case's write twin (its two user turns as one)
+# r7 §2.1: every vague (ask) case gets two WRITE twins on the same field, the same template text plus a clause by the
+# field's type — so the ask sits next to a write in the same phrasing family (r6's ask rows had none, and its model
+# asked on h020 "the footer text is too light"). Ids from VAGUE_TWIN_BASE (contrast1-F8-1201…): two per vague side,
+# in the vague sides' order, so no other group's ids move
+VAGUE_TWIN_GENERATOR = "vague-twin-1"
+VAGUE_TWIN_BASE = 1200
+# r7 review: a colour / number vague side gets a THIRD twin, relative in the OTHER direction from twin 0 (logoMaxHeight
+# had only "a bit smaller", so the exam's "bigger" had no twin) — ids from VAGUE_TWIN2_BASE (contrast1-F8-1301…: one
+# per vague side, numbered as the vague case), so twins 0 and 1 keep theirs
+VAGUE_TWIN2_BASE = 1300
+TWIN_COLOR_RELATIVE = ((", it's too light", "darker"), (", make it a bit darker", "darker"),
+                       (", it's too dark", "lighter"), (", make it a bit lighter", "lighter"))
+TWIN_NUMBER_RELATIVE = ((", it's too big", "down"), (", a bit bigger please", "up"),
+                        (", it's too small", "up"), (", a bit smaller please", "down"))
 
 # --- the capability groups (create_page, dropdown lists) ------------------------------------------------------------------
 
@@ -804,9 +829,11 @@ def _write(m, side: Side, state: dict, key: str, value: Any) -> None:
     write_field(c, c.fields[key], state, value, section_id=side.container if side.kind == "section" else None)
 
 
-def build_case(m, side: Side, i: int, style: str, template: str, case_id: str) -> tuple[dict | None, str]:
+def build_case(m, side: Side, i: int, style: str, template: str, case_id: str,
+               direction: str | None = None) -> tuple[dict | None, str]:
     """(case, "") or (None, why). The state, the request, the oracle ops and the expectation of one case (not yet
-    measured: `validate` does that)."""
+    measured: `validate` does that). `direction` (a relative style): darker / lighter / up / down instead of the
+    template's own words (a vague twin's "it's too light" means darker)."""
     from .state import build_state
     salt = f"{GENERATOR}:{side.name}:{i}"
     tpl = TEMPLATES[h8("tpl:" + salt) % len(TEMPLATES)]
@@ -864,7 +891,7 @@ def build_case(m, side: Side, i: int, style: str, template: str, case_id: str) -
                 if not _hex(cur):
                     cur = PALETTE[h8("seed:" + salt) % len(PALETTE)]
                     _write(m, side, state, key, cur)
-                darker = bool(re.search(r"darker|deeper", template))
+                darker = direction == "darker" if direction else bool(re.search(r"darker|deeper", template))
                 v = shift_color(_hex(cur), darker)
                 direction = "darker" if darker else "lighter"
             elif f.type in ("range", "number"):
@@ -872,7 +899,7 @@ def build_case(m, side: Side, i: int, style: str, template: str, case_id: str) -
                 if not isinstance(cur, (int, float)) or isinstance(cur, bool):
                     cur = lo + (hi - lo) // 2
                     _write(m, side, state, key, cur)
-                up = bool(re.search(r"bigger|bump|up\b|larger|taller", template))
+                up = direction == "up" if direction else bool(re.search(r"bigger|bump|up\b|larger|taller", template))
                 v = min(hi, int(cur) + 2) if up else max(lo, int(cur) - 2)
                 direction = "up" if up else "down"
             else:
@@ -917,9 +944,8 @@ def build_case(m, side: Side, i: int, style: str, template: str, case_id: str) -
     return case, ""
 
 
-def build_vague_case(m, side: Side, template: str, case_id: str) -> tuple[dict | None, str]:
-    """A request that names `side`'s field by its manifest label and asks nothing of it: mode ask."""
-    from .state import build_state
+def vague_text(m, side: Side, template: str) -> tuple[str | None, str]:
+    """(the vague request naming `side`'s field by its manifest label, "") or (None, why)."""
     if side.kind not in ("global", "page", "branding", "section") or "{page}" in side.key:
         return None, "vague_unsupported_side"
     c = container_of(m, side)
@@ -934,12 +960,38 @@ def build_vague_case(m, side: Side, template: str, case_id: str) -> tuple[dict |
              PAGE_PLACE.get(side.container, "") if side.kind == "page" else "")  # a section: its editor is open
     if place and not (_words(place) & _words(label)):
         label = f"{place} {label}"  # "the font" alone is every font (r4score.site_font_fields): name the place
+    return re.sub(r"\s+", " ", template.format(label=label)).strip(), ""
+
+
+def vague_twin_id(vague_n: int, k: int) -> int:
+    """The id number of a vague case's k-th write twin: vague case 0901 → 1201, 1202 (VAGUE_TWIN_BASE) and, k 2 (the
+    other direction), 1301 (VAGUE_TWIN2_BASE)."""
+    if k == 2:
+        return VAGUE_TWIN2_BASE + vague_n - VAGUE_BASE
+    return VAGUE_TWIN_BASE + 2 * (vague_n - VAGUE_BASE - 1) + k + 1
+
+
+def twin_count(m, side: Side) -> int:
+    """How many write twins `side`'s vague case gets: 3 for a colour / number field (twin 2: the other direction), else 2."""
+    c = container_of(m, side) if side.kind in ("global", "page", "branding", "section") else None
+    f = c.fields.get(side.key) if c else None
+    return 3 if f is not None and f.type in ("color", "range", "number") else 2
+
+
+def build_vague_case(m, side: Side, template: str, case_id: str, twins: tuple[str, ...] = ()) -> tuple[dict | None, str]:
+    """A request that names `side`'s field by its manifest label and asks nothing of it: mode ask. The text must be
+    VAGUE under askrule (no value, no direction, no action — r7 §1.1: the guard against a template or a label that
+    drifts into a direction word). `twins`: the ids of its write twins (meta.ask_pair)."""
+    from .askrule import classify_case
+    from .state import build_state
+    text, why = vague_text(m, side, template)
+    if text is None:
+        return None, why
     salt = f"{VAGUE_GENERATOR}:{side.name}"
     tpl = TEMPLATES[h8("tpl:" + salt) % len(TEMPLATES)]
     state = build_state(m, template=tpl)
     _seed(m, state, side.seed)
     view = {"tab": "editor", "activeSectionId": side.container} if side.kind == "section" else None  # "this section"
-    text = re.sub(r"\s+", " ", template.format(label=label)).strip()
     exp = {"ops": [], "diff": [], "keys": [], "alt": [], "alt_exact": [], "out_of_scope": None, "candidates": None,
            "direction": None, "reply_any": None, "expect_hidden": None, "gate": None}
     case = {"id": case_id, "kind": "ask", "target": target_of(side), "fields": [side.key], "site_state": state,
@@ -947,23 +999,256 @@ def build_vague_case(m, side: Side, template: str, case_id: str) -> tuple[dict |
             "score": {"mode": "ask"}, "holdout": False, "manifest_hash": m.hash, "engine_fingerprint": None,
             "template": tpl,
             "meta": {"family": FAMILY, "style": "vague", "page": side.page, "view": view, "oracle_ops": [],
-                     "group": f"vague:{side.name}",
+                     "group": f"vague:{side.name}", "ask_family": "complaint",
                      "contrast": {"pair": "vague", "side": side.name, "key": side.key, "page_key": None, "value": None,
                                   "others": []},
                      "generator": VAGUE_GENERATOR, "template_text": template}}
+    verdict = classify_case(case, m)  # the dataset's own check (dataset_stage.ask_rule_rows), on the built case
+    if not verdict.vague:
+        return None, f"ask_rule:{verdict.kind}:{verdict.why}"
+    if twins:
+        case["meta"]["ask_pair"] = {"twin": twins[0], "twins": list(twins), "role": "ask"}
     return case, ""
 
 
+def build_vague_twin(m, side: Side, template: str, k: int, case_id: str, ask_id: str) -> tuple[dict | None, str]:
+    """The k-th (0, 1, 2) WRITE twin of `side`'s vague case (r7 §2.1): the vague text plus a clause by the field's type —
+    a colour: a relative clause (k 0: "…, it's too light" → darker) and a typed hex (k 1: "…, try #1f6f43"); a number:
+    "…, it's too big" / "…, 24px"; k 2 (colour / number only): a relative clause in the OTHER direction from k 0's (both
+    directions of the same field next to its ask — the r6 over-ask was on exactly these fields); a font: "…, use Lora"
+    (k 0, 1); a text with a value bank: "…, make it say '…'". Built by build_case (relative → keys + direction, literal
+    → exact), in the vague case's split group."""
+    text, why = vague_text(m, side, template)
+    if text is None:
+        return None, why
+    c = container_of(m, side)
+    f = c.fields.get(side.key)
+    salt = f"{VAGUE_TWIN_GENERATOR}:{side.name}:{k}"
+    direction = None
+    rel = TWIN_COLOR_RELATIVE if f.type == "color" else TWIN_NUMBER_RELATIVE
+    if k == 2:
+        if f.type not in ("color", "range", "number"):
+            return None, "twin_unsupported_type"
+        first = rel[h8(f"{VAGUE_TWIN_GENERATOR}:{side.name}:0") % len(rel)][1]
+        other = [x for x in rel if x[1] != first]
+        clause, direction = other[h8(salt) % len(other)]
+    elif f.type == "color":
+        if k == 0:
+            clause, direction = TWIN_COLOR_RELATIVE[h8(salt) % len(TWIN_COLOR_RELATIVE)]
+        else:
+            clause = ", try {v}"
+    elif f.type in ("range", "number"):
+        if k == 0:
+            clause, direction = TWIN_NUMBER_RELATIVE[h8(salt) % len(TWIN_NUMBER_RELATIVE)]
+        else:
+            clause = ", {v}px"
+    elif f.type in ("select", "enum") and re.search(r"font(?:family)?$", side.key, re.I):
+        clause = ", use {v}"
+    elif f.type in ("select", "enum") and f.enum:
+        clause = ", make it {v}"
+    elif f.type in ("text", "richtext") and side.values:
+        clause = ", make it say '{v}'"
+    else:
+        return None, "twin_unsupported_type"
+    style = "relative" if direction else "literal"
+    case, why = build_case(m, side, 100 + k, style, text.replace("{", "{{").replace("}", "}}") + clause, case_id,
+                           direction=direction)
+    if case is None:
+        return None, why
+    from .askrule import classify_case
+    if classify_case(case, m, oracle_ops=case["meta"].get("oracle_ops")).vague:
+        return None, "twin_still_vague"
+    meta = case["meta"]
+    meta.update(group=f"vague:{side.name}", generator=VAGUE_TWIN_GENERATOR, style=f"vague_twin:{style}",
+                ask_pair={"twin": ask_id, "role": "write"}, template_text=template)
+    return case, ""
+
+
+def _scored_keys(c: dict) -> list[dict]:
+    """The (target, key, list) records a case's scored turn writes: its expected keys, else its ops' (r4cases.to_keys)."""
+    from .r4cases import to_keys
+    e = c.get("expected") or {}
+    keys = [k for k in e.get("keys") or [] if isinstance(k, dict)]
+    if keys:
+        return copy.deepcopy(keys)
+    ops = (c.get("meta") or {}).get("oracle_ops") or e.get("ops") or []
+    tmp = {"expected": {"ops": copy.deepcopy(list(ops))}, "meta": {}, "score": {}}
+    to_keys(tmp, [])
+    return tmp["expected"]["keys"]
+
+
+def relabel_first_turn(c: dict, text: str, verdict, m, *, new_id: str) -> tuple[dict | None, str]:
+    """An ask-first source whose first turn is NOT vague (r7 §1.2): that turn on its own, as a WRITE case on the
+    source's scored field — mode keys (the value / direction / action is the turn's, so the teacher's write is the
+    row), `direction` when askrule.direction_of reads one for the field's type. (None, why) when the source does not
+    write exactly one field, or the turn gives no evidence for the write (askrule.write_evidence: the oracle's literal
+    in the turn, a direction on a colour / number, a toggle named by its label — r7 review: "the headings look too
+    plain" → headingFont is an arbitrary write; such a turn is left out, `unsure`)."""
+    from .askrule import direction_of, write_evidence
+    from .retrain.rebase import field_of
+    keys = _scored_keys(c)
+    distinct = {json.dumps([k.get("target"), k.get("key") or "", k.get("list") or ""], sort_keys=True) for k in keys}
+    if len(distinct) != 1:
+        return None, "no_field"
+    meta = c.get("meta") or {}
+    ops = copy.deepcopy([o for o in meta.get("oracle_ops") or (c.get("expected") or {}).get("ops") or []
+                         if isinstance(o, dict)])
+    if not ops:
+        return None, "no_ops"
+    k0 = keys[0]
+    exp = _empty_expected()
+    exp.update(ops=ops, keys=[k0])
+    if (c.get("expected") or {}).get("list_ops"):
+        exp["list_ops"] = copy.deepcopy(c["expected"]["list_ops"])
+    f = field_of(m, k0.get("target"), str(k0.get("list") or ""), str(k0.get("key") or "")) if k0.get("key") else None
+    evidence = write_evidence(text, f, oracle_ops=ops, verdict=verdict)
+    if evidence is None:
+        return None, "unsure"
+    d = direction_of(text, f.type, f.key) if f is not None else None
+    if d and not k0.get("list"):
+        exp["direction"] = {"key": k0["key"], "dir": d, "from": None}
+    h0 = (c.get("history") or [{}])[0]
+    page = h0.get("page") or meta.get("page") or (c.get("context") or {}).get("page") or "home"
+    fam = str(meta.get("family") or "F2")
+    new = {"id": new_id, "kind": "relabelled", "target": copy.deepcopy(k0.get("target") or c.get("target")),
+           "fields": [k0.get("key") or k0.get("list")], "site_state": copy.deepcopy(c.get("site_state") or {}),
+           "context": {"page": page}, "request": text, "history": [], "expected": exp, "score": {"mode": "keys"},
+           "holdout": False, "manifest_hash": c.get("manifest_hash") or m.hash, "engine_fingerprint": None,
+           "template": c.get("template"),
+           "meta": {"family": fam, "page": page, "view": meta.get("view"), "group": meta.get("group") or c.get("id"),
+                    "oracle_ops": copy.deepcopy(ops), "generator": ASK_FIRST_GENERATOR,
+                    "ask_first": {"from": c.get("id"), "expect": h0.get("expect"), "relabelled": True},
+                    "ask_rule": {"kind": verdict.kind, "why": verdict.why, "evidence": evidence}}}
+    # "make the content block headline #7a1f2b" on a home with three content blocks: the teacher rightly asks "which
+    # one?" (r6 kept 59 of the 73 relabelled first turns as ask rows), so the write case needs the instance in view:
+    # the editor focused on the source's section, as an authored focus case is (author.ambiguity skips it then)
+    from .retrain.author import ambiguity
+    sid = (k0.get("target") or {}).get("sectionId") if isinstance(k0.get("target"), dict) else None
+    if sid and str(ambiguity(new, m) or "").startswith(("ambiguous_instance", "alias_instance")):
+        new["meta"]["view"] = {"tab": "editor", "activeSectionId": sid, "globalSection": ""}
+        new["meta"]["ask_rule"]["focused"] = "which_one"
+    return new, ""
+
+
+def ask_pair_case(c: dict, ask_id: str, m, *, new_id: str) -> tuple[dict | None, str]:
+    """The WRITE twin of a vague ask-first case (r7 §2.1): the source follow-up's two user turns as one request
+    ("can you update the announcement bar, black background please") with the source's scored-turn expectation, on
+    its state, page and view, in the ask case's split group. (None, why) when the merged text is still vague (the
+    ask then has no twin and the dataset drops it: §2.3) or the source is not a two-turn follow-up."""
+    from .askrule import classify_case
+    hist = c.get("history") or []
+    if len(hist) != 1:
+        return None, "multi_turn"
+    t1 = re.sub(r"[\s.!?]+$", "", str(hist[0].get("user") or "").strip())
+    t2 = str(c.get("request") or "").strip()
+    if not t1 or not t2:
+        return None, "empty"
+    meta = c.get("meta") or {}
+    page = meta.get("page") or (c.get("context") or {}).get("page") or hist[0].get("page") or "home"
+    new = {"id": new_id, "kind": c.get("kind") or "followup", "target": copy.deepcopy(c.get("target")),
+           "fields": list(c.get("fields") or []), "site_state": copy.deepcopy(c.get("site_state") or {}),
+           "context": {"page": page}, "request": f"{t1}, {t2}", "history": [],
+           "expected": copy.deepcopy(c.get("expected") or _empty_expected()), "score": copy.deepcopy(c.get("score")),
+           "holdout": False, "manifest_hash": c.get("manifest_hash") or m.hash, "engine_fingerprint": None,
+           "template": c.get("template"),
+           "meta": {"family": str(meta.get("family") or "F2"), "page": page, "view": meta.get("view"),
+                    "group": meta.get("group") or c.get("id"),
+                    "oracle_ops": copy.deepcopy(meta.get("oracle_ops") or (c.get("expected") or {}).get("ops") or []),
+                    "generator": ASK_PAIR_GENERATOR, "ask_pair": {"twin": ask_id, "role": "write"},
+                    "ask_first": {"from": c.get("id")}}}
+    for k in ("option_lists", "context_extras"):
+        if c.get(k) is not None:
+            new[k] = copy.deepcopy(c[k])
+    if (new["score"] or {}).get("mode") not in ("exact", "keys"):
+        return None, "not_a_write"
+    v = classify_case(new, m, oracle_ops=new["meta"]["oracle_ops"])
+    if v.vague:
+        return None, "still_vague"
+    new["meta"]["ask_rule"] = {"kind": v.kind, "why": v.why}
+    return new, ""
+
+
+def _field_signature(keys: list[dict]) -> str:
+    """The fields a keys list writes, instance-free: the section TYPE for a section target (the relabel focuses the
+    source's instance, so the same text on block 1 and block 3 is one field, not a conflict)."""
+    out = []
+    for k in keys or []:
+        t = dict(k.get("target") or {}) if isinstance(k.get("target"), dict) else {}
+        if t.get("sectionId"):
+            t["sectionId"] = re.sub(r"-\d+$", "", str(t["sectionId"]))
+        out.append(json.dumps([t, k.get("key") or "", k.get("list") or ""], sort_keys=True))
+    return json.dumps(sorted(out))
+
+
 def ask_first_cases(pool: list[dict], m, engine, extras: dict, *, leak_index=None, seen: set[str] | None = None,
-                    limit: int | None = None) -> tuple[list[dict], dict]:
-    """The follow-up family's vague first turns as single-turn `ask` cases (module docstring): a trainable pool
-    case whose history[0] the author marked `ask` or `offer` gives its first user text on its own state, page and
-    view, scored ask (no write, a question). Same validation as a generated case (contexts derived, leak with the
-    near-exam margin, dedup against the pool)."""
-    from .r4cases import dedup_key, remeasure
+                    limit: int | None = None, pairs: bool = True) -> tuple[list[dict], dict]:
+    """The follow-up family's first turns the author marked `ask` / `offer` (module docstring), judged by the ask rule
+    (askrule.classify_case on the source's vocabulary and its oracle's literals, r7 §1.2):
+
+      vague       a single-turn `ask` case (`askfirst1-<family>-<source>`: no write, a question), plus (`pairs`) its
+                  WRITE twin (`askpair1-…`: both turns as one request, the source's expectation; ask_pair_case) in the
+                  same split group — meta.ask_pair links them both ways
+      not vague   the turn gives a value, a direction or an action: relabelled as a WRITE case on the source's field
+                  (`askfirst1r-…`, mode keys, relabel_first_turn) instead of an ask — r6 dropped the teacher's 105
+                  writes on such turns as `wrote`; a source that writes more than one field is dropped (ask_rule:…)
+
+    Same validation as a generated case (contexts derived, oracle re-measured, leak with the near-exam margin, dedup
+    against the pool); a twin of an exact source must re-measure to the source's diff."""
+    from .askrule import ask_family_of, classify_case
+    from .r4cases import authored_values, dedup_key, remeasure, to_keys
     out: list[dict] = []
     dropped: Counter = Counter()
-    for c in sorted(pool, key=lambda x: str(x.get("id"))):
+    rule_dropped: Counter = Counter()
+    twins_dropped: Counter = Counter()
+    kinds: Counter = Counter()
+    n_vague = n_relabel = n_twins = 0
+
+    def admit(new: dict, drop: Counter, src_diff=None) -> bool:
+        if new["score"]["mode"] == "exact":
+            w = authored_values(new)
+            if w:
+                to_keys(new, w)
+        err = remeasure(new, engine, m, extras)
+        if err:
+            drop[f"oracle:{err}"] += 1
+            return False
+        if src_diff and new["score"]["mode"] == "exact" and \
+                json.dumps(new["expected"].get("diff"), sort_keys=True) != json.dumps(src_diff, sort_keys=True):
+            drop["diff_changed"] += 1
+            return False
+        new["engine_fingerprint"] = getattr(engine, "fingerprint", None)
+        if leak_index is not None:
+            res = leak_index.check(new)
+            if res["rule1"] or res["rule2"] or res["rule3"] or res["max_jaccard"] >= NEAR_EXAM:
+                drop["leak"] += 1
+                return False
+            from .leak import CHECKER
+            new["meta"]["leak"] = {"max_jaccard": res["max_jaccard"], "nearest": res["nearest"], "checker": CHECKER}
+        if seen is not None:
+            k = dedup_key(new)
+            if k in seen:
+                drop["duplicate"] += 1
+                return False
+            seen.add(k)
+        return True
+
+    tag = ASK_FIRST_GENERATOR.replace("-", "")
+    sources = [c for c in sorted(pool, key=lambda x: str(x.get("id")))
+               if not c.get("holdout") and (c.get("history") or [{}])[0].get("expect") in ("ask", "offer")]
+    # the same text relabelled to different fields (r6: "the headings look too plain" → headingFont in one case,
+    # buttonFont in another): neither write is the text's, so every relabel of that text leaves (before dedup can keep one)
+    relabel_keys: dict[str, set] = {}
+    for c in sources:
+        text = str(c["history"][0].get("user") or "")
+        src_ops = (c.get("meta") or {}).get("oracle_ops") or (c.get("expected") or {}).get("ops") or []
+        v = classify_case(c, m, text=text, oracle_ops=src_ops)
+        if v.vague:
+            continue
+        new, _ = relabel_first_turn(c, text, v, m, new_id="probe")
+        if new is not None:  # the field, not the instance: "right-align the content block text" on block 1 or 3
+            relabel_keys.setdefault(_norm_value(text), set()).add(_field_signature(new["expected"]["keys"]))
+    clash = {t for t, ks in relabel_keys.items() if len(ks) > 1}
+    for c in sources:
         hist = c.get("history") or []
         if c.get("holdout") or not hist or str(hist[0].get("expect") or "") not in ("ask", "offer"):
             continue
@@ -973,44 +1258,63 @@ def ask_first_cases(pool: list[dict], m, engine, extras: dict, *, leak_index=Non
         h0 = hist[0]
         meta = c.get("meta") or {}
         fam = str(meta.get("family") or "F2")
+        text = str(h0.get("user") or "")
+        if not text.strip():
+            dropped["empty"] += 1
+            continue
+        src_ops = meta.get("oracle_ops") or (c.get("expected") or {}).get("ops") or []
+        verdict = classify_case(c, m, text=text, oracle_ops=src_ops)
+        kinds[verdict.kind] += 1
+        if not verdict.vague:
+            new, why = relabel_first_turn(c, text, verdict, m, new_id=f"{tag}r-{fam}-{c.get('id')}")
+            if new is not None and _norm_value(text) in clash:
+                new, why = None, "conflicting_keys"
+            if new is None:
+                rule_dropped[why] += 1
+                dropped[f"ask_rule:{why}"] += 1
+                continue
+            if admit(new, dropped):
+                out.append(new)
+                n_relabel += 1
+            continue
         page = h0.get("page") or meta.get("page") or (c.get("context") or {}).get("page") or "home"
-        new = {"id": f"{ASK_FIRST_GENERATOR.replace('-', '')}-{fam}-{c.get('id')}", "kind": "ask",
+        ask_id = f"{tag}-{fam}-{c.get('id')}"
+        new = {"id": ask_id, "kind": "ask",
                "target": c.get("target"), "fields": list(c.get("fields") or []),
                "site_state": copy.deepcopy(c.get("site_state") or {}), "context": {"page": page},
-               "request": str(h0.get("user") or ""), "history": [],
+               "request": text, "history": [],
                "expected": {"ops": [], "diff": [], "keys": [], "alt": [], "alt_exact": [], "out_of_scope": None,
                             "candidates": None, "direction": None, "reply_any": None, "expect_hidden": None},
                "score": {"mode": "ask"}, "holdout": False, "manifest_hash": c.get("manifest_hash") or m.hash,
                "engine_fingerprint": None, "template": c.get("template"),
                "meta": {"family": fam, "page": page, "view": meta.get("view"), "group": meta.get("group") or c.get("id"),
                         "oracle_ops": [], "generator": ASK_FIRST_GENERATOR,
+                        "ask_family": ask_family_of({**c, "meta": {}}, m),
+                        "ask_rule": {"kind": verdict.kind, "why": verdict.why},
                         "ask_first": {"from": c.get("id"), "expect": h0.get("expect"),
                                       "assistant": h0.get("assistant")}}}
-        if not new["request"].strip():
-            dropped["empty"] += 1
+        if not admit(new, dropped):
             continue
-        err = remeasure(new, engine, m, extras)
-        if err:
-            dropped[f"oracle:{err}"] += 1
-            continue
-        new["engine_fingerprint"] = getattr(engine, "fingerprint", None)
-        if leak_index is not None:
-            res = leak_index.check(new)
-            if res["rule1"] or res["rule2"] or res["rule3"] or res["max_jaccard"] >= NEAR_EXAM:
-                dropped["leak"] += 1
-                continue
-            from .leak import CHECKER
-            new["meta"]["leak"] = {"max_jaccard": res["max_jaccard"], "nearest": res["nearest"], "checker": CHECKER}
-        if seen is not None:
-            k = dedup_key(new)
-            if k in seen:
-                dropped["duplicate"] += 1
-                continue
-            seen.add(k)
         out.append(new)
-    rep = {"generator": ASK_FIRST_GENERATOR, "kept": len(out), "dropped": dict(dropped),
-           "by_family": dict(Counter(c["meta"]["family"] for c in out)),
-           "by_expect": dict(Counter(c["meta"]["ask_first"]["expect"] for c in out))}
+        n_vague += 1
+        if not pairs:
+            continue
+        twin, why = ask_pair_case(c, ask_id, m, new_id=f"{ASK_PAIR_GENERATOR.replace('-', '')}-{fam}-{c.get('id')}")
+        if twin is None:
+            twins_dropped[why] += 1
+            continue
+        src_diff = (c.get("expected") or {}).get("diff") if (c.get("score") or {}).get("mode") == "exact" else None
+        if admit(twin, twins_dropped, src_diff=src_diff):
+            out.append(twin)
+            new["meta"]["ask_pair"] = {"twin": twin["id"], "role": "ask"}
+            n_twins += 1
+    asks = [c for c in out if c["score"]["mode"] == "ask"]
+    rep = {"generator": ASK_FIRST_GENERATOR, "kept": len(asks), "kept_vague": n_vague, "relabelled": n_relabel,
+           "twins": n_twins, "dropped": dict(dropped), "dropped_rule": dict(rule_dropped),
+           "twins_dropped": dict(twins_dropped), "first_turn_kinds": dict(kinds),
+           "by_family": dict(Counter(c["meta"]["family"] for c in asks)),
+           "by_expect": dict(Counter(c["meta"]["ask_first"]["expect"] for c in asks)),
+           "by_ask_family": dict(Counter(c["meta"].get("ask_family") for c in asks))}
     return out, rep
 
 
@@ -1157,12 +1461,13 @@ def validate(c: dict, m, engine, extras: dict, *, leak_index=None, seen: set[str
 def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, pool: list[dict] = (),
                    exam_cases: list[dict] | None = None, sides: tuple[Side, ...] = SIDES,
                    site_font_sides: tuple[Side, ...] = SITE_FONT_SIDES, vague: bool = True, ask_first: bool = True,
-                   page_jobs: tuple = PAGE_JOBS, list_jobs: tuple = LIST_JOBS,
+                   page_jobs: tuple = PAGE_JOBS, list_jobs: tuple = LIST_JOBS, vague_twins: bool = True,
                    progress: Callable[[str], None] = print) -> tuple[list[dict], dict]:
     """(F8 cases + the ask-first cases, report). `pool`: cases already held (dedup; the source of ask_first_cases);
     `exam_cases`: the F0H cases, to report how many of them the family moves from key-unseen to key-seen
     (r4cases.tag_seen's split). After `sides`: `site_font_sides`, then one `vague` (mode ask) case per field of
-    `sides` (module docstring), numbered on; then ask_first_cases from the pool."""
+    `sides` (module docstring), numbered on, and (`vague_twins`) its two write twins from VAGUE_TWIN_BASE; then
+    ask_first_cases from the pool (with their relabelled and twin cases)."""
     from .r4cases import dedup_key, write_ids
     from .state import load_context_fixture
     extras = extras if extras is not None else load_context_fixture()
@@ -1184,6 +1489,7 @@ def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, po
             for i in range(s.n):
                 n += 1
                 jobs.append((n, s, i, *styles[(i + h8(s.name)) % len(styles)]))
+    twin_jobs: list[tuple[int, Side, int, str, str]] = []
     if vague:
         n = VAGUE_BASE
         done_fields: set[tuple] = set()
@@ -1193,11 +1499,19 @@ def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, po
                 continue
             done_fields.add(k)
             n += 1
-            jobs.append((n, s, 0, "vague", VAGUE_TEMPLATES[h8(VAGUE_GENERATOR + s.name) % len(VAGUE_TEMPLATES)]))
+            tpl_text = VAGUE_TEMPLATES[h8(VAGUE_GENERATOR + s.name) % len(VAGUE_TEMPLATES)]
+            jobs.append((n, s, 0, "vague", tpl_text))
+            if vague_twins:  # numbered after every other group (their ids never move another's)
+                twin_jobs += [(vague_twin_id(n, j), s, n, f"vague_twin:{j}", tpl_text) for j in range(twin_count(m, s))]
     for k, (group, request, spec) in enumerate(page_jobs or ()):
         jobs.append((PAGE_BASE + k + 1, None, k, "page:" + group, json.dumps([request, spec])))
     for k, job in enumerate(list_jobs or ()):
         jobs.append((LIST_BASE + k + 1, None, k, f"list:{job[1]}:{job[2]}", json.dumps(list(job))))
+    jobs += twin_jobs
+    twin_ids: dict[int, tuple[str, ...]] = {}
+    for n, s, i, style, template in twin_jobs:
+        twin_ids.setdefault(i, ())
+        twin_ids[i] += (f"{tag}-{FAMILY}-{n:04d}",)
     for n, s, i, style, template in jobs:
         cid = f"{tag}-{FAMILY}-{n:04d}"
         if s is None:  # the capability groups
@@ -1206,10 +1520,14 @@ def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, po
             args = json.loads(template)
             case, why = (build_page_case(m, style.split(":", 1)[1], args[0], args[1], cid) if style.startswith("page:")
                          else build_list_case(m, *args[:4], cid, *args[4:]))
+        elif style.startswith("vague_twin:"):
+            rec = per_side.setdefault(f"vague_twin:{s.name}", Counter())
+            case, why = build_vague_twin(m, s, template, int(style.split(":")[1]), cid, f"{tag}-{FAMILY}-{i:04d}")
         else:
             name = f"vague:{s.name}" if style == "vague" else s.name
             rec = per_side.setdefault(name, Counter())
-            case, why = build_vague_case(m, s, template, cid) if style == "vague" else build_case(m, s, i, style, template, cid)
+            case, why = (build_vague_case(m, s, template, cid, twins=twin_ids.get(n, ())) if style == "vague"
+                         else build_case(m, s, i, style, template, cid))
         if case is not None:
             why = validate(case, m, engine, extras, leak_index=leak_index, seen=seen, answers=answers) or ""
         if why.startswith("leak:exam_answer"):
@@ -1241,6 +1559,7 @@ def contrast_round(m, engine, extras: dict | None = None, *, leak_index=None, po
         "keys": dict(Counter(c["meta"]["contrast"]["key"] for c in f8)),
         "site_fonts": sum(1 for c in f8 if c["meta"]["contrast"]["pair"] == "site_fonts"),
         "vague": sum(1 for c in f8 if c["meta"]["contrast"]["pair"] == "vague"),
+        "vague_twins": sum(1 for c in f8 if c["meta"].get("generator") == VAGUE_TWIN_GENERATOR),
         "capabilities": capability_counts(f8),
         "capability_dropped": {k: dict(v) for k, v in per_side.items() if k.startswith(("page:", "list:"))
                                and any(x.startswith("dropped:") for x in v)},

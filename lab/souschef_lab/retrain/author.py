@@ -48,8 +48,25 @@ reason, then dropped):
   preview  no authored assistant text says "preview" (r4score's one rule)
   leak     leak.py rules 1-3 against the exam and the study's real conversations
   dedup    no duplicate of a pool case (r4cases.dedup_key)
+  ask rule a follow-up's earlier turn marked ask / offer must be VAGUE (askrule: no value, no
+           direction, no action; r7 §1.2) — `ask_turn_not_vague`
+  instance a write to a section whose type the case's page holds more than once names the instance by
+           its editor title ("the Crafted with Care section") unless the view focuses it —
+           `ambiguous_instance` (r6: 11 contentBlock keys kept 0–7 rows: the teacher asked "which one?")
+  twin     a write to a "…2" field whose label repeats its first twin's ("Button Border Color" twice)
+           says "second" (ORDINAL_WORDS); a write to the first twin does not — `ambiguous_twin`
+  alias    a section write on a page that also holds its legacy / successor type (hero beside heroBanner, one
+           "Hero Banner" in the editor) — `alias_instance`; to_case swaps the alias out instead (alias_home)
+  row      a write to one slide of a section with ≥ 2 slides names the slide — `ambiguous_row`
+  value    an ADDRESS_RULES field (r7 four keys) gets a value the editor holds: a store tag the request names,
+           Units / Grams, never free text — `tag_not_in_store`, `tag_not_named`, `bad_value`, `bad_seed`
 A rejected draft keeps its full reason (the oracle's engine error text included) in
 the report's per-target `reject_details` and in the re-ask.
+
+Re-authored targets (r7 §5.3: find_targets(reauthor=…), reason `reauthor`) are targets although the training manifest
+has them, whatever their coverage, and aim for MIN_POSITIVE_REAUTHOR (14) kept positives (≥ 6 train rows at a keep
+rate down to 0.47, after the 8 % val split);
+their coverage counts only pool cases that pass the instance and twin checks.
 """
 from __future__ import annotations
 
@@ -89,6 +106,68 @@ STYLE_FAMILY = {"verbatim": "F0", "colloquial": "F1", "short": "F1", "relative":
                 "container_add": "F5", "container_reorder": "F5", "container_other_page": "F5"}
 NON_POSITIVE_STYLES = ("near_miss", "gate_only")  # styles that do not write the target by design
 MIN_POSITIVE = 8  # kept positive-write cases a field / list target aims for (a top-up ask when short)
+# a re-authored target (r7 §5.3): kept positives it aims for. 14, not 10 (r7 review): the gate needs 6 in train, and
+# the dataset keeps a kept case's row only at the key's keep rate (rows the collect's re-ask and scorer keep); 18 of the
+# 21 required keys have no rate of their own (the contentBlock keys: one clear case each) or one below 0.65
+# (perksCards.title2Color 0.60, perksIcons.buttonBorderColor2 0.50, featuredCategories.subDisplay 0.38 …), and
+# 10 broke even at a 0.65 keep rate (10 × 0.65 × 0.92 ≈ 6); 14 reaches 6 down to a 0.47 rate, before carried rows
+MIN_POSITIVE_REAUTHOR = 14
+# a "…2" twin named in merchant words (r7 §5.2)
+ORDINAL_WORDS = re.compile(r"\bsecond\b|\b2nd\b|\btwo\b|\b2\b|\bright[- ]hand\b|\bright side\b|\bother panel\b|"
+                           r"\bpanel 2\b|\bbutton 2\b|\bcontent 2\b", re.IGNORECASE)
+TWIN_MARK = re.compile(r"2(?=[A-Z]|$)")  # buttonBorderColor2, title2Color, body2FontSize
+# the lists whose rows a write must name (r7 four keys: "the hero button" on a 2-slide hero is either slide)
+ROW_NAMED_LISTS = ("slides",)
+ROW_ORDINALS = re.compile(r"\b(first|1st|second|2nd|third|3rd|fourth|4th|last|top)\b|"
+                          r"\b(slide|panel|row)\s*(#\s*)?(\d+|one|two|three|four)\b|\b(one|two|three)\s+slides?\b",
+                          re.IGNORECASE)
+# r7 four keys (scratchpad r7/four/two.md): fields whose manifest type does not say what the editor takes. `kind`:
+#   store_tag   a tag picker: the editor lists the store's tags and saves the picked tag's NAME (BasicEditor.jsx
+#               customDescriptionTag select; the storefront matches it to product tag names). A case carries its
+#               store's tags (option_lists.tags = TAG_POOL draws + the fixture's); the request names one, the oracle
+#               writes that name exactly (r6: 9 of 10 drafts named a tag the store lacks; the teacher asked "which of
+#               New / Sale / Staff Picks?" and kept no row; 3 trained rows wrote invented tags)
+#   pack_whole  the whole Pack filter display setting {prerolls?: 'grams', edibles?: 'grams'} | null: a set writes
+#               both kinds' value, a reset clears it; never a string on the parent (the manifest types it free text,
+#               the engine then wipes a Grams setting; r6 trained 2 such rows)
+#   enum        a child the manifest types as text that only takes `values` (packFilterDisplay.edibles: Units /
+#               Grams like .prerolls; r6 trained 8 rows of free text the storefront ignores)
+# `styles_drop`: styles that cannot be written truthfully for it ("a different tag, you pick" invents a tag).
+TAG_POOL = ("Online Sale Only", "Limited Drop", "Craft Batch", "Local Grower", "Small Batch", "Solventless",
+            "House Rosin", "Vape Deal", "Clearance", "Bundle Deal", "New Arrival", "Weekly Special",
+            "Budtender Pick", "Low Dose", "High THC", "CBD Rich", "Pre-Roll Pack", "Infused")
+TAG_DRAW = 6
+TAG_ID_BASE = 301
+PACK_PARENT = "pages.products.packFilterDisplay"
+PACK_CHILDREN = ("packFilterDisplay.prerolls", "packFilterDisplay.edibles")
+ADDRESS_RULES: dict[str, dict] = {
+    "pages.product-details.productDetail.customDescriptionTagName": {
+        "kind": "store_tag", "styles_drop": ("relative",),
+        "note": "A tag picker: the editor lists the store's tags (`store_tags`) and saves the picked tag's NAME. Every "
+                "write request names one of `store_tags`, by its name or as a merchant says it (\"the staff picks "
+                "tag\"). The oracle value is that tag's `name` exactly as listed (\"Staff Picks\"): never a slug, "
+                "never a tag that is not listed. A follow-up's answer names the tag. `page` is product-details."},
+    PACK_PARENT: {
+        "kind": "pack_whole", "styles_drop": ("relative",), "children": PACK_CHILDREN, "values": [None, "grams"],
+        "field": {"type": "object", "label": "Pack filter display",
+                  "children": {"packFilterDisplay.prerolls": [None, "grams"], "packFilterDisplay.edibles": [None, "grams"]},
+                  "labels": {"null": "Units", "grams": "Grams"}},
+        "note": "The whole Pack filter display setting: on the Pre-rolls and Edibles category pages the Pack filter "
+                "shows Units (count per pack, the default) or Grams. It never renames the filter or its heading. "
+                "Every request is about BOTH kinds at once (\"show pack sizes in grams\"). Write styles ask for "
+                "Grams on both: one set_fields {\"packFilterDisplay.prerolls\": \"grams\", \"packFilterDisplay.edibles\": "
+                "\"grams\"}. Reset asks for Units / the default on both: {\"op\": \"reset\", \"keys\": "
+                "[\"packFilterDisplay\"]}. Never a text value on packFilterDisplay itself. `page` is products."},
+    "pages.products.packFilterDisplay.edibles": {
+        "kind": "enum", "values": [None, "grams"], "labels": {"null": "Units", "grams": "Grams"}, "styles_drop": ("relative",),
+        "note": "Units (null, the default) or Grams for the Edibles category's Pack filter, the same values as "
+                "packFilterDisplay.prerolls: never text, never a rename. Write styles ask for Grams on edibles; a "
+                "reset goes back to Units. `page` is products."},
+    "pages.products.packFilterDisplay.prerolls": {
+        "kind": "enum", "values": [None, "grams"], "labels": {"null": "Units", "grams": "Grams"}, "styles_drop": ("relative",),
+        "note": "Units (null, the default) or Grams for the Pre-rolls category's Pack filter: never text, never a "
+                "rename. Write styles ask for Grams on pre-rolls; a reset goes back to Units. `page` is products."},
+}
 MAX_ROUNDS = 3  # ask, re-ask the rejects (+ top-up), one more top-up
 TOPUP_STYLES = ("colloquial", "verbatim", "short", "relative", "prereq", "focus")
 MODES = ("exact", "keys", "where", "clarify", "answer")
@@ -142,6 +221,19 @@ show it yet (visibility.gates[-1] is closed); the merchant asks for the field as
 in the SAME set_fields, gate key first ({"imagePosition": "top", "stackedImageGap": 24}). gate_only: the merchant asks \
 for the layout change that reveals it, in plain words ("put the pictures above the text"); the oracle sets only that \
 gate. Never write any field the site hides (a neighbour gated by another layout) without opening its gate first.
+- Asking: turn 1 of a follow-up (expect "ask") names the setting and gives NO value, NO direction word (bigger, \
+smaller, darker, lighter, wider, too …, not … enough, more / less) and NO action (hide, show, remove, centre, turn on): \
+"I want to change the announcement colour". A turn that gives any of those is a request to act on, never an ask.
+- Sections: when the entry's `same_type_on_page` lists more than one section, every request except a focus case names \
+the target instance as the editor lists it (`instance.title`: "the Crafted with Care section"). Never write "the \
+content block" alone.
+- Twins: when `label_twins` is non-empty, the request says which one in merchant words: "the second button", "the \
+right-hand panel's headline", "panel two" (entry `twin_role` "second"). For the first one ("first"), don't use those words.
+- Rows: when the entry lists `rows` (a section's slides), every request, a focus case too, says which row it changes: \
+"the first slide", "slide 2", or the row's title ("the Fresh picks every week slide"); the oracle's edit_list index is \
+that row's.
+- Notes: when the entry has `note`, it says what the editor really takes for this setting; follow it over the \
+field's `type`.
 - oracle_ops_json is a JSON array (as a string) of ops, each {"op": …, "target": …, …} exactly as the browser takes \
 them: set_fields {target, values: {key: value}}; edit_list {target, list, action: add|update|remove|move, index, item}.
 Return exactly the number of cases asked for, in the order of the styles listed."""
@@ -202,9 +294,13 @@ def h8(s: str) -> int:
 
 def case_addresses(c: dict, m: Manifest) -> set[str]:
     """What a case writes on manifest m, in field_index addressing: `<ctr>.<key>`,
-    `<ctr>.<list>` and `<ctr>.<list>[].<key>`; a section add names `sections.<type>`."""
+    `<ctr>.<list>` and `<ctr>.<list>[].<key>`; a section add names `sections.<type>`.
+    Two r7 rules (four keys): a set of a section's mirror key (the hero's btnSize mirrors slides[0].btnSize: the
+    engine writes the same paths as an update of slide 0) also names `<ctr>.<from list>[].<key>`; a case writing
+    every dotted child of a field (packFilterDisplay.prerolls and .edibles) also names that field — the whole setting."""
     from ..exam import touches_of
     out: set[str] = set()
+    flat: dict[str, Any] = {}  # container address → its Container, for the non-list writes
     e = c.get("expected") or {}
     ops = list(e.get("ops") or []) + list((c.get("meta") or {}).get("oracle_ops") or [])
     for o in ops:
@@ -219,20 +315,41 @@ def case_addresses(c: dict, m: Manifest) -> set[str]:
         for t in touches_of(o):
             lst = str(t.get("list") or "")
             key = str(t.get("key") or "")
-            ctr, _ = container_of(m, t["target"], "" if lst else key)
+            ctr, cobj = container_of(m, t["target"], "" if lst else key)
             if lst:
                 out.add(f"{ctr}.{lst}")
                 if key:
                     out.add(f"{ctr}.{lst}[].{key}")
             elif key and not key.startswith("__"):
                 out.add(f"{ctr}.{key}")
+                if cobj is not None:
+                    flat[ctr] = cobj
+                    mlist = _mirror_list(cobj, key) if o.get("op") == "set_fields" else ""
+                    if mlist:
+                        out.add(f"{ctr}.{mlist}[].{key}")
     for k in e.get("keys") or []:
         if isinstance(k, dict):
             lst = str(k.get("list") or "")
             key = str(k.get("key") or "")
-            ctr, _ = container_of(m, k.get("target"), "" if lst else key)
+            ctr, cobj = container_of(m, k.get("target"), "" if lst else key)
             out.add(f"{ctr}.{lst}[].{key}" if lst and key else f"{ctr}.{lst}" if lst else f"{ctr}.{key}")
+            if not lst and cobj is not None:
+                flat[ctr] = cobj
+    for ctr, cobj in flat.items():
+        for parent in {k.split(".", 1)[0] for k in cobj.fields if "." in k}:
+            kids = [k for k in cobj.fields if k.startswith(parent + ".")]
+            if parent in cobj.fields and kids and all(f"{ctr}.{k}" in out for k in kids):
+                out.add(f"{ctr}.{parent}")
     return out
+
+
+def _mirror_list(cobj, key: str) -> str:
+    """The list a section's flat mirror key stands for (`slides` for the hero's btnSize), or ""."""
+    frm = str(getattr(cobj, "mirror_from", None) or "")
+    if getattr(cobj, "kind", "") != "section" or key in cobj.fields or key not in (cobj.mirror_keys or []):
+        return ""
+    lst = re.sub(r"\[\d+\]$", "", frm)
+    return lst if lst and lst in cobj.lists else ""
 
 
 def coverage(cases: list[dict], m: Manifest, *, holdout: bool = False, exclude_hidden: bool = True) -> Counter:
@@ -254,8 +371,11 @@ def coverage(cases: list[dict], m: Manifest, *, holdout: bool = False, exclude_h
 
 
 def find_targets(m_train: dict, m_new: Manifest, *, pool: list[dict], dropped_writes: set[str] | None = None,
-                 extra: set[str] | None = None, enough: int = COVERAGE_ENOUGH, max_targets: int = MAX_TARGETS) -> tuple[list[dict], dict]:
-    """The targets to author for (module docstring) and a report."""
+                 extra: set[str] | None = None, enough: int = COVERAGE_ENOUGH, max_targets: int = MAX_TARGETS,
+                 reauthor: set[str] | None = None) -> tuple[list[dict], dict]:
+    """The targets to author for (module docstring) and a report. `reauthor`: addresses that are targets again
+    (reason `reauthor`, min_positive MIN_POSITIVE_REAUTHOR) whatever their coverage; their `covered` counts only the
+    pool cases that pass ambiguity() and bad_value()."""
     from ..retrain_check import containers, field_index
     old_f, new_f = field_index(m_train), field_index(m_new.doc)
     old_c, new_c = containers(m_train), containers(m_new.doc)
@@ -278,22 +398,43 @@ def find_targets(m_train: dict, m_new: Manifest, *, pool: list[dict], dropped_wr
     for a in sorted(extra or ()):
         if a in new_f or a in new_c:
             want.setdefault(a, "drift_new_key")
+    re_unknown = []
+    for a in sorted(reauthor or ()):
+        if a in new_f or a in new_c or any(a == f"{c}.{l}" for c, v in new_c.items() for l in (v.get("lists") or {})):
+            want[a] = "reauthor"
+        else:
+            re_unknown.append(a)
     cov, cov_hold = coverage(pool, m_new), coverage(pool, m_new, holdout=True)
+    if reauthor:
+        clear = [c for c in pool if any(a in reauthor for a in case_addresses(c, m_new)) and ambiguity(c, m_new) is None
+                 and bad_value(c, m_new) is None]
+        cov_re, cov_re_hold = coverage(clear, m_new), coverage(clear, m_new, holdout=True)
     targets, skipped = [], {}
     for addr, why in sorted(want.items()):
         hold = holdout_bucket(addr) < HOLDOUT_PCT
-        have = (cov_hold if hold else cov).get(addr, 0)
-        if have >= enough:
-            skipped[addr] = have
-            continue
+        if why == "reauthor":
+            have = (cov_re_hold if hold else cov_re).get(addr, 0)
+        else:
+            have = (cov_hold if hold else cov).get(addr, 0)
+            if have >= enough:
+                skipped[addr] = have
+                continue
         kind = "container" if why == "added_container" else "list" if why == "added_list" else "field"
-        targets.append({"address": addr, "kind": kind, "reason": why, "covered": have, "holdout": hold})
+        t = {"address": addr, "kind": kind, "reason": why, "covered": have, "holdout": hold}
+        if why == "reauthor":
+            t["min_positive"] = MIN_POSITIVE_REAUTHOR
+        targets.append(t)
     # every wanted address (authored this round or already covered): the dataset stage's new-key gate reads it
     wanted_list = [{"address": a, "reason": why, "holdout": holdout_bucket(a) < HOLDOUT_PCT,
                     "kind": "container" if why == "added_container" else "list" if why == "added_list" else "field",
                     "covered": (cov_hold if holdout_bucket(a) < HOLDOUT_PCT else cov).get(a, 0)}
                    for a, why in sorted(want.items())]
+    if reauthor:
+        for w in wanted_list:
+            if w["reason"] == "reauthor":
+                w["covered"] = (cov_re_hold if w["holdout"] else cov_re).get(w["address"], 0)
     report = {"wanted": len(want), "covered_enough": len(skipped), "targets": len(targets),
+              "reauthor": len([t for t in targets if t["reason"] == "reauthor"]), "reauthor_unknown": re_unknown,
               "truncated": max(0, len(targets) - max_targets), "by_reason": dict(Counter(t["reason"] for t in targets)),
               "holdout_targets": sum(1 for t in targets if t["holdout"]), "wanted_list": wanted_list}
     return targets[:max_targets], report
@@ -334,9 +475,10 @@ def aliases_for(target: dict, spec: dict, vocab: list[tuple[str, list[str]]]) ->
     return out[:12]
 
 
-def target_entry(target: dict, m: Manifest) -> dict:
+def target_entry(target: dict, m: Manifest, *, round_id: str = "") -> dict:
     """The manifest entry the author writes for, with the op target to use (a real
-    section instance) and, for a gated field, how the editor makes it visible."""
+    section instance) and, for a gated field, how the editor makes it visible; an
+    ADDRESS_RULES field adds its `note` (and `store_tags` / the real value shape)."""
     from .rebase import split_addr
     addr = target["address"]
     parts = addr.split(".")
@@ -373,6 +515,25 @@ def target_entry(target: dict, m: Manifest) -> dict:
         entry["field"] = _brief(spec or {}, full=True)
         siblings = [k for k in (cspec.get("fields") or {}) if k != key][:25]
         entry["neighbour_keys"] = {k: (cspec.get("fields") or {})[k].get("label") for k in siblings}
+    if op_target.get("kind") == "section":
+        home = alias_home(m, str(op_target.get("sectionId") or "")) or _default_home(m)
+        same = [r for r in home if m.type_of(str(r.get("id") or "")) == name]
+        from ..state import get_path, section_title
+        inst = next((r for r in same if r.get("id") == op_target.get("sectionId")), None)
+        if inst is not None:
+            entry["instance"] = {"id": inst["id"], "title": section_title(inst)}
+            lspec = cspec.get("lists", {}).get(lst) if lst in ROW_NAMED_LISTS else None
+            arr = get_path(inst, lspec.get("path")) if isinstance(lspec, dict) and lspec.get("path") else None
+            if isinstance(arr, list) and arr:
+                entry["rows"] = [{"index": i, "title": row_title(x)} for i, x in enumerate(arr)]
+        if len(same) > 1:
+            entry["same_type_on_page"] = [{"id": r["id"], "title": section_title(r)} for r in same]
+    if key and not lst:
+        twins = label_twins(cspec.get("fields") or {}, key)
+        if twins:
+            entry["label_twins"] = twins
+            entry["group"] = twin_group(key, (cspec.get("fields") or {}).get(key) or {}, twins)
+            entry["twin_role"] = "second" if TWIN_MARK.search(key) else "first"
     container, field = _container_field(m, op_target, lst, key)
     if container is not None and field is not None:
         chain = gate_chain(m, container, field)
@@ -386,7 +547,289 @@ def target_entry(target: dict, m: Manifest) -> dict:
                 entry["reset"] = {"op": "reset", "to": field.unset_value}
             elif field.has_default:
                 entry["reset"] = {"op": "restore_default", "to": field.default}
+    apply_address_rule(entry, round_id)
     return entry
+
+
+def row_title(x: Any) -> str:
+    """A list row's name as the editor outline shows it (headline, title, name …), "" for none."""
+    if isinstance(x, dict):
+        for k in ("headline", "title", "name", "label", "q", "question"):
+            if isinstance(x.get(k), str) and x[k].strip():
+                return re.sub(r"<[^>]+>", "", x[k]).strip()
+    return ""
+
+
+def store_tags(address: str, round_id: str) -> list[dict]:
+    """A store_tag case's store tags: TAG_DRAW names from TAG_POOL (by the address and round), then the fixture
+    context's tags (Staff Picks, New, Sale) — {id, slug, name}, the shape the host's tag list has."""
+    from ..state import load_context_fixture
+    rng = random.Random(h8(f"tags:{address}:{round_id}"))
+    names = rng.sample(list(TAG_POOL), TAG_DRAW)
+    out = [{"id": TAG_ID_BASE + i, "slug": re.sub(r"[^a-z0-9]+", "-", n.lower()).strip("-"), "name": n}
+           for i, n in enumerate(names)]
+    for t in load_context_fixture().get("tags") or []:
+        if isinstance(t, dict) and t.get("name") and all(t["name"] != x["name"] for x in out):
+            out.append({k: t[k] for k in ("id", "slug", "name") if k in t})
+    return out
+
+
+def apply_address_rule(entry: dict, round_id: str = "") -> dict:
+    """ADDRESS_RULES for the entry's address, in place: the `note`, a store_tag field's `store_tags`, a pack_whole
+    field's real value shape (in place of the manifest's "text"), an enum child's `values`."""
+    rule = ADDRESS_RULES.get(str(entry.get("address") or ""))
+    if not rule:
+        return entry
+    entry["note"] = rule["note"]
+    if rule["kind"] == "store_tag":
+        entry["store_tags"] = store_tags(entry["address"], round_id)
+    elif rule["kind"] == "pack_whole":
+        entry["field"] = {**copy.deepcopy(rule["field"]), **{k: v for k, v in (entry.get("field") or {}).items()
+                                                               if k in ("help", "description")}}
+    elif rule["kind"] == "enum":
+        entry["field"] = {**(entry.get("field") or {}), "type": "enum", "enum": list(rule["values"]),
+                          "enum_labels": dict(rule.get("labels") or {})}
+    return entry
+
+
+def _label_core(label: Any) -> str:
+    return re.sub(r"\s+", " ", str(label or "")).strip().lower()
+
+
+def same_label(a: Any, b: Any) -> bool:
+    """Two labels the editor shows alike: equal, or one is the other behind a "<group> › " prefix (the r7 manifest
+    label fix renames only the newer twin: "Buttons 2 › Button Border Color")."""
+    a, b = _label_core(a), _label_core(b)
+    return bool(a) and (a == b or a.endswith(" › " + b) or b.endswith(" › " + a))
+
+
+def untwin(key: Any) -> str:
+    """A key with its "…2" twin mark taken out (buttonBorderColor2 → buttonBorderColor, title2Color → titleColor)."""
+    return TWIN_MARK.sub("", str(key), count=1)
+
+
+def label_twins(fields: dict, key: str) -> list[dict]:
+    """[{key, label, group}] of the same-type fields of a container whose label is `key`'s (same_label) and whose key
+    is `key` with or without the "…2" mark (TWIN_MARK, untwin): the pair the editor shows as two "Button Border Color"
+    settings (r7 §5.2). The key match keeps a fixed label's tail from pairing unrelated fields: "Buttons 2 › Button
+    Link › Background color" (buttonBgColor2) ends like the section's own "Background Color" (backgroundColor)."""
+    spec = fields.get(key) or {}
+    out = []
+    for k, f in fields.items():
+        if k == key or not isinstance(f, dict) or f.get("type") != spec.get("type"):
+            continue
+        if not (TWIN_MARK.search(k) or TWIN_MARK.search(key)) or untwin(k) != untwin(key):
+            continue
+        if same_label(f.get("label"), spec.get("label")):
+            out.append({"key": k, "label": str(f.get("label") or ""), "group": _prefix(f.get("label"), spec.get("label"))})
+    return out
+
+
+def _prefix(label: Any, other: Any) -> str:
+    """The "<group>" a label adds in front of its twin's ("Buttons 2 › Button Border Color" vs "Button Border Color" →
+    "Buttons 2"); "" when it adds none."""
+    a, b = re.sub(r"\s+", " ", str(label or "")).strip(), re.sub(r"\s+", " ", str(other or "")).strip()
+    if a.lower().endswith(" › " + b.lower()) and len(a) > len(b):
+        return a[:len(a) - len(b) - 3].strip()
+    return ""
+
+
+def twin_group(key: str, spec: dict, twins: list[dict]) -> str:
+    """The merchant's name for which twin a key is: the fixed label's group ("Buttons 2"), else from the key ("second
+    button" / "second panel"), else "first" for the twin without the mark."""
+    for t in twins:
+        g = _prefix(spec.get("label"), t["label"])
+        if g:
+            return g
+    if TWIN_MARK.search(key):
+        return "second button" if re.search(r"button", key, re.I) else "second panel"
+    return "first"
+
+
+def ambiguity(c: dict, m: Manifest) -> str | None:
+    """Why a case's request does not say WHICH thing it writes (r7 §5.1 / §5.2), or None:
+      alias_instance      a section write on a page that also holds the section's legacy / successor type (alias_type:
+                          hero beside heroBanner — the editor lists both as "Hero Banner"), the view not on the target
+                          (r6: 17 of 19 hero cases; the teacher wrote the real heroBanner, the oracle the empty hero)
+      ambiguous_instance  a section write on a page with ≥ 2 sections of that type, the view not on that section, and
+                          no content word of the instance's title in the request or its history
+      ambiguous_twin      a "…2" twin written without ORDINAL_WORDS, or its first twin written with them"""
+    from ..exam import touches_of
+    from ..state import section_title, sections_of, type_of_section
+    meta = c.get("meta") or {}
+    e = c.get("expected") or {}
+    ops = [o for o in (e.get("ops") or meta.get("oracle_ops") or []) if isinstance(o, dict)]
+    text = " ".join([str(c.get("request") or "")] + [str(h.get("user") or "") for h in c.get("history") or []])
+    words = _content_words(text)
+    view = meta.get("view") or {}
+    state = c.get("site_state") if isinstance(c.get("site_state"), dict) else {}
+    page0 = (c.get("context") or {}).get("page") or meta.get("page") or "home"
+    for o in ops:
+        tgt = o.get("target") if isinstance(o.get("target"), dict) else {}
+        if tgt.get("kind") != "section" or (o.get("op") == "edit_list" and o.get("list") == "sections"):
+            continue
+        sid, page = str(tgt.get("sectionId") or ""), str(tgt.get("page") or page0)
+        typ = m.type_of(sid) or type_of_section(sid)
+        twin = alias_type(m, typ)
+        if twin and view.get("activeSectionId") != sid and any(
+                isinstance(r, dict) and r.get("id") == sid for r in sections_of(state, page)):
+            other = next((r for r in sections_of(state, page) if isinstance(r, dict) and
+                          (m.type_of(str(r.get("id") or "")) or type_of_section(str(r.get("id") or ""))) == twin), None)
+            if other is not None:
+                return (f"alias_instance: the {page} page holds both '{sid}' and '{other.get('id')}', which the editor "
+                        f"lists under one name; a site has one or the other (r6: the teacher wrote the other one)")
+        rows = [r for r in sections_of(state, page) if isinstance(r, dict) and
+                (m.type_of(str(r.get("id") or "")) or type_of_section(str(r.get("id") or ""))) == typ]
+        if len(rows) < 2 or view.get("activeSectionId") == sid:
+            continue
+        row = next((r for r in rows if r.get("id") == sid), None)
+        title = section_title(row) if row else ""
+        tw = _content_words(title)
+        if tw and not (tw & words):
+            others = ", ".join(f"'{section_title(r)}'" for r in rows if r is not row and section_title(r))
+            return (f"ambiguous_instance: the {page} page has {len(rows)} {typ} sections ({others} besides this one); "
+                    f"name the target as the editor lists it: 'the {title} section'")
+    for o in ops:
+        for t in touches_of(o):
+            key = str(t.get("key") or "")
+            if not key or t.get("list") or key.startswith("__"):
+                continue
+            from .rebase import container_of
+            _, ctr = container_of(m, t.get("target"), key)
+            if ctr is None:
+                continue
+            fields = {k: f.spec for k, f in ctr.fields.items()}
+            twins = label_twins(fields, key)
+            if not twins:
+                continue
+            said = bool(ORDINAL_WORDS.search(text))
+            if TWIN_MARK.search(key) and not said:
+                return (f"ambiguous_twin: {key} and {twins[0]['key']} are both '{_label_core(twins[0]['label'])}' in "
+                        f"the editor; say which one in merchant words ('the second button', 'the right-hand panel')")
+            if not TWIN_MARK.search(key) and said and all(TWIN_MARK.search(x["key"]) for x in twins):
+                return (f"ambiguous_twin: {key} is the FIRST of the '{_label_core(ctr.fields[key].label)}' pair; "
+                        f"'second' / 'two' / 'right-hand' name {twins[0]['key']}")
+    return row_ambiguity(c, m, ops=ops, text=text)
+
+
+def row_ambiguity(c: dict, m: Manifest, *, ops: list[dict] | None = None, text: str | None = None) -> str | None:
+    """`ambiguous_row`: a write to one row of a ROW_NAMED_LISTS list (an edit_list update of slide i, or a set of a
+    flat mirror key = slide 0) on a section whose state holds ≥ 2 rows, when the request and its history name no row:
+    no ROW_ORDINALS ("first slide", "slide 2", "second") and no content word of the row's title. A focus case too:
+    the view names the section, never the slide (r6 0713: "the hero slider button" — the teacher updated both)."""
+    from ..state import find_section, get_path
+    from .rebase import container_of
+    meta = c.get("meta") or {}
+    e = c.get("expected") or {}
+    if ops is None:
+        ops = [o for o in (e.get("ops") or meta.get("oracle_ops") or []) if isinstance(o, dict)]
+    if text is None:
+        text = " ".join([str(c.get("request") or "")] + [str(h.get("user") or "") for h in c.get("history") or []])
+    state = c.get("site_state") if isinstance(c.get("site_state"), dict) else {}
+    page0 = (c.get("context") or {}).get("page") or meta.get("page") or "home"
+    if ROW_ORDINALS.search(text):
+        return None
+    words = _content_words(text)
+    for o in ops:
+        tgt = o.get("target") if isinstance(o.get("target"), dict) else {}
+        if tgt.get("kind") != "section":
+            continue
+        rows_of: list[tuple[str, int]] = []
+        if o.get("op") == "edit_list" and o.get("list") in ROW_NAMED_LISTS and o.get("action") == "update" \
+                and isinstance(o.get("index"), int):
+            rows_of.append((str(o["list"]), o["index"]))
+        elif o.get("op") == "set_fields" and isinstance(o.get("values"), dict):
+            for key in o["values"]:
+                _, cobj = container_of(m, tgt, str(key))
+                ml = _mirror_list(cobj, str(key)) if cobj is not None else ""
+                if ml in ROW_NAMED_LISTS:
+                    rows_of.append((ml, 0))
+                    break
+        if not rows_of:
+            continue
+        row = find_section(state, str(tgt.get("sectionId") or ""), str(tgt.get("page") or page0)) or {}
+        _, cobj = container_of(m, tgt, "")
+        for lst, idx in rows_of:
+            spec = cobj.lists.get(lst) if cobj is not None else None
+            arr = get_path(row, spec.path) if spec is not None else None
+            if not isinstance(arr, list) or len(arr) < 2:
+                continue
+            tw = _content_words(row_title(arr[idx] if 0 <= idx < len(arr) else None)) - {"slide", "panel", "row"}
+            if not (tw & words):
+                return (f"ambiguous_row: the section has {len(arr)} {lst}; say which one the request changes ('the "
+                        f"first slide', 'slide {idx + 1}' or its title '{row_title(arr[idx]) if 0 <= idx < len(arr) else ''}')")
+    return None
+
+
+def _tag_words(s: Any) -> set[str]:
+    return {(w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w)
+            for w in re.findall(r"[a-z0-9]+", str(s or "").lower())}
+
+
+def bad_value(c: dict, m: Manifest) -> str | None:
+    """Why a case writes a value the editor cannot hold for an ADDRESS_RULES field, or None (r7 four keys):
+      tag_not_in_store  a store_tag write that is not one of the case's store tags' names (option_lists, else the
+                        fixture's): r6 trained "house-rosin", "solventless", "Details"
+      tag_not_named     the request and its history do not name that tag (every word of it, any case / hyphen)
+      bad_value         a value on a pack_whole parent (only a reset / null clears it: a string wipes Grams), or an
+                        enum child's value outside its values (packFilterDisplay.edibles "Pieces per package")
+      bad_seed          the case's state holds such a value already (r6 0297 seeded "Taste the difference")"""
+    from ..state import get_path, option_lists_of
+    from .rebase import container_of
+    meta = c.get("meta") or {}
+    e = c.get("expected") or {}
+    ops = [o for o in list(e.get("ops") or []) + list(meta.get("oracle_ops") or []) if isinstance(o, dict)]
+    text = " ".join([str(c.get("request") or "")] + [str(h.get("user") or "") for h in c.get("history") or []])
+    seen: dict[str, Any] = {}
+    for o in ops:
+        tgt = o.get("target") if isinstance(o.get("target"), dict) else {}
+        keys = list(o["values"].items()) if o.get("op") == "set_fields" and isinstance(o.get("values"), dict) else \
+            [(k, None) for k in o.get("keys") or [] if isinstance(k, str)] if o.get("op") in ("reset", "restore_default") \
+            else []
+        for key, v in keys:
+            ctr, cobj = container_of(m, tgt, str(key))
+            addr = f"{ctr}.{key}"
+            rule = ADDRESS_RULES.get(addr)
+            if rule is None or cobj is None:
+                continue
+            seen[addr] = (cobj, str(key))
+            if o.get("op") != "set_fields":
+                continue
+            if rule["kind"] == "store_tag":
+                if v in (None, ""):
+                    continue
+                tags = [t for t in option_lists_of(c).get("tags") or [] if isinstance(t, dict)]
+                names = [str(t.get("name") or "") for t in tags]
+                if v not in names:
+                    return (f"tag_not_in_store: {key} = {json.dumps(v)} is not one of the store's tags "
+                            f"({', '.join(names)}); the editor saves a listed tag's name exactly")
+                if not _tag_words(v) <= _tag_words(text):
+                    return f"tag_not_named: the request does not name the tag {json.dumps(v)}; name the tag the oracle writes"
+            elif rule["kind"] == "pack_whole" and v is not None:
+                return (f"bad_value: {key} is the whole Pack filter setting (Units / Grams per kind), never "
+                        f"{json.dumps(v)}: set {' and '.join(rule['children'])} to \"grams\", or reset {key}")
+            elif rule["kind"] == "enum" and v not in rule["values"]:
+                return f"bad_value: {key} takes {' or '.join(json.dumps(x) for x in rule['values'])}, never {json.dumps(v)}"
+    state = c.get("site_state") if isinstance(c.get("site_state"), dict) else None
+    for addr, (cobj, key) in seen.items():
+        rule = ADDRESS_RULES[addr]
+        f = cobj.fields.get(key)
+        if state is None or f is None or rule["kind"] not in ("pack_whole", "enum") or "[]" in f.path:
+            continue
+        cur = get_path(state, f.path)
+        if (rule["kind"] == "pack_whole" and cur is not None and not isinstance(cur, dict)) or \
+                (rule["kind"] == "enum" and cur not in rule["values"]):
+            return f"bad_seed: the case's site holds {key} = {json.dumps(cur)}, a value the editor cannot hold"
+    return None
+
+
+_STOP_WORDS = frozenset("a an the to of in on for and or my our your it this that be is are i we me please just only "
+                        "not keep leave make set change can could should would use as at with so us".split())
+
+
+def _content_words(s: Any) -> set[str]:
+    return {(w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w)
+            for w in re.findall(r"[a-z]+", str(s or "").lower()) if w not in _STOP_WORDS and len(w) > 2}
 
 
 _HOME_CACHE: dict[str, list[dict]] = {}
@@ -402,6 +845,46 @@ def _default_home(m: Manifest) -> list[dict]:
             from ..state import DEFAULT_HOME_SECTIONS
             _HOME_CACHE[m.hash] = copy.deepcopy(DEFAULT_HOME_SECTIONS)
     return _HOME_CACHE[m.hash]
+
+
+def alias_type(m: Manifest, sec_type: str) -> str | None:
+    """The one other section type that shares `sec_type`'s editor (manifest editorKey) when exactly two types do: a
+    legacy id and its successor that the editor lists under one name (changeLabels.js SECTION_LABELS: hero /
+    heroBanner "Hero Banner", reviews / testimonials, blog / blogSection; fixtures.mjs LEGACY_SECTION_IDS) and a site
+    holds one or the other. The contentBlock editor's four types (perksCards "Why Choose (Cards)" …) are distinct
+    sections a site holds side by side: None."""
+    c = m.section(sec_type) if sec_type else None
+    if c is None or not c.editor_key:
+        return None
+    same = [x.name for x in m.containers("section") if x.editor_key == c.editor_key]
+    return next((n for n in same if n != c.name), None) if len(same) == 2 else None
+
+
+def alias_home(m: Manifest, sec_type: str) -> list[dict] | None:
+    """The fixture home with `sec_type` in place of its alias (alias_type), carrying that row's built settings — a
+    legacy-hero site (`hero` where the fixture has `heroBanner`: "Fresh picks every week", 2 slides) — when the home
+    has no `sec_type` row and exactly one row of the alias type; else None. r6 appended an empty `hero` row beside the
+    real heroBanner instead: both "Hero Banner", and every non-focus hero case failed (r7 four keys)."""
+    twin = alias_type(m, sec_type)
+    rows = _default_home(m)
+    if twin is None or any(m.type_of(str(r.get("id") or "")) == sec_type for r in rows):
+        return None
+    hits = [i for i, r in enumerate(rows) if m.type_of(str(r.get("id") or "")) == twin]
+    if len(hits) != 1:
+        return None
+    out = copy.deepcopy(rows)
+    out[hits[0]] = {"id": sec_type, "enabled": rows[hits[0]].get("enabled", True),
+                    "settings": copy.deepcopy(rows[hits[0]].get("settings") or {})}
+    return out
+
+
+def case_home(m: Manifest, sec_type: str | None) -> list[dict] | None:
+    """The home rows an authored case of section type `sec_type` gets (to_case's `home_sections`): None (the fixture
+    home) when it holds the type, the alias_home swap, else the fixture rows plus an empty `sec_type` row."""
+    from ..state import DEFAULT_HOME_SECTIONS
+    if not sec_type or any(r["id"] == sec_type or r["id"].startswith(sec_type + "-") for r in DEFAULT_HOME_SECTIONS):
+        return None
+    return alias_home(m, sec_type) or (copy.deepcopy(DEFAULT_HOME_SECTIONS) + [{"id": sec_type, "enabled": True}])
 
 
 def instance_for(m: Manifest, sec_type: str, *, key: str = "", lst: str = "") -> str | None:
@@ -681,12 +1164,15 @@ def style_plan(target: dict, smoke: bool = False, entry: dict | None = None) -> 
                 styles = tuple((s, n) for s, n in styles if s != "reset")
             if entry.get("visibility"):
                 styles = styles + GATED_STYLES
+            drop = (ADDRESS_RULES.get(str(entry.get("address") or "")) or {}).get("styles_drop") or ()
+            styles = tuple((s, n) for s, n in styles if s not in drop)
     return [s for s, n in styles for _ in range(n)]
 
 
 def topup_styles(n: int, entry: dict) -> list[str]:
-    """n more positive-write styles (prereq only for a gated field)."""
-    pool = [s for s in TOPUP_STYLES if s != "prereq" or entry.get("visibility")]
+    """n more positive-write styles (prereq only for a gated field; none an ADDRESS_RULES field drops)."""
+    drop = (ADDRESS_RULES.get(str(entry.get("address") or "")) or {}).get("styles_drop") or ()
+    pool = [s for s in TOPUP_STYLES if (s != "prereq" or entry.get("visibility")) and s not in drop]
     return [pool[i % len(pool)] for i in range(max(0, n))]
 
 
@@ -785,6 +1271,20 @@ def usage_cost(u: dict) -> float:
             + pw * u.get("cache_creation_input_tokens", 0) + pr * u.get("cache_read_input_tokens", 0)) / 1e6
 
 
+def _fake_where(entry: dict, style: str) -> str:
+    """FakeAsk's naming of WHICH section instance and twin (the RULES' Sections / Twins lines): " in the Crafted with
+    Care section" unless a focus case, " for the second one" for a "…2" twin."""
+    out = ""
+    if entry.get("twin_role") == "second":
+        out += " for the second one"
+    inst = entry.get("instance") or {}
+    if style != "focus" and len(entry.get("same_type_on_page") or []) > 1 and inst.get("title"):
+        out += f" in the {inst['title']} section"
+    if len(entry.get("rows") or []) > 1:  # the RULES' Rows line: which slide (FakeAsk writes row 0)
+        out += f" on the first {str(entry.get('list') or 'row').rstrip('s')}"
+    return out
+
+
 class FakeAsk:
     """A deterministic stand-in for the API (DRY runs, tests): writes each style
     from the manifest entry with a value the field accepts. No network."""
@@ -794,6 +1294,7 @@ class FakeAsk:
         self.calls = 0
         self.break_first = break_first  # the first N cases come back with a bad key (exercises the re-ask)
         self.lock = threading.Lock()
+        self.seen: set[str] = set()
 
     def __call__(self, system: str, user: str, schema: dict) -> tuple[dict, dict]:
         from ..cases import value_for
@@ -818,7 +1319,12 @@ class FakeAsk:
             else:
                 f = field_of(self.m, entry["op_target"], entry.get("list") or "", entry.get("key") or "")
                 key = entry.get("key") or next(iter(entry.get("item_fields") or {"title": {}}))
+                rule = ADDRESS_RULES.get(entry["address"]) or {}
                 value = value_for(f, rng) if f is not None else f"Fresh drop {i}"
+                if entry.get("store_tags"):  # an ADDRESS_RULES field: a value the editor holds (the entry's note)
+                    value = entry["store_tags"][rng.randrange(len(entry["store_tags"]))]["name"]
+                elif rule.get("kind") in ("pack_whole", "enum"):
+                    value = "grams"
                 if broken:
                     key = key + "Nope"
                 gates = (entry.get("visibility") or {}).get("gates") or []
@@ -826,16 +1332,21 @@ class FakeAsk:
                 if entry.get("list"):
                     op = {"op": "edit_list", "target": entry["op_target"], "list": entry["list"], "action": "update",
                           "index": [0, 0] if "[]" in entry["list"] else 0, "item": {key: value}}
+                elif rule.get("kind") == "pack_whole" and not broken:
+                    op = {"op": "set_fields", "target": entry["op_target"], "values": {k: "grams" for k in rule["children"]}}
                 else:
                     op = {"op": "set_fields", "target": entry["op_target"], "values": {key: value}}
                 ops = [op]
                 label = str((entry.get("field") or {}).get("label") or key)
+                label = label.split(" › ")[-1] if entry.get("group") else label
+                label = label + _fake_where(entry, st)  # r7 §5: the instance and the twin, named
                 req = f"set the {label.lower()} to {value}"
                 if st in ("prereq", "gate_only") and gate is not None:
                     gate_vals = {gate["key"]: gate["open_value"]}
                     if st == "gate_only":
                         ops = [{"op": "set_fields", "target": entry["op_target"], "values": gate_vals}]
-                        req = f"switch the {gate['label'].lower()} to {gate['open_value']} ({i})"
+                        where = _fake_where({**entry, "twin_role": None}, st)
+                        req = f"switch the {gate['label'].lower()}{where} to {gate['open_value']} ({i})"
                     elif entry.get("list"):
                         ops = [{"op": "set_fields", "target": entry["op_target"], "values": gate_vals}, op]
                         req = f"i want the {label.lower()} to be {value} ({i})"
@@ -859,13 +1370,18 @@ class FakeAsk:
                         case["view"] = {"tab": "editor", "activeSectionId": entry["op_target"]["sectionId"], "globalSection": ""}
                     elif entry["op_target"]["kind"] == "global":
                         case["view"] = {"tab": "settings", "activeSectionId": "", "globalSection": entry.get("global_section") or ""}
-                    req = f"make this one {value}"
+                    req = f"make this one {value}" + (" (the second one)" if entry.get("twin_role") == "second" else "") \
+                        + (_fake_where({**entry, "twin_role": None, "same_type_on_page": None}, st))
                 elif st == "colloquial":
                     req = f"pls change the {label.lower()} to {value} ({i})"
                 elif st == "short":
                     req = f"{label.lower()}: {value}"
                 if entry["op_target"]["kind"] == "page":
                     case["page"] = entry["op_target"]["page"]
+                with self.lock:  # a top-up's draft is never a word-for-word repeat (the dedup would drop it)
+                    if req in self.seen:
+                        req = f"{req} ({self.calls})"
+                    self.seen.add(req)
                 case.update(request=req, oracle_ops_json=json.dumps(ops))
             out.append(case)
         return {"cases": out}, {"input_tokens": 1000, "output_tokens": 200}
@@ -873,18 +1389,26 @@ class FakeAsk:
 
 # --- one authored case → the r4 schema --------------------------------------------------------------------------------
 
+def author_group(target: dict, case_id: str) -> str:
+    """The dataset split group (r4dataset: h100(group) < val_pct → val) of an authored case. One group per target
+    (`author:<address>`) keeps a key's paraphrases on one side of the split — so a target whose address hashes into
+    val trains NOTHING: r6's perksIcons.buttonOnImageOffset / buttonOnImagePosition and perksCards.title2Color kept
+    7–11 rows each, all in val, 0 in train. A re-authored target (reason `reauthor`, r7 §5.3: it exists to reach
+    the new-key gate's train positives) splits per case instead (`author:<address>#<case id>`), so ~8 % of its rows go
+    to val, not all or none: 9 of r6's 25 short keys hash into val by address."""
+    if target.get("reason") == "reauthor":
+        return f"author:{target['address']}#{case_id}"
+    return f"author:{target['address']}"
+
+
 def to_case(raw: dict, target: dict, entry: dict, m: Manifest, *, case_id: str, round_id: str, holdout: bool) -> dict:
     """The author's JSON in r4cases' merged schema (state built, not yet measured)."""
-    from ..state import DEFAULT_HOME_SECTIONS, build_state
+    from ..state import build_state
     style = str(raw.get("style") or "")
     tpl = TEMPLATES[h8(f"tpl:{case_id}") % len(TEMPLATES)]
-    home = None
-    sec_type = None
     ot = entry.get("op_target") or {}
-    if ot.get("kind") == "section":
-        sec_type = ot.get("sectionId")
-    if sec_type and not any(r["id"] == sec_type or r["id"].startswith(sec_type + "-") for r in DEFAULT_HOME_SECTIONS):
-        home = copy.deepcopy(DEFAULT_HOME_SECTIONS) + [{"id": sec_type, "enabled": True}]
+    sec_type = ot.get("sectionId") if ot.get("kind") == "section" else None
+    home = case_home(m, sec_type)  # a type the fixture home lacks: its alias swapped out (alias_home), else appended
     state = build_state(m, template=tpl, home_sections=home)
     vis_meta = prepare_state(state, entry, m, style=style, case_id=case_id)
     try:
@@ -913,12 +1437,16 @@ def to_case(raw: dict, target: dict, entry: dict, m: Manifest, *, case_id: str, 
          "history": hist, "expected": exp, "score": {"mode": mode if mode in MODES else "exact"}, "holdout": holdout,
          "manifest_hash": m.hash, "engine_fingerprint": None, "template": tpl,
          "meta": {"family": fam, "style": style, "page": raw.get("page") or "home", "view": view,
-                  "oracle_ops": copy.deepcopy(exp["ops"]), "group": f"author:{target['address']}",
+                  "oracle_ops": copy.deepcopy(exp["ops"]), "group": author_group(target, case_id),
                   "target_address": target["address"], "target_reason": target.get("reason"),
                   "author": {"model": MODEL, "round": round_id}, "candidates": list(raw.get("candidates") or []) or None,
                   "holdout_key": target["address"]}}
     if vis_meta:
         c["meta"]["state_prep"] = vis_meta
+    if entry.get("store_tags"):  # the store's tags the case's host holds (r4cases.with_case_extras / state.host_lists)
+        from ..state import load_context_fixture
+        c["option_lists"] = {"tags": copy.deepcopy(entry["store_tags"]),
+                             "brands": copy.deepcopy(load_context_fixture().get("brands"))}
     return c
 
 
@@ -967,7 +1495,26 @@ def prepare_state(state: dict, entry: dict, m: Manifest, *, style: str, case_id:
             blank = "" if spec.scalar else {k: f.default for k, f in spec.item_fields.items() if f.has_default}
             set_path(row, spec.path, [copy.deepcopy(blank) for _ in range(n)])
             done["seeded_list"] = {lst: n}
-    if style == "reset" and entry.get("reset") and field is not None and not lst:
+    rule = ADDRESS_RULES.get(str(entry.get("address") or "")) or {}
+    if style == "reset" and entry.get("reset") and field is not None and not lst and rule.get("kind") in (
+            "store_tag", "pack_whole", "enum"):
+        # the value the reset clears is one the editor can hold: a store tag's name, Grams on BOTH pack kinds (every
+        # sensible "back to Units" write then gives one diff: r6 0297 was seeded free text and the teacher's
+        # restore of all three keys failed), Grams on an enum child
+        if rule["kind"] == "store_tag":
+            tags = entry.get("store_tags") or []
+            vals = {key: tags[h8(f"reset:{case_id}") % len(tags)]["name"]} if tags else {}
+        elif rule["kind"] == "pack_whole":
+            vals = {k: "grams" for k in rule["children"]}
+        else:
+            vals = {key: next(v for v in rule["values"] if v is not None)}
+        try:
+            if vals:
+                write_values(m, container, state, vals, section_id=sid, page=page)
+                done["seeded_value"] = vals
+        except (KeyError, ValueError, IndexError, TypeError) as e:
+            done["error"] = f"reset seed: {e}"
+    elif style == "reset" and entry.get("reset") and field is not None and not lst:
         from ..cases import value_for
         to = entry["reset"].get("to")
         rng = random.Random(h8(f"reset:{case_id}"))
@@ -1012,6 +1559,9 @@ def validate(c: dict, target: dict, m: Manifest, engine, extras: dict, *, leak_i
         return "preview_claim"
     if not isinstance(e.get("ops"), list):
         return "ops_not_json"
+    why = ask_rule_reject(c, m)
+    if why:
+        return why
     if mode in ("exact", "keys"):
         if not e["ops"]:
             return "no_ops"
@@ -1049,6 +1599,9 @@ def validate(c: dict, target: dict, m: Manifest, engine, extras: dict, *, leak_i
     elif mode == "answer":
         if not e.get("reply_any") or e["ops"]:
             return "answer_invalid"
+    amb = ambiguity(c, m) or bad_value(c, m)
+    if amb:
+        return amb
     err = remeasure(c, engine, m, extras)
     if err:
         detail = oracle_detail(c, err, engine)
@@ -1070,6 +1623,22 @@ def validate(c: dict, target: dict, m: Manifest, engine, extras: dict, *, leak_i
     if k in pool_keys:
         return "duplicate"
     pool_keys.add(k)
+    return None
+
+
+def ask_rule_reject(c: dict, m: Manifest) -> str | None:
+    """`ask_turn_not_vague` (r7 §1.2): an earlier turn marked ask / offer, or the case's own request when it is scored
+    ask, that gives a value, a direction or an action (askrule.classify_case on the case's vocabulary)."""
+    from ..askrule import classify_case
+    ops = (c.get("expected") or {}).get("ops") or []
+    turns = [h.get("user") for h in c.get("history") or [] if str(h.get("expect") or "") in ("ask", "offer")]
+    if (c.get("score") or {}).get("mode") == "ask":
+        turns.append(c.get("request"))
+    for t in turns:
+        v = classify_case(c, m, text=str(t or ""), oracle_ops=ops)
+        if not v.vague:
+            return (f"ask_turn_not_vague: '{str(t)[:80]}' gives a {v.kind} ({v.why}); an ask turn names the setting with "
+                    "no value, no direction word and no action — otherwise the merchant asked for the change itself")
     return None
 
 
@@ -1140,17 +1709,18 @@ def author_round(targets: list[dict], m: Manifest, engine, extras: dict, *, ask:
             return f"{tag}-{fam}-{counter[fam]:04d}"
 
     def one(t: dict) -> tuple[list[dict], dict]:
-        entry = target_entry(t, m)
+        entry = target_entry(t, m, round_id=round_id)
         styles = style_plan(t, smoke, entry)
         spec = entry.get("field") or {}
         aliases = aliases_for(t, spec, vocab)
         examples = [x for s in sorted(set(styles)) for x in style_examples(pool, s, t["address"], 1)][:3]
         rec = {"address": t["address"], "kind": t["kind"], "holdout": t["holdout"], "asked": 0, "kept": 0, "positive": 0,
+               "min_positive": int(t.get("min_positive") or MIN_POSITIVE), "reason": t.get("reason"),
                "rejected": Counter(), "reject_details": [], "calls": 0, "usage": Counter(), "topup": 0,
                "op_target": entry.get("op_target"), "gated": bool(entry.get("visibility"))}
         kept: list[dict] = []
         todo_styles, retry = styles, None
-        want_positive = 0 if (smoke or t["kind"] == "container") else MIN_POSITIVE
+        want_positive = 0 if (smoke or t["kind"] == "container") else int(t.get("min_positive") or MIN_POSITIVE)
         for round_no in range(1, MAX_ROUNDS + 1):
             if not todo_styles:
                 break
@@ -1212,7 +1782,7 @@ def author_round(targets: list[dict], m: Manifest, engine, extras: dict, *, ask:
             if i % 10 == 0 or i == len(targets):
                 progress(f"author: {i}/{len(targets)} targets, {len(out_train)} trainable + {len(out_hold)} holdout cases")
     short = {r["address"]: r["positive"] for r in per_target
-             if not smoke and r["kind"] != "container" and r["positive"] < MIN_POSITIVE}
+             if not smoke and r["kind"] != "container" and r["positive"] < r["min_positive"]}
     report = {"model": MODEL, "effort": EFFORT, "targets": len(targets), "cases_trainable": len(out_train),
               "cases_holdout": len(out_hold), "rejects": dict(rejects), "usage": dict(usage_total),
               "min_positive": MIN_POSITIVE, "positive_by_target": {r["address"]: r["positive"] for r in per_target},

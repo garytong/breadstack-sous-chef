@@ -192,6 +192,24 @@ def test_new_key_positives_counts_visible_writes_by_kind_and_flags_short_keys():
     assert nk["ok"] and nk["keys"][CB_GAP]["exempt"] == "waived"
 
 
+def test_new_key_positives_count_the_whole_pack_setting_and_a_mirrored_slide_write():
+    """r7 four keys: a row writing both Pack filter kinds is a positive of the whole setting (one kind alone is not);
+    a set of the hero's flat btnSize (= slide 0, the same engine paths) counts for slides[].btnSize."""
+    from souschef_lab.manifest import Manifest
+    from tests.test_author import EDIBLES, HERO, HERO_BTN, PACK, PRODUCTS, four
+    m = Manifest(four())
+    cases = {"both": _case("both", [{"op": "set_fields", "target": PRODUCTS, "values": {
+                 "packFilterDisplay.prerolls": "grams", "packFilterDisplay.edibles": "grams"}}]),
+             "one": _case("one", [{"op": "set_fields", "target": PRODUCTS, "values": {"packFilterDisplay.edibles": "grams"}}]),
+             "reset": _case("reset", [{"op": "reset", "target": PRODUCTS, "keys": ["packFilterDisplay"]}]),
+             "flat": _case("flat", [{"op": "set_fields", "target": HERO, "values": {"btnSize": 20}}])}
+    rows = [_row(i, c) for i, c in enumerate(cases)]
+    keys = [{"address": a, "reason": "reauthor"} for a in (PACK, EDIBLES, HERO_BTN)]
+    nk = DS.new_key_positives(rows, cases, m, keys, minimum=6)
+    assert nk["keys"][PACK]["positives"] == 2 and nk["keys"][PACK]["kinds"] == {"set": 1, "reset": 1}
+    assert nk["keys"][EDIBLES]["positives"] == 2 and nk["keys"][HERO_BTN]["positives"] == 1
+
+
 def test_refresh_stats_and_drops_rewrite_stats_from_the_files(tmp_path):
     """r5's bucket stats.json kept the pre-drop counts (2,465 / 2,679) after the where hotfix."""
     from souschef_lab.manifest import Manifest
@@ -360,3 +378,144 @@ def test_capability_rows_count_the_new_families_kept_and_rejected():
         "list_options": {"train": 0, "val": 1, "rejected": 0, "by_mode": {"list": 1},
                          "by_group": {"list:tags": {"train": 0, "val": 1, "rejected": 0}}}}
     assert DS.capability_rows(train, val, [], {"x": cases["x"]}) == {}
+
+
+# --- r7: the ask rule on kept rows, the ask / write pairs, the ask cap -------------------------------------------------
+
+def _ask_case(cid, text, *, family=None, twin=None, mode="ask", **meta):
+    from tests.test_rebase import BTN
+    m = {"family": "F2", "group": f"g:{cid}", **meta}
+    if family:
+        m["ask_family"] = family
+    if twin:
+        m["ask_pair"] = {"twin": twin, "role": "ask"}
+    return {"id": cid, "request": text, "target": BTN, "fields": ["buttonShadowColor"], "site_state": {},
+            "score": {"mode": mode}, "expected": {"ops": []}, "context": {"page": "home"}, "meta": m}
+
+
+def _write_case(cid, ask_id=None, *, key="buttonShadowColor"):
+    from tests.test_rebase import BTN
+    op = {"op": "set_fields", "target": BTN, "values": {key: "#111111"}}
+    meta = {"family": "F2", "group": f"g:{ask_id or cid}"}
+    if ask_id:
+        meta["ask_pair"] = {"twin": ask_id, "role": "write"}
+    return {"id": cid, "request": "x", "target": BTN, "fields": [key], "score": {"mode": "keys"},
+            "expected": {"ops": [op], "keys": [{"target": BTN, "key": key, "list": ""}],
+                         "direction": {"key": key, "dir": "darker"}}, "meta": meta}
+
+
+def _r(cid, *, mode, user="u", n=0):
+    return {"id": f"{cid}#p{n}", "messages": [{"role": "system", "content": "s"},
+                                              {"role": "user", "content": f'<context>\n{{"page":"home"}}\n</context>\n{user}'},
+                                              {"role": "assistant", "content": "Which colour would you like?"}],
+            "meta": {"case_id": cid, "family": "F2", "mode": mode, "group": f"g:{cid}", "fields_context": True,
+                     "history_turns": 0}}
+
+
+def test_a_carried_ask_row_with_a_value_is_rejected_and_unpaired_asks_drop(tmp_path):
+    """r7 §1.2 / §2.3: the dataset re-checks every kept ask row on its rendered text (a carried row whose case predates
+    the rule included), and trains an ask only next to its write twin."""
+    from souschef_lab.manifest import Manifest
+    from tests.test_author import grown
+    m = Manifest(grown())
+    cases = {"a1": _ask_case("a1", "can we rethink the button shadow", twin="w1"),
+             "a2": _ask_case("a2", "the button shadow", twin="w2"),  # its twin was never kept
+             "a3": _ask_case("a3", "the button shadow", twin="w3"),  # carried row: the text it trains has a value
+             "c1": _ask_case("c1", "which shadow?", mode="clarify"),
+             "p1": _ask_case("p1", "add a blank page", capability="create_page"),
+             "w1": _write_case("w1", "a1"), "w3": _write_case("w3", "a3")}
+    d = tmp_path / "dataset"
+    DS.write_jsonl(d / "train.jsonl", [_r("a1", mode="ask", user="can we rethink the button shadow"),
+                                       _r("a2", mode="ask", user="the button shadow"),
+                                       _r("a3", mode="ask", user="make the button shadow #7a1f2b"),
+                                       _r("c1", mode="clarify"), _r("p1", mode="ask", user="add a blank page"),
+                                       _r("w1", mode="keys"), _r("w3", mode="keys")])
+    DS.write_jsonl(d / "val.jsonl", [])
+    DS.write_jsonl(d / "rejects.jsonl", [])
+    assert DS.row_user_text(_r("a3", mode="ask", user="make the button shadow #7a1f2b")) == "make the button shadow #7a1f2b"
+    st = DS.enforce_ask_rules(d, cases, m, share=0)
+    rej = {r["id"]: r["reasons"] for r in DS.read_jsonl(d / "rejects.jsonl")}
+    assert rej == {"a3#p0": ["ask_rule_violation"], "a2#p0": ["ask_unpaired"]}
+    assert st["violations"]["ids"] == {"a3#p0": "value:V1:colour_literal"} and st["violations_kept"] == 0
+    assert st["unpaired"]["ids"] == ["a2#p0"] and st["unpaired_kept"] == 0
+    assert st["exempt"] == {"clarify": 1, "create_page": 1} and st["rows"] == 3  # a1, c1, p1
+    assert st["pairs"]["buttonShadowColor"] == {"ask": 2, "twin_write": 2, "other_relative": 0}
+    # idempotent: nothing more to drop
+    st2 = DS.enforce_ask_rules(d, cases, m, share=0)
+    assert st2["violations"]["ids"] == {} and st2["unpaired"]["ids"] == [] and st2["rows"] == 3
+
+
+def _cap_set(n_rows=1000):
+    """80 ask rows over the families (plus their 80 write twins) in a 1,000-row set."""
+    fams = [("complaint", 4), ("which_one", 2), ("page_title_missing", 1), ("text_missing", 8),
+            ("choice_missing", 8), ("rest", 57)]
+    cases, rows = {}, []
+    i = 0
+    for fam, n in fams:
+        for _ in range(n):
+            i += 1
+            a, w = f"a{i:03d}", f"w{i:03d}"
+            key = f"field{i % 23}"
+            mode = "clarify" if fam == "which_one" else "ask"
+            cases[a] = _ask_case(a, "can we rethink it", family=fam, twin=w, mode=mode)
+            cases[a]["fields"] = [key]
+            cases[w] = _write_case(w, a, key=key)
+            rows += [_r(a, mode=mode), _r(w, mode="keys")]
+    for j in range(n_rows - len(rows)):
+        cases[f"o{j}"] = {"id": f"o{j}", "score": {"mode": "exact"}, "expected": {"ops": []}, "meta": {}}
+        rows.append(_r(f"o{j}", mode="exact"))
+    return cases, rows
+
+
+def test_the_ask_cap_keeps_the_floors_and_the_twins(tmp_path):
+    from souschef_lab.manifest import Manifest
+    from tests.test_author import grown
+    m = Manifest(grown())
+    cases, rows = _cap_set()
+    assert len(rows) == 1000 and sum(1 for r in rows if r["meta"]["mode"] in DS.ASK_MODES) == 80
+    drop, rep = DS.cap_ask_rows(rows, cases, m, 0.03)
+    assert rep["cap"] == 30 and rep["ask_rows"] == 30 and len(drop) == 50 and rep["floors_kept"] == 23
+    assert rep["by_family"] == {"choice_missing": 8, "complaint": 4, "page_title_missing": 1, "rest": 7,
+                                "text_missing": 8, "which_one": 2}
+    again, _ = DS.cap_ask_rows(list(reversed(rows)), cases, m, 0.03)
+    assert again == drop  # deterministic: sha1 order, not the files' order
+    kept_rest = [r for r in rows if r["meta"]["mode"] == "ask" and r["id"] not in drop
+                 and cases[r["meta"]["case_id"]]["meta"]["ask_family"] == "rest"]
+    assert len({cases[r["meta"]["case_id"]]["fields"][0] for r in kept_rest}) == 7  # one per field first
+    assert DS.cap_ask_rows(rows, cases, m, 0)[0] == set()  # 0: off
+    # on the files: the capped rows move to rejects, every twin stays, stats.json is rewritten after the drop
+    d = tmp_path / "dataset"
+    DS.write_jsonl(d / "train.jsonl", rows[:900])
+    DS.write_jsonl(d / "val.jsonl", rows[900:])
+    DS.write_jsonl(d / "rejects.jsonl", [])
+    (d / "stats.json").write_text(json.dumps({"rows": 1000, "train": 900, "val": 100}))
+    st = DS.enforce_ask_rules(d, cases, m, share=0.03)
+    assert st["rows"] == 30 and sum(st["capped"].values()) == 50 and st["unpaired_kept"] == 0
+    kept = DS.read_jsonl(d / "train.jsonl") + DS.read_jsonl(d / "val.jsonl")
+    assert len(kept) == 950 and all(r["meta"]["mode"] == "keys" for r in kept if r["meta"]["case_id"].startswith("w"))
+    assert sum(1 for r in kept if r["meta"]["case_id"].startswith("w")) == 80  # the capped asks' twins included
+    assert {r["reasons"][0] for r in DS.read_jsonl(d / "rejects.jsonl")} == {"ask_cap"}
+    new = DS.refresh_stats(d, json.loads((d / "stats.json").read_text()), ask=st)
+    assert new["rows"] == 950 and new["ask"]["rows"] == 30 and json.loads((d / "stats.json").read_text()) == new
+    # share 0 keeps every ask
+    DS.write_jsonl(d / "train.jsonl", rows)
+    DS.write_jsonl(d / "val.jsonl", [])
+    DS.write_jsonl(d / "rejects.jsonl", [])
+    assert DS.enforce_ask_rules(d, cases, m, share=0)["rows"] == 80
+
+
+def test_ask_share_and_positives_required_switches(monkeypatch):
+    monkeypatch.delenv("SOUSCHEF_ASK_SHARE_MAX", raising=False)
+    monkeypatch.delenv("SOUSCHEF_POSITIVES_REQUIRED", raising=False)
+    assert DS.ask_share_of({}) == 0.03 and DS.ask_share_of({"ask_share_max": 0}) == 0.0
+    assert DS.ask_share_of({"ask_share_max": "0.05"}) == 0.05 and DS.ask_share_of({}, 0.01) == 0.01
+    monkeypatch.setenv("SOUSCHEF_ASK_SHARE_MAX", "0.02")
+    assert DS.ask_share_of({"ask_share_max": 0.05}) == 0.02
+    with pytest.raises(ConfigError):
+        DS.ask_share_of({}, 1.5)
+    req = DS.positives_required_of({"positives_required": ["a.b.c", "a.b.d", "a.b.c"]})
+    assert req == [{"address": "a.b.c", "reason": "positives_required", "holdout": False},
+                   {"address": "a.b.d", "reason": "positives_required", "holdout": False}]
+    assert [t["address"] for t in DS.positives_required_of({"positives_required": "x.y.z, a.b.c"})] == ["a.b.c", "x.y.z"]
+    rep = {"targets": {"wanted_list": [{"address": "s.c.k2", "reason": "reauthor", "holdout": False}]}}
+    assert [t["address"] for t in DS.new_keys_of(rep)] == ["s.c.k2"]  # a re-authored key is gated like a new one

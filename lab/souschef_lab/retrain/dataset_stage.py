@@ -19,6 +19,17 @@ manifest, `--section-cap-scope F0,F1`. Gates (each fails the stage):
                      sets the floor (0 = off), SOUSCHEF_NEW_KEY_POSITIVES_WAIVE (comma list
                      of addresses) waives keys a person looked at
 
+  6. ask rule      (r7 §1–3; stats.json `ask`) every kept `ask` row's rendered user text is VAGUE under
+                     askrule (no value, no direction, no action — carried rows included: a violation moves
+                     to rejects.jsonl as `ask_rule_violation`); every ask row's WRITE twin (case
+                     meta.ask_pair) has a kept row (else `ask_unpaired`; clarify and no-title create_page
+                     asks are exempt); ask + clarify rows are at most `ask_share_max` (3 %, trigger.ask_share_max
+                     / SOUSCHEF_ASK_SHARE_MAX, 0 = off) of the rows, over-cap rows moved as `ask_cap` (their twins
+                     stay), deterministic (sha1 of the case id inside strata, round-robin over fields) with
+                     floors per ask family (ASK_FLOORS). Gate: violations_kept == 0 and unpaired_kept == 0.
+                     trigger.positives_required (or SOUSCHEF_POSITIVES_REQUIRED, comma list) adds addresses
+                     to gate 5 (r7 §5.3: the re-authored keys)
+
 stats.json is rewritten from the final files after every drop (where_missing, an
 emptied val), with the new-key counts and the font-pair count: r5's bucket copy still
 read the pre-drop 2,465 / 2,679 rows.
@@ -49,6 +60,7 @@ import io
 import json
 import os
 import tarfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,7 +69,13 @@ from .common import ConfigError, Store, load_run, notification, read_jsonl, run_
 
 TRAIN_FLAGS = ["--fields-context", "on", "--eval-steps", "150", "--val-max-rows", "150", "--checkpoint-steps", "50"]
 MIN_NEW_KEY_POSITIVES = 6
-NEW_KEY_REASONS = ("added_field", "retyped_field", "added_list", "added_container", "drift_new_key")
+NEW_KEY_REASONS = ("added_field", "retyped_field", "added_list", "added_container", "drift_new_key", "reauthor",
+                   "positives_required")
+ASK_SHARE_MAX = 0.03  # r7 §3: between r4 (0.25 %, rarely asked) and r6 (7.8 %, over-asked)
+ASK_MODES = ("ask", "clarify")
+# r7 §3's floors: None = every row of the family; n = at least min(available, n)
+ASK_FLOORS: dict[str, int | None] = {"complaint": None, "which_one": None, "page_title_missing": None,
+                                     "text_missing": 25, "choice_missing": 25}
 FONT_PAIR = ("globalPanels.TypographyColorsSection.bodyFont", "globalPanels.TypographyColorsSection.headingFont")
 FONT_PAIR_POLICIES = ("keep", "drop")
 
@@ -212,6 +230,222 @@ def font_pair_rows(rows: list[dict], cases: dict[str, dict], m) -> list[str]:
         if c is not None and set(FONT_PAIR) <= A.case_addresses(c, m):
             out.append(str(r.get("id")))
     return out
+
+
+# --- the ask rule, the ask / write pairs and the ask cap (r7 §1.2, §2.3, §3) ---------------------------------------------
+
+def _sha(s: str) -> str:
+    import hashlib
+    return hashlib.sha1(str(s).encode("utf-8")).hexdigest()
+
+
+def _cid(r: dict) -> str:
+    return str((r.get("meta") or {}).get("case_id") or str(r.get("id") or "").split("#")[0])
+
+
+def row_user_text(r: dict, case: dict | None = None) -> str:
+    """The scored turn's user text as the row trains it (the last user message, the context and candidate-fields
+    blocks stripped), else the case's request."""
+    from ..r4dataset import _block_text, strip_turn_blocks
+    users = [m for m in r.get("messages") or [] if m.get("role") == "user"]
+    if users:
+        t = strip_turn_blocks(_block_text(users[-1].get("content")))
+        if t.strip():
+            return t.strip()
+    return str((case or {}).get("request") or "")
+
+
+def ask_exempt(case: dict | None) -> str | None:
+    """Why an ask / clarify case is outside the ask rule and the pairing: a clarify (explicit candidates), a target
+    ambiguity (meta.ask_reason which_one), a no-title create_page (the rules: ask for the name)."""
+    c = case or {}
+    meta = c.get("meta") or {}
+    if (c.get("score") or {}).get("mode") == "clarify":
+        return "clarify"
+    if meta.get("ask_reason") == "which_one":
+        return "which_one"
+    if meta.get("capability") == "create_page":
+        return "create_page"
+    return None
+
+
+def _is_ask(r: dict) -> bool:
+    return (r.get("meta") or {}).get("mode") in ASK_MODES
+
+
+def ask_rule_rows(rows: list[dict], cases: dict[str, dict], m) -> dict[str, str]:
+    """{row id: why} of the kept `ask` rows whose user text is NOT vague (askrule.classify_case on the case's
+    vocabulary) — a carried row whose case predates the rule included."""
+    from ..askrule import classify_case
+    out: dict[str, str] = {}
+    for r in rows:
+        if (r.get("meta") or {}).get("mode") != "ask":
+            continue
+        c = _case_of(r, cases)
+        if c is None or ask_exempt(c):
+            continue
+        v = classify_case(c, m, text=row_user_text(r, c))
+        if not v.vague:
+            out[str(r.get("id"))] = f"{v.kind}:{v.why}"
+    return out
+
+
+def _twins(c: dict) -> list[str]:
+    p = (c.get("meta") or {}).get("ask_pair") or {}
+    if p.get("role") != "ask":
+        return []
+    return [str(t) for t in (p.get("twins") or [p.get("twin")]) if t]
+
+
+def unpaired_ask_rows(rows: list[dict], cases: dict[str, dict]) -> list[str]:
+    """Row ids of the kept `ask` rows whose case has no write twin with a kept row (r7 §2.3; ask_exempt aside)."""
+    kept = {_cid(r) for r in rows}
+    out = []
+    for r in rows:
+        if (r.get("meta") or {}).get("mode") != "ask":
+            continue
+        c = _case_of(r, cases)
+        if c is None or ask_exempt(c):
+            continue
+        if not any(t in kept for t in _twins(c)):
+            out.append(str(r.get("id")))
+    return out
+
+
+def _field_key(c: dict | None) -> str:
+    """The field a case is about (the ask cap's round-robin unit and the pairs report): contrast's key, the authored
+    target, the expected keys, else the case's fields."""
+    c = c or {}
+    meta = c.get("meta") or {}
+    if (meta.get("contrast") or {}).get("key"):
+        return str(meta["contrast"]["key"])
+    if meta.get("target_address"):
+        return str(meta["target_address"]).rsplit(".", 1)[-1]
+    for k in (c.get("expected") or {}).get("keys") or []:
+        if isinstance(k, dict) and (k.get("key") or k.get("list")):
+            return str(k.get("key") or k.get("list"))
+    fs = c.get("fields") or []
+    return str(fs[0]) if fs else "?"
+
+
+def _round_robin(rows: list[dict], cases: dict[str, dict], n: int, have: set[str] | frozenset = frozenset()) -> list[dict]:
+    """Up to n rows, one per field in turn (fields without a kept ask in `have` first; sha1 of the field, then of the
+    case id inside a field) — deterministic."""
+    by: dict[str, list[dict]] = {}
+    for r in sorted(rows, key=lambda x: _sha(_cid(x))):
+        by.setdefault(_field_key(_case_of(r, cases)), []).append(r)
+    order = sorted(by, key=lambda f: (f in have, _sha(f)))
+    out: list[dict] = []
+    while len(out) < n and any(by.values()):
+        for f in order:
+            if by[f] and len(out) < n:
+                out.append(by[f].pop(0))
+    return out
+
+
+def cap_ask_rows(rows: list[dict], cases: dict[str, dict], m, share: float) -> tuple[set[str], dict]:
+    """(row ids over the ask cap, report): ask + clarify rows at most `share` of `rows` (0 = off), the families'
+    floors (ASK_FLOORS) kept first, the rest filled round-robin over fields (module docstring)."""
+    from ..askrule import ask_family_of
+    asks = [r for r in rows if _is_ask(r)]
+    fam = {str(r.get("id")): ask_family_of(_case_of(r, cases) or {"score": {"mode": (r.get("meta") or {}).get("mode")}}, m)
+           for r in asks}
+    rep: dict[str, Any] = {"share_max": share, "rows": len(rows), "ask_rows_before": len(asks),
+                           "by_family_before": dict(sorted(Counter(fam.values()).items()))}
+    if share <= 0:
+        rep.update(cap=None, capped=0, off=True)
+        return set(), rep
+    cap = int(share * len(rows))
+    keep: list[dict] = []
+    for f, floor in ASK_FLOORS.items():
+        members = [r for r in asks if fam[str(r.get("id"))] == f]
+        keep += members if floor is None else _round_robin(members, cases, floor)
+    floors = len(keep)
+    kept_ids = {str(r.get("id")) for r in keep}
+    rest = [r for r in asks if str(r.get("id")) not in kept_ids]
+    have = {_field_key(_case_of(r, cases)) for r in keep}
+    keep += _round_robin(rest, cases, max(0, cap - floors), have)
+    kept_ids = {str(r.get("id")) for r in keep}
+    drop = {str(r.get("id")) for r in asks} - kept_ids
+    rep.update(cap=cap, floors_kept=floors, floors_over_cap=max(0, floors - cap), capped=len(drop),
+               ask_rows=len(kept_ids), by_family=dict(sorted(Counter(fam[i] for i in kept_ids).items())))
+    return drop, rep
+
+
+def ask_pairs_report(rows: list[dict], cases: dict[str, dict]) -> dict:
+    """{field: {ask, twin_write, other_relative}}: the kept ask rows, their twins' write rows and the other relative
+    (direction-scored) write rows per field."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        c = _case_of(r, cases)
+        if c is None:
+            continue
+        meta = c.get("meta") or {}
+        mode = (r.get("meta") or {}).get("mode")
+        role = (meta.get("ask_pair") or {}).get("role")
+        if mode == "ask":
+            k = "ask"
+        elif role == "write":
+            k = "twin_write"
+        elif mode == "keys" and (c.get("expected") or {}).get("direction"):
+            k = "other_relative"
+        else:
+            continue
+        rec = out.setdefault(_field_key(c), {"ask": 0, "twin_write": 0, "other_relative": 0})
+        rec[k] += 1
+    return {f: out[f] for f in sorted(out) if out[f]["ask"] or out[f]["twin_write"]}
+
+
+def enforce_ask_rules(data: Path, cases: dict[str, dict], m, *, share: float = ASK_SHARE_MAX) -> dict:
+    """§1.2's ask_rule_rows, §2.3's pairing and §3's cap on the split files, in that order (each moves rows to
+    rejects.jsonl with its reason); stats.json `ask` — the counts after every drop re-measured (violations_kept,
+    unpaired_kept: the gate's numbers)."""
+    rows = read_jsonl(data / "train.jsonl") + read_jsonl(data / "val.jsonl")
+    before = sum(1 for r in rows if _is_ask(r))
+    bad = ask_rule_rows(rows, cases, m)
+    d1 = drop_rows(data, set(bad), "ask_rule_violation") if bad else {"train": 0, "val": 0}
+    rows = read_jsonl(data / "train.jsonl") + read_jsonl(data / "val.jsonl")
+    unpaired = unpaired_ask_rows(rows, cases)
+    d2 = drop_rows(data, set(unpaired), "ask_unpaired") if unpaired else {"train": 0, "val": 0}
+    rows = read_jsonl(data / "train.jsonl") + read_jsonl(data / "val.jsonl")
+    over, cap_rep = cap_ask_rows(rows, cases, m, share)
+    d3 = drop_rows(data, over, "ask_cap") if over else {"train": 0, "val": 0}
+    rows = read_jsonl(data / "train.jsonl") + read_jsonl(data / "val.jsonl")
+    asks = [r for r in rows if _is_ask(r)]
+    exempt = Counter(ask_exempt(_case_of(r, cases)) for r in asks)
+    exempt.pop(None, None)
+    return {"rows_before": before, "rows": len(asks), "share": round(len(asks) / max(len(rows), 1), 4),
+            "share_max": share, "cap": cap_rep,
+            "violations": {"dropped": d1, "ids": dict(list(bad.items())[:50])},
+            "violations_kept": len(ask_rule_rows(rows, cases, m)),
+            "unpaired": {"dropped": d2, "ids": unpaired[:50]},
+            "unpaired_kept": len(unpaired_ask_rows(rows, cases)),
+            "capped": d3, "exempt": dict(exempt), "pairs": ask_pairs_report(rows, cases)}
+
+
+def ask_share_of(trig: dict, explicit: float | None = None) -> float:
+    """The ask cap: `explicit`, else SOUSCHEF_ASK_SHARE_MAX, else trigger.ask_share_max, else ASK_SHARE_MAX."""
+    v: Any = explicit
+    if v is None:
+        v = os.environ.get("SOUSCHEF_ASK_SHARE_MAX", "").strip() or trig.get("ask_share_max")
+    if v in (None, ""):
+        return ASK_SHARE_MAX
+    try:
+        f = float(v)
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"ask_share_max {v!r} is not a number") from e
+    if not 0 <= f < 1:
+        raise ConfigError(f"ask_share_max {f} is not a share in [0, 1)")
+    return f
+
+
+def positives_required_of(trig: dict) -> list[dict]:
+    """trigger.positives_required (a list or a comma string), else SOUSCHEF_POSITIVES_REQUIRED: addresses gate 5 counts
+    like new keys (reason positives_required)."""
+    v = os.environ.get("SOUSCHEF_POSITIVES_REQUIRED") or trig.get("positives_required") or []
+    items = v if isinstance(v, list) else str(v).split(",")
+    return [{"address": a, "reason": "positives_required", "holdout": False}
+            for a in sorted({str(x).strip() for x in items if str(x).strip()})]
 
 
 def capability_rows(train: list[dict], val: list[dict], rejects: list[dict], cases: dict[str, dict]) -> dict:
@@ -432,13 +666,14 @@ def train_config_of(run_file: dict, store: Store | None = None) -> dict | None:
 
 def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "required", engine_fp: str | None = None,
         binary: str | None = None, caps: bool | None = None, min_new_key_positives: int | None = None,
-        waive_new_keys: set[str] | None = None, font_pair: str | None = None,
+        waive_new_keys: set[str] | None = None, font_pair: str | None = None, ask_share_max: float | None = None,
         progress: Callable[[str], None] = print) -> dict:
     """parity: required (GCP) | auto (run when the binary is there) | skip (DRY without a binary).
     caps: r4dataset's section and family caps (tuned for thousands of rows) — off for SMOKE by default.
     min_new_key_positives: gate 5's floor (default SOUSCHEF_MIN_NEW_KEY_POSITIVES, else 6; 0 = off).
     waive_new_keys: addresses gate 5 skips (default SOUSCHEF_NEW_KEY_POSITIVES_WAIVE, comma-separated).
     font_pair: keep | drop (default SOUSCHEF_FONT_PAIR, else keep) — module docstring.
+    ask_share_max: the ask cap (gate 6; default SOUSCHEF_ASK_SHARE_MAX, trigger.ask_share_max, else 0.03; 0 = off).
     Each default also reads run.json's trigger (font_pair, min_new_key_positives, new_key_positives_waive) after
     the environment; trigger.train is written to runs/<id>/train-config.json for the trainer (an existing file wins)."""
     from .. import r4dataset
@@ -488,6 +723,18 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
     data = out / "dataset"
     all_rows = read_jsonl(data / "train.jsonl") + read_jsonl(data / "val.jsonl")
     cases_by_id = load_cases_by_id(cases, _row_case_ids(all_rows))
+    # 6. the ask rule, the pairs and the cap (r7)
+    ask_st = enforce_ask_rules(data, cases_by_id, m_new, share=ask_share_of(trig, ask_share_max))
+    gone = {k: sum(v.values()) for k, v in (("ask_rule_violation", ask_st["violations"]["dropped"]),
+                                           ("ask_unpaired", ask_st["unpaired"]["dropped"]), ("ask_cap", ask_st["capped"]))}
+    if any(gone.values()):
+        first = dict(st.get("rejects_first_reason") or {})
+        for k, n in gone.items():
+            if n:
+                first[k] = first.get(k, 0) + n
+        st["rejects_first_reason"] = first
+        progress(f"dataset: ask rows {ask_st['rows_before']} → {ask_st['rows']} ({ask_st['share']:.1%}; dropped {gone})")
+    all_rows = read_jsonl(data / "train.jsonl") + read_jsonl(data / "val.jsonl")
     font_pair = str(font_pair or os.environ.get("SOUSCHEF_FONT_PAIR") or trig.get("font_pair") or "keep").strip().lower()
     if font_pair not in FONT_PAIR_POLICIES:
         raise ConfigError(f"font_pair {font_pair!r} is not one of {', '.join(FONT_PAIR_POLICIES)}")
@@ -513,6 +760,7 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
         waive_new_keys = {str(a).strip() for a in (w if isinstance(w, list) else str(w).split(",")) if str(a).strip()}
     waive = waive_new_keys
     keys = new_keys_of(store.read_json(f"{pre}/prepare/report.json"))
+    keys += [t for t in positives_required_of(trig) if t["address"] not in {k["address"] for k in keys}]
     nk = new_key_positives(read_jsonl(data / "train.jsonl"), cases_by_id, m_new, keys, minimum=minimum, waive=waive)
     hidden_ids = hidden_write_rows(read_jsonl(data / "train.jsonl"), cases_by_id, m_new)
     rejects_now = read_jsonl(data / "rejects.jsonl")
@@ -521,7 +769,7 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
     capabilities = capability_rows(read_jsonl(data / "train.jsonl"), read_jsonl(data / "val.jsonl"), rejects_now, cap_cases)
     st = refresh_stats(data, st, font_pair=font, hidden_write_rows={"train": len(hidden_ids), "ids": hidden_ids[:50]},
                        new_key_positives={a: {k: v for k, v in r.items() if k != "reason"} for a, r in nk["keys"].items()},
-                       capabilities=capabilities)
+                       capabilities=capabilities, ask=ask_st)
     gates: dict[str, Any] = {}
     problems: list[str] = []
     # 1. render parity
@@ -539,6 +787,8 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
         problems.append(f"stats: block_drift_rows {st['block_drift_rows']}")
     if st.get("preview_claim_kept"):
         problems.append(f"stats: preview_claim_kept {st['preview_claim_kept']}")
+    if ask_st["violations_kept"] or ask_st["unpaired_kept"]:
+        problems.append(f"stats: ask violations_kept {ask_st['violations_kept']}, unpaired_kept {ask_st['unpaired_kept']}")
     # 3. row checks
     gates["rows"] = row_checks(out / "dataset", need_followups=not smoke)
     problems += gates["rows"]["problems"]
@@ -565,6 +815,7 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
                "preview_claim_kept": st.get("preview_claim_kept"), "updates": gates["train_plan"].get("updates"),
                "tokens_train": st.get("tokens_train"), "parity": {k: v for k, v in gates["parity"].items() if k != "failures"},
                "new_key_short": nk["short"], "font_pair_rows": font["rows"], "hidden_write_rows": len(hidden_ids),
+               "ask": {k: ask_st[k] for k in ("rows", "share", "share_max", "violations_kept", "unpaired_kept")},
                "capabilities": {k: {"train": v["train"], "val": v["val"], "rejected": v["rejected"]}
                                 for k, v in capabilities.items()}}
     if problems:

@@ -42,6 +42,21 @@ delete / address requests stay where=pages (exam.page_request "manage"). The cha
 re-ask them; a relabelled HOLDOUT gets the id `<id>.k2` (exam.AMENDED_ID_SUFFIX: never paired with a score on its old
 key). Off: trigger.page_relabel "off" or $SOUSCHEF_PAGE_RELABEL=off.
 
+Every trainable pool case scored `ask` (r4-F3/F4 authored asks, the relabelled no-title page creates) is judged by
+the ask rule (r7 §1.2, check_ask_cases; askrule.classify_case): one that gives a value, a direction or an action
+becomes a WRITE case (mode keys) on its own fields when askrule.write_evidence backs it (a direction on its colour /
+number field, a toggle named by its label, a literal colour / number / quote / link) — or is dropped when it names
+no field or gives no such evidence (`unsure`: never a guessed write); a no-title create_page stays
+(the rules: ask for the name). Every ask case is tagged meta.ask_family (the dataset's ask cap floors). report.json
+`ask_rule.pool`.
+
+Re-authoring (r7 §5.3): trigger.reauthor (or $SOUSCHEF_REAUTHOR, comma list) names addresses that are targets again
+(reason `reauthor`, MIN_POSITIVE_REAUTHOR kept positives) although the live model's training manifest already has
+them; the earlier rounds' authored cases for them that name no section instance or no "second" twin
+(author.ambiguity), or that write a value the editor cannot hold (author.bad_value: an invented tag, free text on
+the Pack filter setting), leave this round's trainable set (supersede_ambiguous; meta.superseded_by; report.json
+`ambiguous_superseded`) — the teacher asked "which one?" on those and kept no row, or kept a wrong one.
+
 SMOKE: 10 pool cases (at least one per family) rebased and one target × 4 cases authored;
 no contrast family.
 """
@@ -158,6 +173,10 @@ def relabel_page_create(c: dict) -> dict | None:
     import copy
     import re
     from ..exam import AMENDED_ID_SUFFIX, page_request, page_title_of, slugify
+    try:  # r7 §4: an amended id may carry any revision (.k2, .k3 …)
+        from ..exam import AMENDED_ID_RE
+    except ImportError:  # an exam.py before r7
+        AMENDED_ID_RE = re.compile(r"\.k\d+$")
     e = c.get("expected") or {}
     oos = e.get("out_of_scope") or {}
     if (c.get("score") or {}).get("mode") != "where" or "pages" not in (oos.get("expected_where") or e.get("where") or []):
@@ -200,7 +219,7 @@ def relabel_page_create(c: dict) -> dict | None:
         meta.setdefault("oracle_slug", slugify(name))
         c2["score"] = {"mode": "page"}
         c2["kind"] = "create_page"
-    if c2.get("holdout") and not str(c2.get("id")).endswith(AMENDED_ID_SUFFIX):
+    if c2.get("holdout") and not AMENDED_ID_RE.search(str(c2.get("id"))):
         meta["superseded"] = {"id": c.get("id")}
         c2["id"] = f"{c.get('id')}{AMENDED_ID_SUFFIX}"
     return c2
@@ -229,6 +248,107 @@ def fix_page_creates(cases: list[dict], policy: str = "on") -> dict:
     cases[:] = keep
     return {"policy": policy, "count": len(ids), "ids": ids[:60], "modes": dict(modes), "exam_clash": clash,
             "holdouts": sum(1 for c in cases if c.get("holdout") and "create_page" in ((c.get("meta") or {}).get("fixed") or []))}
+
+
+def check_ask_cases(cases: list[dict], m: Manifest) -> dict:
+    """The ask rule on the trainable `ask` cases already held (r7 §1.2; module docstring). In place; the report."""
+    import copy
+    from .. import askrule as AR
+    relabelled, dropped, unsure, kept, exempt = [], [], [], 0, 0
+    families: Counter = Counter()
+    keep: list[dict] = []
+    for c in cases:
+        if c.get("holdout") or (c.get("score") or {}).get("mode") != "ask":
+            keep.append(c)
+            continue
+        meta = c.setdefault("meta", {})
+        if meta.get("capability") == "create_page" or meta.get("ask_reason") == "which_one":
+            meta.setdefault("ask_family", AR.ask_family_of(c, m))
+            families[meta["ask_family"]] += 1
+            exempt += 1
+            keep.append(c)
+            continue
+        v = AR.classify_case(c, m)
+        if v.vague:
+            meta.setdefault("ask_family", AR.ask_family_of(c, m))
+            families[meta["ask_family"]] += 1
+            meta["ask_rule"] = {"kind": v.kind, "why": v.why}
+            kept += 1
+            keep.append(c)
+            continue
+        tgt = c.get("target") if isinstance(c.get("target"), dict) else None
+        keys = [{"target": copy.deepcopy(tgt), "key": str(k), "list": ""} for k in c.get("fields") or [] if k]
+        if tgt is None or not keys:
+            dropped.append(str(c.get("id")))
+            continue
+        fields = AR._case_fields(c, m)
+        field = fields[0] if len(keys) == 1 and len(fields) == 1 else None
+        evidence = AR.write_evidence(c.get("request"), field, verdict=v)
+        if evidence is None:  # clear by the rule, but no evidence for which write (r7 review): out, never a guess
+            unsure.append(str(c.get("id")))
+            continue
+        c2 = copy.deepcopy(c)
+        e = c2.setdefault("expected", {})
+        e.update(keys=keys, ops=[], diff=[], alt=[], alt_exact=[])
+        if field is not None:
+            d = AR.direction_of(c2.get("request"), field.type, field.key)
+            if d:
+                e["direction"] = {"key": keys[0]["key"], "dir": d, "from": None}
+        c2["score"] = {"mode": "keys"}
+        c2["kind"] = "relabelled"
+        m2 = c2["meta"]
+        m2["oracle_ops"] = []
+        m2.pop("ask_family", None)
+        m2["ask_rule"] = {"kind": v.kind, "why": v.why, "from_mode": "ask", "evidence": evidence}
+        m2["fixed"] = sorted(set(list(m2.get("fixed") or []) + ["ask_rule"]))
+        relabelled.append(str(c.get("id")))
+        keep.append(c2)
+    cases[:] = keep
+    return {"asks": kept + exempt + len(relabelled) + len(dropped) + len(unsure), "kept_vague": kept, "exempt": exempt,
+            "relabelled": len(relabelled), "relabelled_ids": relabelled[:50], "dropped": len(dropped) + len(unsure),
+            "dropped_ids": (dropped + unsure)[:50], "unsure": len(unsure), "by_ask_family": dict(families)}
+
+
+def reauthor_list(run_file: dict, env: dict | None = None) -> list[str]:
+    """trigger.reauthor (a list or a comma string), else $SOUSCHEF_REAUTHOR: the addresses re-authored this round."""
+    env = os.environ if env is None else env
+    v = env.get("SOUSCHEF_REAUTHOR") or ((run_file or {}).get("trigger") or {}).get("reauthor") or []
+    items = v if isinstance(v, list) else str(v).split(",")
+    return sorted({str(a).strip() for a in items if str(a).strip()})
+
+
+def supersede_ambiguous(cases: list[dict], m: Manifest, reauthor: list[str] | set[str], run_id: str) -> tuple[list[dict], dict]:
+    """(the cases without the earlier rounds' authored cases for a re-authored address that author.ambiguity or
+    author.bad_value rejects, the report). Holdouts and other cases stay; the superseded ones are only left out of this round (the pool file
+    keeps them). The clear ones that stay take the re-authored split group (author.author_group: one per case, not
+    one per address — `regrouped`), as this round's new drafts do: a target whose address group hashes into val
+    trained nothing in r6 (perksIcons.buttonOnImageOffset: 9 kept rows, all in val). The group is not part of the
+    carry's case fingerprint, so a regrouped case's earlier row is still carried."""
+    want = set(reauthor or ())
+    if not want:
+        return cases, {"count": 0, "by_reason": {}, "ids": [], "regrouped": 0}
+    keep, gone = [], []
+    why: Counter = Counter()
+    regrouped = 0
+    for c in cases:
+        meta = c.get("meta") or {}
+        if c.get("holdout") or meta.get("target_address") not in want or not meta.get("author"):
+            keep.append(c)
+            continue
+        amb = A.ambiguity(c, m) or A.bad_value(c, m)
+        if amb is None:
+            g = A.author_group({"address": meta["target_address"], "reason": "reauthor"}, str(c.get("id")))
+            if meta.get("group") != g:
+                meta["group"] = g
+                regrouped += 1
+            keep.append(c)
+            continue
+        meta["superseded_by"] = run_id
+        why[amb.split(":")[0]] += 1
+        gone.append(str(c.get("id")))
+    return keep, {"count": len(gone), "by_reason": dict(why), "ids": gone[:100], "regrouped": regrouped,
+                  "by_address": dict(Counter(str((c.get("meta") or {}).get("target_address"))
+                                             for c in cases if str(c.get("id")) in set(gone)))}
 
 
 def pool_files(store: Store) -> list[dict]:
@@ -388,6 +508,15 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
     pages_rep = fix_page_creates(kept, switch(run_file, "SOUSCHEF_PAGE_RELABEL", "page_relabel", "on"))
     if pages_rep["count"]:
         progress(f"prepare: {pages_rep['count']} page-create case(s) now expect create_page {pages_rep['modes']}")
+    ask_pool_rep = check_ask_cases(kept, m_new)
+    if ask_pool_rep["relabelled"] or ask_pool_rep["dropped"]:
+        progress(f"prepare: ask rule on the pool's ask cases: {ask_pool_rep['relabelled']} now write, "
+                 f"{ask_pool_rep['dropped']} dropped, {ask_pool_rep['kept_vague']} stay ask")
+    reauthor = [] if smoke else reauthor_list(run_file)
+    kept, sup_rep = supersede_ambiguous(kept, m_new, reauthor, run_id)
+    if sup_rep["count"]:
+        progress(f"prepare: {sup_rep['count']} earlier authored case(s) of re-authored keys name no instance / twin "
+                 f"{sup_rep['by_reason']}: left out of this round")
 
     # 2. authoring
     # SMOKE never touches the pool: its authored cases stay in the run's folder
@@ -406,7 +535,8 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
     if drift_run:
         static = store.read_json(f"drift/{drift_run}/static.json")
     extra_keys = set(((static or {}).get("impact") or {}).get("new_keys") or (static or {}).get("new_keys") or [])
-    targets, trep = A.find_targets(m_train_doc, m_new, pool=kept, dropped_writes=dropped_writes, extra=extra_keys)
+    targets, trep = A.find_targets(m_train_doc, m_new, pool=kept, dropped_writes=dropped_writes, extra=extra_keys,
+                                   reauthor=set(reauthor))
     if smoke:
         targets = targets[:1] or [smoke_target(m_new, kept)]
         targets[0]["holdout"] = False
@@ -478,6 +608,12 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
               "rebase": {k: v for k, v in rb.items() if k not in ("dropped", "leak")},
               "hidden_write_dropped": hidden_rep, "mailto_fixed": mailto_rep, "site_fonts_fixed": fonts_rep,
               "page_creates_fixed": pages_rep,
+              "ask_rule": {"pool": ask_pool_rep, "ask_first": {k: crep.get("ask_first", {}).get(k) for k in
+                                                               ("kept_vague", "relabelled", "twins", "dropped_rule",
+                                                                "twins_dropped", "first_turn_kinds")}
+                           if isinstance(crep.get("ask_first"), dict) else None,
+                           "vague": crep.get("vague"), "vague_twins": crep.get("vague_twins")},
+              "reauthor": reauthor, "ambiguous_superseded": sup_rep,
               "contrast": {k: v for k, v in crep.items() if k not in ("per_side",)},
               "targets": trep, "target_list": targets, "author": {k: v for k, v in arep.items() if k != "per_target"},
               "seen": seen, "families": dict(sorted(fam.items())),
@@ -491,7 +627,8 @@ def run(store: Store, run_id: str, *, mode: str, engine, engine_info: dict | Non
                "rebase_dropped": rb["totals"]["dropped"], "targets": len(targets),
                "authored_trainable": len(authored), "authored_holdout": len(holdout_new),
                "contrast": len(contrast), "hidden_write_dropped": hidden_rep["count"],
-               "page_creates_fixed": pages_rep["count"],
+               "page_creates_fixed": pages_rep["count"], "ask_pool_relabelled": ask_pool_rep["relabelled"],
+               "ambiguous_superseded": sup_rep["count"],
                "anthropic_usd": arep.get("anthropic_usd", 0.0)}
     return write_result(store, run_id, "prepare", "ok", metrics=metrics,
                         artifacts=[f"{pre}/prepare/cases.jsonl", f"{pre}/prepare/report.json", rel_auth])

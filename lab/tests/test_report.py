@@ -177,3 +177,119 @@ def test_the_training_arms_go_into_the_decision_and_its_message(tmp_path):
     assert "base:3407 loss 0.2311, gen 20/32; warm:3407 loss 0.2207, gen 21/32. Kept warm:3407." in msg
     assert "Not trained: base:2 (the 12 h window)." in msg
     assert REP.training_arms({"eval_loss_last": 0.2}) is None and REP.arms_text(None) == ""
+
+
+# --- r7: the r4 reference in the decision, and "asks on clear requests" (report only) ---------------------------------------
+
+def _exam(rid, request, cls, set_="holdout", ask_ok=False, sup=None):
+    meta = {"class": cls, **({"superseded": {"id": sup}} if sup else {})}
+    return {"id": rid, "set": set_, "request": request, "meta": meta, "expected": {"ask_ok": True} if ask_ok else {}}
+
+
+def _t(rid, verdict, set_="holdout", reasons=None, status="ok"):
+    return {"key": f"{set_}:{rid}", "id": rid, "set": set_, "status": status, "verdict": verdict,
+            "reasons": reasons if reasons is not None else (["asked_or_answered"] if verdict == "no_write" else [])}
+
+
+EXAM = [_exam("h004", "make our logo smaller", "relative"),
+        _exam("h020", "the footer text is too light", "relative"),
+        _exam("h022.k3", "add our weedmaps page", "synonym", ask_ok=True, sup="h022"),
+        _exam("h024.k2", "change the hover color for the category links", "synonym", ask_ok=True, sup="h024"),
+        _exam("h006.k3", "the body copy font should be Inter", "synonym", sup="h006"),
+        _exam("p085", "make the product titles bigger", "relative", set_="paraphrase"),
+        _exam("p150.k2", "i don't like the font | okay, lora", "followup", set_="followup")]
+VAGUE = {"add our weedmaps page", "change the hover color for the category links"}
+
+
+def test_clear_asks_counts_questions_on_clear_requests_by_class():
+    vague = lambda row: row["request"] in VAGUE  # noqa: E731 — askrule's verdict, stubbed
+    cand = [_t("h004", "no_write"), _t("h004", "no_write"), _t("h020", "no_write"), _t("h020", "pass"),
+            _t("h022.k3", "clarify_ok"), _t("h022.k3", "clarify_ok"),         # vague + ask_ok: not counted
+            _t("h024.k2", "no_write"),                                       # vague: not counted
+            _t("h006.k3", "no_write"), _t("h006.k3", "no_write", reasons=["refused_ops"]),
+            _t("p085", "no_write", set_="paraphrase"), _t("p085", "error", set_="paraphrase", status="error"),
+            _t("p150.k2", "no_write", set_="followup"),                      # followup: not one of the sets
+            _t("h004", "no_write", set_="holdout:recorded"),                 # the recorded variant: not counted
+            _t("h999", "no_write")]                                          # not in the exam: unmatched
+    r4 = [_t("h004", "pass"), _t("h006", "clarify_ok"), _t("h022", "no_write")]  # an older key's ids: matched by superseded
+    ca = REP.clear_asks({"candidate": cand, "r4 (recorded)": r4, "current": []}, EXAM, vague=vague)
+    assert ca["measured"] and set(ca["arms"]) == {"candidate", "r4 (recorded)"}
+    c = ca["arms"]["candidate"]["by_class"]
+    assert c["relative"] == {"asked": 4, "n": 5}  # h004 ×2, h020 once of twice, p085 (its error row left out)
+    assert c["synonym"]["asked"] == 1 and c["synonym"]["n"] == 2  # h006.k3: asked once, refused once
+    assert c["all"]["asked"] == 5 and c["all"]["n"] == 7
+    assert c["all"]["rows"] == ["holdout:h004", "holdout:h006.k3", "holdout:h020", "paraphrase:p085"]
+    assert ca["arms"]["candidate"]["unmatched"] == 1
+    r = ca["arms"]["r4 (recorded)"]["by_class"]
+    # h006 under its old key: clarify_ok there is not allowed by today's key (h006.k3 is not ask_ok) → counted
+    assert r["synonym"]["asked"] == 1 and r["synonym"]["n"] == 1 and r["relative"] == {"asked": 0, "n": 1}
+    assert REP.clear_asks_text(ca) == "Asks on clear requests: candidate relative 4/5, all 5/7; r4 (recorded) relative 0/1, all 1/2."
+    off = REP.clear_asks({"candidate": cand}, EXAM, vague=None)
+    assert off["measured"] is False and REP.clear_asks_text(off) == ""
+
+
+def test_the_r4_reference_and_clear_asks_reach_the_decision(tmp_path):
+    from tests.test_bar import R4_SETS, cand_of, ref_doc
+    s = seeded(tmp_path)
+    arms = arms_equal()
+    bar = BAR.evaluate(arms, baseline=None, th=TH, oos_where=where_all(arms))
+    doc = ref_doc(R4_SETS)
+    src = {"source": "baselines/reference/r4/baseline.json", "sha256": "ab" * 32, "copies_match": True, "tag": "r4",
+           "copies": [{"path": "baselines/reference/r4/baseline.json", "sha256": "ab" * 32}], "warnings": []}
+    BAR.add_reference(bar, cand_of({**R4_SETS, "holdout": (50, 38)}), BAR.reference_replicates(doc, BAR.REFERENCE_SETS),
+                      doc, TH, source=src)
+    ca = REP.clear_asks({"candidate": [_t("h004", "no_write")]}, EXAM, vague=lambda r: False)
+    res = REP.build(s, RUN, mode="full", bar=bar, eval_info={"clear_asks": ca},
+                    now=datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc))
+    dec = s.read_json(f"runs/{RUN}/decision.json")
+    r = dec["results"]
+    assert dec["bar_pass"] is False and any(x["name"] == "r4_floor" and not x["pass"] for x in r["bar"]["rules"])
+    ref = r["r4_reference"]
+    assert ref["measured"] and ref["source"] == "baselines/reference/r4/baseline.json" and ref["sha256"] == "ab" * 32
+    assert ref["sets"] == list(BAR.REFERENCE_SETS) and ref["pooled"]["b"] >= 12 and ref["excluded_amended"] == 0
+    assert ref["per_set"]["holdout"]["delta"] == -6.0
+    assert any(x["set"] == "holdout:vs-r4" for x in r["sets"])
+    assert "rows" not in r["clear_asks"]["arms"]["candidate"]["by_class"]["all"]
+    msg = res["notification"]["summary"]
+    assert msg.startswith("Bar rules failing: r4_floor: below holdout")
+    assert "vs r4's recorded answers: paraphrase +0.0 (tol" in msg and "holdout -6.0" in msg
+    assert "Against r4's" not in msg  # the failing rule's detail carries the line once
+    assert "Asks on clear requests: candidate relative 1/1, all 1/1." in msg
+    rep = s.read_json(f"runs/{RUN}/report.json")
+    assert rep["warnings"] == [] and "asks on clear requests, candidate: relative 1/1, all 1/1" in rep["summary"]
+    assert "holdout:vs-r4" in rep["summary"]
+
+
+def test_a_missing_r4_reference_is_a_warning(tmp_path):
+    s = seeded(tmp_path)
+    arms = arms_equal()
+    bar = BAR.evaluate(arms, baseline=None, th=TH, oos_where=where_all(arms))
+    BAR.add_reference(bar, {}, None, None, TH, source={"looked_in": ["baselines/reference/r4/baseline.json"],
+                                                        "warnings": ["no r4 baseline at baselines/reference/r4/baseline.json"]})
+    res = REP.build(s, RUN, mode="full", bar=bar, eval_info={"clear_asks": REP.clear_asks({}, [], vague=None)},
+                    now=datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc))
+    assert res["notification"]["summary"].startswith("Every bar rule passes (7). Against r4's recorded answers: NOT MEASURED")
+    rep = s.read_json(f"runs/{RUN}/report.json")
+    assert rep["warnings"] == ["r4_floor: no r4 baseline at baselines/reference/r4/baseline.json",
+                               "clear_asks: not measured (the lab has no askrule module)"]
+    assert rep["results"]["r4_reference"]["measured"] is False
+
+
+def test_clear_asks_with_the_real_ask_rule_on_the_exam():
+    """askrule (r7 item 1) on the exam's own rows: the over-asked relative requests are clear, the ask_ok ones vague."""
+    import pytest
+    try:
+        import souschef_lab.askrule  # noqa: F401 — r7 item 1, another builder's module
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"askrule is not importable: {type(e).__name__}")
+    from souschef_lab.exam import MANIFEST_FILE, load_set
+    from souschef_lab.manifest import Manifest
+    import json
+    m = Manifest(json.loads(MANIFEST_FILE.read_text(encoding="utf-8")))
+    vague = REP.askrule_vague(m)
+    hold = {r["id"]: r for r in load_set("holdout")}
+    assert not vague(hold["h004"]) and not vague(hold["h020"]) and not vague(hold["h006.k3"])  # smaller / too light / Inter
+    assert vague(hold["h022.k3"]) and vague(hold["h024.k2"])
+    rows = [_t("h004", "no_write"), _t("h022.k3", "clarify_ok"), _t("h006.k3", "no_write")]
+    ca = REP.clear_asks({"candidate": rows}, list(hold.values()), vague=vague)
+    assert ca["arms"]["candidate"]["by_class"]["all"] == {"asked": 2, "n": 2, "rows": ["holdout:h004", "holdout:h006.k3"]}

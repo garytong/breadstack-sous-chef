@@ -7,6 +7,7 @@ import re
 import pytest
 
 from souschef_lab import FIXTURES_DIR
+from souschef_lab import askrule as AR
 from souschef_lab import contrast as K
 from souschef_lab import engine as E
 from souschef_lab.leak import ExamIndex
@@ -102,7 +103,7 @@ def test_contrast_round_end_to_end(m):
     finally:
         eng.close()
     assert rep["template_problems"] == []
-    assert 120 <= rep["kept"] == len(cases) <= 260, rep
+    assert 120 <= rep["kept"] == len(cases) <= 300, rep
     # the capability groups ride along; an engine without create_page keeps only their rename/delete, add-a-section
     # and listing cases (every create and decline is measured on the engine: page_oracle_refused / E_OP)
     assert set(rep["pairs"]) == {s.pair for s in K.SIDES} | {"site_fonts", "vague", "create_page", "list_options"}
@@ -145,6 +146,24 @@ def test_contrast_round_end_to_end(m):
     # deterministic: the same manifest gives the same cases
     first = {c["id"]: c["request"] for c in cases}
     assert all(first.get(c["id"]) == c["request"] for c in again)
+    # r7 §2: every vague (ask) case has its write twins, same field, same opening words, same split group
+    by_id = {c["id"]: c for c in cases}
+    vague = [c for c in cases if c["meta"]["contrast"]["pair"] == "vague"]
+    assert rep["vague_twins"] >= 2 * 12, rep
+    for v in vague:
+        pair = v["meta"]["ask_pair"]
+        assert pair["role"] == "ask" and v["meta"]["ask_family"] == "complaint"
+        twins = [by_id[t] for t in pair["twins"] if t in by_id]
+        assert twins, v["id"]
+        for t in twins:
+            assert t["request"].startswith(v["request"] + ", ") and t["meta"]["group"] == v["meta"]["group"]
+            assert t["meta"]["ask_pair"] == {"twin": v["id"], "role": "write"}
+            assert t["meta"]["contrast"]["key"] == v["meta"]["contrast"]["key"]
+            assert (t["score"]["mode"] == "keys" and t["expected"]["direction"]) or t["score"]["mode"] in ("exact", "keys")
+            assert int(t["id"][-4:]) == K.vague_twin_id(int(v["id"][-4:]), pair["twins"].index(t["id"]))
+            assert not AR.classify(t["request"], values=AR.font_names(m) + ["2", "5"]).vague
+        assert AR.classify(v["request"]).vague
+    assert all(first.get(t["id"]) == t["request"] for t in again if t["meta"].get("generator") == K.VAGUE_TWIN_GENERATOR)
 
 
 def test_a_case_that_teaches_an_exam_items_answer_is_dropped(m):
@@ -211,20 +230,138 @@ def test_ask_first_cases_from_the_follow_up_familys_vague_first_turns(m):
             "manifest_hash": m.hash, "template": "vintage", "expected": {"ops": []}}
     pool = [
         {**base, "id": "f2-a", "request": "Oswald", "meta": {"family": "F2", "group": "g1", "page": "home"},
-         "history": [{"user": "the headings look too plain", "expect": "ask", "assistant": "Which font would you like?"}]},
+         "history": [{"user": "can we rethink the headings", "expect": "ask", "assistant": "Which font would you like?"}]},
         {**base, "id": "f2-b", "request": "yes", "meta": {"family": "F2", "group": "g2", "page": "home"},
-         "history": [{"user": "the headings look too plain", "expect": "offer", "assistant": "Bigger?"}]},  # same text
+         "history": [{"user": "can we rethink the headings", "expect": "offer", "assistant": "Bigger?"}]},  # same text
         {**base, "id": "f2-c", "request": "the hero", "meta": {"family": "F2", "group": "g3"},
          "history": [{"user": "make it pop", "expect": "write", "ops": []}]},                                # acted on
         {**base, "id": "f2-d", "request": "x", "holdout": True, "meta": {"family": "F2"},
          "history": [{"user": "the footer is dull", "expect": "ask"}]},                                      # a holdout
     ]
-    out, rep = K.ask_first_cases(pool, m, None, load_context_fixture(), seen=set())
+    out, rep = K.ask_first_cases(pool, m, None, load_context_fixture(), seen=set(), pairs=False)
     assert [c["id"] for c in out] == ["askfirst1-F2-f2-a"] and rep["dropped"] == {"duplicate": 1}
     c = out[0]
-    assert c["request"] == "the headings look too plain" and c["history"] == [] and c["score"]["mode"] == "ask"
+    assert c["request"] == "can we rethink the headings" and c["history"] == [] and c["score"]["mode"] == "ask"
     assert c["meta"]["group"] == "g1" and c["meta"]["family"] == "F2" and c["meta"]["ask_first"]["from"] == "f2-a"
     assert c["context"]["page"] == "home" and c["expected"]["ops"] == []
+
+
+def test_vague_twins_are_built_from_the_vague_text_by_field_type(m):
+    side = next(s for s in K.SIDES if s.name == "footer_text_color")
+    tpl = "something is off about the {label}"
+    ask, why = K.build_vague_case(m, side, tpl, "contrast1-F8-0914", twins=("contrast1-F8-1227", "contrast1-F8-1228"))
+    assert why == "" and ask["request"] == "something is off about the footer text color"
+    assert ask["meta"]["ask_pair"] == {"twin": "contrast1-F8-1227", "twins": ["contrast1-F8-1227", "contrast1-F8-1228"],
+                                       "role": "ask"}
+    rel, _ = K.build_vague_twin(m, side, tpl, 0, "contrast1-F8-1227", ask["id"])
+    lit, _ = K.build_vague_twin(m, side, tpl, 1, "contrast1-F8-1228", ask["id"])
+    assert rel["request"].startswith(ask["request"] + ", ") and lit["request"].startswith(ask["request"] + ", try #")
+    assert rel["score"]["mode"] == "keys" and rel["expected"]["direction"]["key"] == "footerTextColor"
+    want = AR.direction_of(rel["request"], "color")
+    assert rel["expected"]["direction"]["dir"] == want and want in ("darker", "lighter")
+    assert lit["score"]["mode"] == "exact" and lit["expected"]["keys"][0]["key"] == "footerTextColor"
+    for t in (rel, lit):
+        assert t["meta"]["group"] == ask["meta"]["group"] == "vague:footer_text_color"
+        assert t["meta"]["ask_pair"] == {"twin": ask["id"], "role": "write"}
+    # the same on another manifest: ids are the caller's (VAGUE_TWIN_BASE), texts the template's
+    snap = load(str(FIXTURES_DIR / "manifest.snapshot.json"))
+    rel2, _ = K.build_vague_twin(snap, side, tpl, 0, "contrast1-F8-1227", ask["id"])
+    assert rel2["id"] == rel["id"] and rel2["request"] == rel["request"]
+    assert K.vague_twin_id(901, 0) == 1201 and K.vague_twin_id(920, 1) == 1240
+    # a number twin: relative up / down or a px value; a font twin: a font of the field's list
+    size = next(s for s in K.SIDES if s.name == "logo_height_mobile")
+    n0, _ = K.build_vague_twin(m, size, tpl, 0, "t-1", "a")
+    n1, _ = K.build_vague_twin(m, size, tpl, 1, "t-2", "a")
+    assert n0["expected"]["direction"]["dir"] in ("up", "down") and n1["request"].endswith("px")
+    # r7 review: a colour / number side's third twin goes the OTHER way from twin 0 (ids from VAGUE_TWIN2_BASE)
+    other, _ = K.build_vague_twin(m, side, tpl, 2, "contrast1-F8-1314", ask["id"])
+    assert other["expected"]["direction"]["dir"] in ("darker", "lighter")
+    assert other["expected"]["direction"]["dir"] != rel["expected"]["direction"]["dir"]
+    assert other["request"].startswith(ask["request"] + ", ") and other["meta"]["group"] == ask["meta"]["group"]
+    n2, _ = K.build_vague_twin(m, size, tpl, 2, "t-5", "a")
+    assert {n0["expected"]["direction"]["dir"], n2["expected"]["direction"]["dir"]} == {"up", "down"}
+    assert K.vague_twin_id(914, 2) == 1314 and K.twin_count(m, side) == 3 and K.twin_count(m, size) == 3
+    font = next(s for s in K.SIDES if s.name == "shop_menu_font")
+    assert K.twin_count(m, font) == 2 and K.build_vague_twin(m, font, tpl, 2, "t-6", "a") == (None, "twin_unsupported_type")
+    f0, _ = K.build_vague_twin(m, font, tpl, 0, "t-3", "a")
+    assert f0["request"].startswith("something is off about the shop menu font, use ") and f0["score"]["mode"] == "exact"
+
+
+def test_a_vague_template_that_drifts_into_a_direction_is_dropped(m):
+    side = next(s for s in K.SIDES if s.name == "footer_text_color")
+    assert K.build_vague_case(m, side, "the {label} is too light", "x")[1].startswith("ask_rule:direction")
+    assert K.build_vague_case(m, side, "the {label} should be #000000", "x")[1].startswith("ask_rule:value")
+
+
+def _f2(m, cid, first, request, ops, *, mode="exact", target=None):
+    from souschef_lab.state import build_state
+    return {"id": cid, "target": target or (ops[0]["target"] if ops else None), "fields": [], "request": request,
+            "site_state": build_state(m, template="vintage"), "context": {"page": "home"}, "score": {"mode": mode},
+            "holdout": False, "manifest_hash": m.hash, "template": "vintage",
+            "expected": {"ops": ops, "diff": [], "keys": [], "alt": [], "alt_exact": []},
+            "meta": {"family": "F2", "group": f"g:{cid}", "page": "home", "oracle_ops": ops},
+            "history": [{"user": first, "expect": "ask", "assistant": "What would you like?", "page": "home", "ops": []}]}
+
+
+def test_ask_first_relabels_directed_first_turns_and_pairs_the_vague_ones(m):
+    """r7 §1.2 / §2.1: "less padding on the content block, 24px" is a write (askfirst1r, keys) and no ask; "can you
+    update the announcement bar" stays ask with a write twin "…, black background please" in its split group."""
+    from souschef_lab.r4cases import remeasure
+    from souschef_lab.state import load_context_fixture
+    _need_engine()
+    cb = {"kind": "section", "page": "home", "sectionId": "contentBlock-1"}
+    hdr = {"kind": "global", "panel": "HeaderSection"}
+    foot = {"kind": "global", "panel": "FooterSection"}
+    pool = [
+        _f2(m, "f2-pad", "less padding on the content block, 24px", "yes 24",
+            [{"op": "set_fields", "target": cb, "values": {"paddingY": 24}}]),
+        _f2(m, "f2-ann", "can you update the announcement bar", "black background please",
+            [{"op": "set_fields", "target": hdr, "values": {"announcementBar.bgColor": "#000000"}}], mode="keys"),
+        _f2(m, "f2-yes", "can we rethink the footer", "sure, go ahead",
+            [{"op": "set_fields", "target": foot, "values": {"footerTextColor": "#222222"}}], mode="keys"),
+        _f2(m, "f2-two", "make the footer text darker", "and the links",
+            [{"op": "set_fields", "target": foot, "values": {"footerTextColor": "#222222",
+                                                              "footerLinkHighlightColor": "#111111"}}], mode="keys"),
+        # r7 review: a clear turn with no evidence for the source's write ("pop more" names no way for a colour) …
+        _f2(m, "f2-pop", "make the footer text pop more", "darker",
+            [{"op": "set_fields", "target": foot, "values": {"footerTextColor": "#222222"}}], mode="keys"),
+        # … and one text relabelled to two different fields: neither is the text's
+        _f2(m, "f2-c1", "the footer looks too light", "the text",
+            [{"op": "set_fields", "target": foot, "values": {"footerTextColor": "#222222"}}], mode="keys"),
+        _f2(m, "f2-c2", "the footer looks too light", "the links",
+            [{"op": "set_fields", "target": foot, "values": {"footerLinkHighlightColor": "#111111"}}], mode="keys"),
+    ]
+    eng = E.PersistentEngine(manifest_path=EXAM_MANIFEST, size=2)
+    try:
+        extras = load_context_fixture()
+        for c in pool:
+            assert remeasure(c, eng, m, extras) is None, c["id"]
+        out, rep = K.ask_first_cases(pool, m, eng, extras, seen=set())
+    finally:
+        eng.close()
+    ids = {c["id"]: c for c in out}
+    assert set(ids) == {"askfirst1r-F2-f2-pad", "askfirst1-F2-f2-ann", "askpair1-F2-f2-ann", "askfirst1-F2-f2-yes"}, ids
+    pad = ids["askfirst1r-F2-f2-pad"]
+    assert pad["score"]["mode"] == "keys" and pad["request"] == "less padding on the content block, 24px"
+    assert pad["expected"]["keys"] == [{"target": cb, "key": "paddingY", "list": ""}]
+    assert pad["expected"]["direction"] == {"key": "paddingY", "dir": "down", "from": None}
+    assert pad["meta"]["ask_rule"]["kind"] == "value" and pad["meta"]["group"] == "g:f2-pad"
+    # the vintage home has several content blocks: the write case focuses the source's one, so it is not a "which one?"
+    from souschef_lab.retrain.author import ambiguity
+    assert pad["meta"]["view"]["activeSectionId"] == "contentBlock-1" and pad["meta"]["ask_rule"]["focused"] == "which_one"
+    assert ambiguity(pad, m) is None
+    ask, twin = ids["askfirst1-F2-f2-ann"], ids["askpair1-F2-f2-ann"]
+    assert ask["score"]["mode"] == "ask" and ask["meta"]["ask_pair"] == {"twin": twin["id"], "role": "ask"}
+    assert ask["meta"]["ask_family"] in ("choice_missing", "text_missing")
+    assert twin["request"] == "can you update the announcement bar, black background please"
+    assert twin["score"]["mode"] == "keys" and twin["meta"]["ask_pair"] == {"twin": ask["id"], "role": "write"}
+    assert twin["meta"]["group"] == ask["meta"]["group"] == "g:f2-ann" and twin["history"] == []
+    # the merged text still vague: no twin (the dataset then drops the unpaired ask row)
+    assert "ask_pair" not in ids["askfirst1-F2-f2-yes"]["meta"]
+    assert rep["relabelled"] == 1 and rep["kept_vague"] == 2 and rep["twins"] == 1
+    assert rep["dropped_rule"] == {"no_field": 1, "unsure": 1, "conflicting_keys": 2}
+    assert rep["twins_dropped"] == {"still_vague": 1}
+    assert pad["meta"]["ask_rule"]["evidence"] == "oracle:24"
 
 
 # --- r6-4: the create_page and list_options groups ---------------------------------------------------------------------

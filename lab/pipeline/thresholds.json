@@ -34,5 +34,24 @@
   "smoke_rows_per_set": 10,
   "field_list_cap": 500,
   "sigma_seed": {},
-  "_sigma_seed": "Retrain bar only (retrain/bar.py): {set: rows} of seed-to-seed spread, measured by retrain/noise.py (docs/RETRAIN.md R10); empty = eval-replicate noise only. Never used by drift verdicts."
+  "_sigma_seed": "Retrain bar only (retrain/bar.py): {set: rows} of seed-to-seed spread, measured by retrain/noise.py (docs/RETRAIN.md R10); empty = eval-replicate noise only. Never used by drift verdicts.",
+  "r4_reference": {
+    "tag": "r4",
+    "digest": "sha256:f657e11053e3baf801b489421637b8a0aaccf450951046ec4c9853ca0c7287b4",
+    "file_sha256": "496a5ca0084ca3da560b4c9cf4bdb9929a2711492771a2313f11f0203a5d585c",
+    "baseline": [
+      "baselines/reference/r4/baseline.json",
+      "baselines/sha256:f657e11053e3baf801b489421637b8a0aaccf450951046ec4c9853ca0c7287b4/baseline.json",
+      "experiments/mistral/snapshots/r4/baselines/sha256:f657e11053e3baf801b489421637b8a0aaccf450951046ec4c9853ca0c7287b4/baseline.json"
+    ],
+    "rows_run": "rt-20261016-2102-3eeb97-eb908674",
+    "sets": [
+      "paraphrase",
+      "holdout",
+      "real",
+      "followup"
+    ],
+    "bar": true
+  },
+  "_r4_reference": "Retrain bar only (retrain/bar.py add_reference, rule r4_floor; r7 spec item 6, pre-registered): the candidate against r4's RECORDED calibration replicates (the first `baseline` path found in the pipeline bucket; every copy found is sha256-recorded and compared, a mismatch is a warning; a file whose model digest is not `digest` is refused). `file_sha256` pins the file itself (sha256 of the bytes, 2026-10-17: both bucket copies) — `digest` is the MODEL digest inside it; a copy with another file sha256 (a recalibration written to the same path) is skipped with a warning, none matching = NOT MEASURED. Per set Δ_vs_r4 ≥ −tol (σ from r4's replicates) and the pooled McNemar not significantly worse. No file: the rule passes NOT MEASURED with a warning. `rows_run`: the round whose current arm was r4 (its eval/current/rows.jsonl verdicts feed the report-only 'asks on clear requests' count). `bar: false` reports without gating; null disables. baselines/reference/r4/ is a person's copy (gcloud storage cp) before the Mistral cleanup deletes experiments/mistral/."
 }

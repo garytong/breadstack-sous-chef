@@ -599,7 +599,8 @@ def inflate(row: dict, contexts: dict, *, with_selected: bool = False) -> dict:
 # --- answer-key amendments -------------------------------------------------------------------------------------------------
 #
 # The sets are built from the study (`exam build`); a product decision that changes what is RIGHT for a row is an
-# amendment here, applied by load_set, so a rebuild keeps it. An amended row gets a new id (`<id>.<rev>`): a drift
+# amendment here, applied by load_set, so a rebuild keeps it. An amended row gets a new id (`<id>.k<rev>`, an entry's
+# `_rev`, 2 by default; AMENDED_ID_RE matches any): a drift
 # baseline or an earlier eval scored on the old key never pairs with it (it leaves every Δ until re-calibrated), and
 # its old id, keys and alt stay in meta.superseded (r4score.apply_font_policy "as_authored" restores them).
 #
@@ -611,7 +612,8 @@ def inflate(row: dict, contexts: dict, *, with_selected: bool = False) -> dict:
 # study's own follow-up p150 does on that same first turn. h059's history asked "headings and body?" and the
 # merchant said "both": those two stay required, every site font is an alternative.
 ANSWER_KEY = "font-all+vague-ask-2026-10-15"
-AMENDED_ID_SUFFIX = ".k2"
+AMENDED_ID_SUFFIX = ".k2"  # the 2026-10-15 amendments' id suffix (an entry's default `_rev`); old callers
+AMENDED_ID_RE = re.compile(r"\.k\d+$")  # any amended id (`<id>.k<rev>`: .k2 the 2026-10-15 key, .k3 the r7 key)
 _G = {"kind": "global"}
 SITE_FONTS_VINTAGE = ("headingFont", "bodyFont", "navFont", "buttonFont", "productTitleFont", "productBodyFont",
                       "announcementBar.fontFamily")
@@ -678,6 +680,24 @@ PAGE_CREATE_KEY = "create-page-2026-10-15"
 AMENDMENTS[("out_of_scope", "p137")] = {
     "page": {"expect": "create", "title": "Events", "in_nav": False, "status": "published", "if_exists": "decline"},
     "out_of_scope": None, "_row": {"kind": "create_page"}, "_meta": {"class": "create"}, "_answer_key": PAGE_CREATE_KEY}
+
+# ask-rule (r7, pre-registered before the r7 round; docs/RETRAIN.md "What changed for r7"): the r7 ask rule — a request
+# may be answered with a question only when it gives no value, no direction and no clear action (rules.go: "no value,
+# no direction and no change to make"). Three single-turn rows give no value a write could use and were left out of
+# VAGUE_ASK_OK: they become ask_ok. h006 GIVES its value ("Inter"): a write is required, never a question; "body copy"
+# names a part, so bodyFont alone is required, and the footer's body font (footerBodyFont on the deployed manifest,
+# footerBodyTextFontFamily on the exam's) may be written too — it is the body text of the footer, not a stray.
+# The rev-3 entries get `.k3` ids: a baseline scored on the old key (r6's 7fb1…, r4's f657…) never pairs with them.
+# NOT amended (decided in the r7 spec, item 4): p050 / p053 ("change the share picture" / "the big image at the top")
+# — an image request's answer is pick_asset (rules.go), which lets the merchant choose; the exam's other no-image rows
+# (p004 p005 p006 p037 p066 p097 h040) would have to move with them, never just the two.
+ANSWER_KEY_R7 = "ask-rule-r7-2026-10-18"
+R7_ASK_OK = (("holdout", "h022"),     # add our weedmaps page (no URL)
+             ("paraphrase", "p030"),  # put our facebook page in the footer (no URL)
+             ("paraphrase", "p047"))  # change what shows up as the title on google (no title; p048 is ask_ok already)
+H006_FOOTER_FONTS = ("footerBodyFont", "footerBodyTextFontFamily")  # deployed / exam manifest
+AMENDMENTS.update({k: {"ask_ok": True, "_rev": 3, "_answer_key": ANSWER_KEY_R7} for k in R7_ASK_OK})
+AMENDMENTS[("holdout", "h006")] = {"optional": _keys(H006_FOOTER_FONTS), "_rev": 3, "_answer_key": ANSWER_KEY_R7}
 EXPECTED_MEMBERS = ("optional", "ask_ok", "site_fonts", "page")  # what an amendment may add (cleared first)
 
 
@@ -690,6 +710,7 @@ def amend(row: dict, set_name: str | None = None) -> dict:
     a = copy.deepcopy(a)
     row_members, meta_members = a.pop("_row", {}), a.pop("_meta", {})
     answer_key = a.pop("_answer_key", ANSWER_KEY)
+    rev = int(a.pop("_rev", 2))
     r = copy.deepcopy(row)
     e = r.setdefault("expected", {})
     meta = r.setdefault("meta", {})
@@ -710,7 +731,7 @@ def amend(row: dict, set_name: str | None = None) -> dict:
     meta.update(meta_members)
     if "keys" in a:
         r["fields"] = [x["key"] or x["list"] for x in e.get("keys") or []]
-    r["id"] = f"{row.get('id')}{AMENDED_ID_SUFFIX}"
+    r["id"] = f"{row.get('id')}.k{rev}"
     return r
 
 

@@ -69,7 +69,12 @@ def test_retrain_dry_smoke_end_to_end(tmp_path, capsys):
         assert s.read_json(f"runs/{run_id}/result-{st}.json")["status"] == "ok", st
     dec = s.read_json(f"runs/{run_id}/decision.json")
     assert dec["smoke"] is True and isinstance(dec["bar_pass"], bool)
-    assert {r["name"] for r in dec["results"]["bar"]["rules"]} == {"sets", "mcnemar", "oos_where", "f0h_unseen", "trigger", "ghosts"}
+    assert {r["name"] for r in dec["results"]["bar"]["rules"]} == {"sets", "mcnemar", "oos_where", "f0h_unseen", "trigger", "ghosts",
+                                                                   "r4_floor"}
+    # r7: the DRY bucket has no r4 reference — the floor passes NOT MEASURED and the report warns
+    floor = next(r for r in dec["results"]["bar"]["rules"] if r["name"] == "r4_floor")
+    assert floor["pass"] and floor["detail"].startswith("NOT MEASURED")
+    assert any(w.startswith("r4_floor: ") for w in s.read_json(f"runs/{run_id}/report.json")["warnings"])
     note = s.read_json(f"runs/{run_id}/result-eval.json")["notification"]
     assert note["kind"] == "candidate_ready" and "SMOKE" in note["title"]
     # SMOKE never touches the pool: the authored cases stay in the run

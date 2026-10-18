@@ -174,3 +174,136 @@ def test_out_of_scope_allows_two_misses_on_twelve_rows():
     w["candidate"] = reps("out_of_scope", 12, 9)
     b = BAR.evaluate(arms, baseline=None, th=TH, oos_where=w)
     assert not rule(b, "oos_where")["pass"] and "need 10" in rule(b, "oos_where")["detail"]
+
+
+# --- r7: the recorded r4 reference (add_reference, rule r4_floor) ----------------------------------------------------------
+
+def ref_doc(sets_n: dict[str, tuple[int, int]], k: int = 3, extra: dict[str, int] | None = None) -> dict:
+    """A baseline.json with k replicates: per set (n rows, passed), keys "<set>:r###" (plus `extra` rows)."""
+    reps_ = []
+    for i in range(k):
+        rows: dict[str, int] = {}
+        for s, (n, passed) in sets_n.items():
+            rows.update(reps(s, n, passed, k=1)[0])
+        rows.update(extra or {})
+        reps_.append({"at": "2026-10-14T02:43:34Z", "run": f"cal#T{i + 1}", "rows": rows})
+    return {"digest": "sha256:f657", "tag": "r4", "replicates": reps_}
+
+
+def cand_of(sets_n: dict[str, tuple[int, int]], k: int = 2) -> dict[str, list[dict[str, int]]]:
+    return {s: reps(s, n, passed, k=k) for s, (n, passed) in sets_n.items()}
+
+
+def evaluated() -> dict:
+    arms = arms_equal()
+    return BAR.evaluate(arms, baseline=None, th=TH, oos_where=where_all(arms))
+
+
+R4_SETS = {"paraphrase": (40, 34), "holdout": (50, 44), "real": (14, 12), "followup": (12, 9)}
+
+
+def test_r4_floor_passes_within_tolerance_and_adds_reference_rows():
+    doc = ref_doc(R4_SETS)
+    cand = cand_of({**R4_SETS, "holdout": (50, 43)})  # one row down: within tol
+    b = BAR.add_reference(evaluated(), cand, BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    r = rule(b, "r4_floor")
+    assert r["pass"] and b["pass"] and "holdout -1.0" in r["detail"], r
+    by = {x["set"]: x for x in b["sets"]}
+    ho = by["holdout:vs-r4"]
+    assert ho["variant"] == "reference" and ho["bar"] is False and ho["n"] == 50 and ho["m"] == [3, 2]
+    assert ho["current"] == 44 and ho["candidate"] == 43 and ho["tol"] >= 1
+    assert {"paraphrase:vs-r4", "real:vs-r4", "followup:vs-r4"} <= set(by)
+    assert b["r4_reference"]["measured"] and b["r4_reference"]["pooled"]["b"] >= 2
+    t = BAR.table_text(b)
+    assert t.index("paraphrase:vs-r4") > t.index("paraphrase ") and "holdout:vs-r4" in t
+    # the live bar is untouched: the reference rows never feed the `sets` / `mcnemar` rules
+    assert rule(b, "sets") == rule(evaluated(), "sets") and b["pooled"] == evaluated()["pooled"]
+
+
+def test_r4_floor_fails_four_holdout_rows_below_r4():
+    doc = ref_doc(R4_SETS)
+    cand = cand_of({**R4_SETS, "holdout": (50, 40)})
+    b = BAR.add_reference(evaluated(), cand, BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    r = rule(b, "r4_floor")
+    assert not r["pass"] and not b["pass"] and r["detail"].startswith("below holdout"), r
+    assert all(x["pass"] for x in b["rules"] if x["name"] != "r4_floor")  # only the floor fails
+    # `bar: false` measures the same and never gates
+    b2 = BAR.add_reference(evaluated(), cand, BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH, gate=False)
+    assert rule(b2, "r4_floor")["pass"] and b2["pass"] and "REPORT ONLY (would fail)" in rule(b2, "r4_floor")["detail"]
+
+
+def test_r4_floor_pooled_mcnemar_catches_small_losses_spread_over_sets():
+    big = {"paraphrase": (150, 140), "holdout": (60, 55), "real": (14, 12), "followup": (12, 9)}
+    doc = ref_doc(big)
+    cand = cand_of({"paraphrase": (150, 135), "holdout": (60, 51), "real": (14, 12), "followup": (12, 9)})
+    th = {**TH, "sigma_seed": {"paraphrase": 4.0, "holdout": 3.0}}  # wide set tolerances: only the pooled test fails
+    b = BAR.add_reference(evaluated(), cand, BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, th)
+    r = rule(b, "r4_floor")
+    by = {x["set"]: x for x in b["sets"]}
+    assert all(by[f"{s}:vs-r4"]["delta"] >= -by[f"{s}:vs-r4"]["tol"] for s in big)
+    assert by["paraphrase:vs-r4"]["sigma_seed"] == 4.0  # σ_seed is looked up by the set, not "paraphrase:vs-r4"
+    assert not r["pass"] and "McNemar" in r["detail"], r
+
+
+def test_r4_floor_leaves_amended_and_stale_rows_out_and_counts_them():
+    doc = ref_doc(R4_SETS, extra={"holdout:h022": 1, "holdout:h006": 1, "holdout:h099": 1})
+    cand = cand_of(R4_SETS)
+    for rep in cand["holdout"]:
+        rep.update({"holdout:h022.k3": 0, "holdout:h006.k3": 0, "holdout:h059.k2": 0, "holdout:h200": 1})
+    b = BAR.add_reference(evaluated(), cand, BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    ho = {x["set"]: x for x in b["sets"]}["holdout:vs-r4"]
+    assert ho["n"] == 50 and ho["delta"] == 0 and rule(b, "r4_floor")["pass"]  # the .kN losses never pair
+    assert ho["excluded"] == {"amended": 3, "stale": 1, "unrecorded": 1}
+    info = b["r4_reference"]
+    assert info["excluded_amended"] == 3 and info["excluded_stale"] == 1
+    ex = info["excluded"]["holdout"]
+    assert ex["amended"] == ["holdout:h006.k3", "holdout:h022.k3", "holdout:h059.k2"]
+    assert ex["amended_recorded"] == ["holdout:h006", "holdout:h022"] and ex["stale"] == ["holdout:h099"]
+
+
+def test_a_missing_reference_is_not_measured_and_passes():
+    b = BAR.add_reference(evaluated(), cand_of(R4_SETS), None, None, TH,
+                          source={"looked_in": ["baselines/reference/r4/baseline.json"]})
+    r = rule(b, "r4_floor")
+    assert r["pass"] and b["pass"] and r["detail"].startswith("NOT MEASURED") and "baselines/reference/r4" in r["detail"]
+    assert not any(x.get("variant") == "reference" for x in b["sets"])
+    assert not b["r4_reference"]["measured"]
+    assert BAR.reference_text(b["r4_reference"]).startswith("Against r4's recorded answers: NOT MEASURED")
+    # idempotent: a second call replaces the rule and the rows, never duplicates them
+    doc = ref_doc(R4_SETS)
+    BAR.add_reference(b, cand_of(R4_SETS), BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    BAR.add_reference(b, cand_of(R4_SETS), BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    assert [x["name"] for x in b["rules"]].count("r4_floor") == 1
+    assert [x["set"] for x in b["sets"]].count("holdout:vs-r4") == 1
+    assert "holdout +0.0 (tol" in BAR.reference_text(b["r4_reference"])
+
+
+def test_r4_floor_adds_one_seed_draw_not_two():
+    """r7 review: r4 is ONE fixed recorded model, only the candidate is a seed draw — the reference rows add
+    1·σ_seed², the live bar 2·σ_seed². With σ_seed 2.5 the live formula gives the holdout tolerance 8 (r6's −6.3 would
+    pass); the reference's gives 6."""
+    doc = ref_doc(R4_SETS)
+    cand = cand_of(R4_SETS)
+    th = {**TH, "sigma_seed": {"holdout": 2.5}}
+    b = BAR.add_reference(evaluated(), cand, BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, th)
+    ho = {x["set"]: x for x in b["sets"]}["holdout:vs-r4"]
+    import math
+    sd = ho["sigma_delta"]
+    assert ho["tol"] == max(1, math.ceil(2 * math.sqrt(sd ** 2 + 2.5 ** 2) - 1e-9))
+    live = BAR.set_row("holdout", "rederived", cand["holdout"], cand["holdout"], doc, th, bar=True)
+    assert live["tol"] == max(1, math.ceil(2 * math.sqrt(live["sigma_delta"] ** 2 + 2 * 2.5 ** 2) - 1e-9))
+    assert ho["tol"] < live["tol"]
+
+
+def test_a_holdout_only_r4_floor_failure_a_reroll_could_explain_says_so():
+    doc = ref_doc(R4_SETS)
+    near = BAR.add_reference(evaluated(), cand_of({**R4_SETS, "holdout": (50, 40)}),
+                             BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    r = rule(near, "r4_floor")
+    tol = {x["set"]: x for x in near["sets"]}["holdout:vs-r4"]["tol"]
+    assert not r["pass"] and ("within a reroll's reach" in r["detail"]) == (4 <= tol + BAR.REROLL_ROWS["holdout"])
+    far = BAR.add_reference(evaluated(), cand_of({**R4_SETS, "holdout": (50, 30)}),
+                            BAR.reference_replicates(doc, BAR.REFERENCE_SETS), doc, TH)
+    assert not rule(far, "r4_floor")["pass"] and "reroll" not in rule(far, "r4_floor")["detail"]
+    # still a FAIL either way: the note only points at how the failure is read
+    assert not near["pass"]

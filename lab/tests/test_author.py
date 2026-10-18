@@ -297,7 +297,7 @@ def test_gate_matches_follows_changes_js():
     assert A.gate_open(g, "modern") and not A.gate_open(g, "classic") and not A.gate_open(g, "location")
 
 
-def _raw(style, ops, request="make the image gap 24 on the first content block", mode="exact"):
+def _raw(style, ops, request="make the image gap 24 on the Crafted with Care block", mode="exact"):
     return {"style": style, "request": request, "history": [], "page": "home",
             "view": {"tab": "", "activeSectionId": "", "globalSection": ""}, "oracle_ops_json": json.dumps(ops),
             "score_mode": mode, "expected_where": [], "candidates": [], "reply_any": [], "direction": {"key": "", "dir": ""}}
@@ -378,13 +378,13 @@ def test_validate_rejects_hidden_writes_and_keeps_the_oracle_text(gated_engine):
     assert A.validate(ok, t, m, eng, extras, leak_index=None, pool_keys=set()) is None and ok["meta"]["positive"]
     # r5's bug: the section TYPE as the id; the engine's own words now reach the report and the re-ask
     bad = A.to_case(_raw("verbatim", [{"op": "set_fields", "target": {**e["op_target"], "sectionId": "contentBlock"},
-                                       "values": {"stackedImageGap": 24}}], request="image gap 30 please"),
+                                       "values": {"stackedImageGap": 24}}], request="image gap 30 on Crafted with Care please"),
                     t, e, m, case_id="x-3", round_id="rt-1", holdout=False)
     why = A.validate(bad, t, m, eng, extras, leak_index=None, pool_keys=set())
     assert why.startswith("oracle:exact_refused: E_TARGET") and "contentBlock" in why
     # gate_only: must set the gate, and is not a positive write of the target
     go = A.to_case(_raw("gate_only", [{"op": "set_fields", "target": e["op_target"], "values": {"imagePosition": "top"}}],
-                        request="put the pictures above the text"), t, e, m, case_id="x-4", round_id="rt-1", holdout=False)
+                        request="put the pictures above the text in the Crafted with Care section"), t, e, m, case_id="x-4", round_id="rt-1", holdout=False)
     assert A.validate(go, t, m, eng, extras, leak_index=None, pool_keys=set()) is None and go["meta"]["positive"] is False
     go2 = A.to_case(_raw("gate_only", [{"op": "set_fields", "target": e["op_target"], "values": {"title": "Hi"}}],
                          request="put the pictures on top"), t, e, m, case_id="x-5", round_id="rt-1", holdout=False)
@@ -431,3 +431,437 @@ def test_author_round_tops_up_a_target_short_of_positives(grown_engine):
     pt = rep["per_target"][0]
     assert pt["calls"] == 2 and pt["topup"] == A.MIN_POSITIVE and pt["positive"] >= A.MIN_POSITIVE, pt
     assert "order of styles: " + ", ".join(A.topup_styles(A.MIN_POSITIVE, {})) in calls[1]
+
+
+# --- r7: the ask rule on authored ask turns, the section instance and the "…2" twin, re-authoring -----------------------
+
+CB_BORDER2 = "sections.contentBlock.buttonBorderColor2"
+CB1 = {"kind": "section", "page": "home", "sectionId": "contentBlock-1"}
+
+
+def twinned(fixed_label: bool = False) -> dict:
+    """The exam manifest's contentBlock with a second button whose border colour repeats the first's label (the
+    "…2" fields r6 could not train: both "Button Border Color"); fixed_label: as the r7 label fix shows it."""
+    d = _doc()
+    cb = d["sections"]["contentBlock"]["fields"]
+    cb.setdefault("buttonBorderColor", {"type": "color", "label": "Button Border Color",
+                                        "path": "settings.buttonBorderColor"})
+    cb["buttonBorderColor2"] = {"type": "color", "path": "settings.buttonBorderColor2",
+                                "label": "Buttons 2 › Button Border Color" if fixed_label else cb["buttonBorderColor"]["label"]}
+    return d
+
+
+def _case_for(m, key, request, *, view=None, history=()):
+    from souschef_lab.state import build_state
+    return {"id": "x", "request": request, "history": list(history), "site_state": build_state(m),
+            "context": {"page": "home"}, "score": {"mode": "exact"},
+            "expected": {"ops": [{"op": "set_fields", "target": CB1, "values": {key: "#7c3aed"}}]},
+            "meta": {"view": view, "page": "home", "author": {"round": "rt-r6"}, "target_address": f"sections.contentBlock.{key}"}}
+
+
+def test_an_ask_turn_must_be_vague():
+    """r7 §1.2: a follow-up whose turn 1 gives a direction is a request to act on, never an ask (r6 trained ~23)."""
+    m = Manifest(grown())
+    t = {"address": NEW_ADDR, "kind": "field", "reason": "added_field", "holdout": False}
+    entry = A.target_entry(t, m)
+    ops = json.dumps([{"op": "set_fields", "target": BTN, "values": {"buttonShadowColor": "#222222"}}])
+
+    def draft(first):
+        raw = {"style": "followup", "request": "#222222", "page": "home",
+               "history": [{"user": first, "assistant": "Which colour?", "expect": "ask"}],
+               "view": {"tab": "", "activeSectionId": "", "globalSection": ""}, "oracle_ops_json": ops,
+               "score_mode": "exact", "expected_where": [], "candidates": [], "reply_any": [],
+               "direction": {"key": "", "dir": ""}}
+        return A.to_case(raw, t, entry, m, case_id="x-1", round_id="rt-1", holdout=False)
+    why = A.validate(draft("make the button shadow darker"), t, m, None, {}, leak_index=None, pool_keys=set())
+    assert why.startswith("ask_turn_not_vague:") and "direction" in why
+    assert A.ask_rule_reject(draft("make the button shadow #333333"), m).startswith("ask_turn_not_vague")
+    assert A.ask_rule_reject(draft("I want to change the button shadow colour"), m) is None
+    assert "NO direction word" in A.RULES and "same_type_on_page" in A.RULES and "label_twins" in A.RULES
+
+
+def test_requests_name_the_section_instance_and_the_second_twin():
+    m = Manifest(twinned())
+    # five contentBlock rows on the fixture home: "the content block" names none of them
+    why = A.ambiguity(_case_for(m, "buttonBorderColor", "content block button border purple"), m)
+    assert why.startswith("ambiguous_instance:") and "'the Crafted with Care section'" in why
+    assert A.ambiguity(_case_for(m, "buttonBorderColor", "the Crafted with Care block's button border, purple"), m) is None
+    # the section editor open on it: "this section" is enough
+    focus = {"tab": "editor", "activeSectionId": "contentBlock-1"}
+    assert A.ambiguity(_case_for(m, "buttonBorderColor", "button border purple", view=focus), m) is None
+    # the instance named in an earlier turn counts
+    hist = [{"user": "the Crafted with Care section's button", "expect": "ask"}]
+    assert A.ambiguity(_case_for(m, "buttonBorderColor", "border purple", history=hist), m) is None
+    # the "…2" twin needs "second" (or two / right-hand …); the first twin must not say it
+    ok = "the Crafted with Care block's second button border, purple"
+    assert A.ambiguity(_case_for(m, "buttonBorderColor2", ok), m) is None
+    why = A.ambiguity(_case_for(m, "buttonBorderColor2", "the Crafted with Care block's button border, purple"), m)
+    assert why.startswith("ambiguous_twin:") and "buttonBorderColor2" in why
+    assert A.ambiguity(_case_for(m, "buttonBorderColor", ok), m).startswith("ambiguous_twin:")
+    assert A.ambiguity(_case_for(m, "buttonBorderColor2", "Crafted with Care, right-hand button border purple"), m) is None
+
+
+def test_label_twins_pair_keys_not_label_tails():
+    # the r7 launcher labels (cookie-cutter r7-labels, contentBlock): a fixed label's tail must not pair unrelated keys
+    fields = {"backgroundColor": {"type": "color", "label": "Background Color"},
+              "buttonBgColor": {"type": "color", "label": "Button Link › Background color"},
+              "buttonBgColor2": {"type": "color", "label": "Buttons 2 › Button Link › Background color"},
+              "mapDirBtnBg": {"type": "color", "label": "Secondary Button › Background Color"},
+              "titleColor": {"type": "color", "label": "Headline"},
+              "title2Color": {"type": "color", "label": "Content 2 › Headline"},
+              "title2": {"type": "richtext", "label": "Content 2 › Headline"}}
+    assert A.label_twins(fields, "buttonBgColor2") == [
+        {"key": "buttonBgColor", "label": "Button Link › Background color", "group": ""}]
+    assert A.label_twins(fields, "backgroundColor") == [] and A.label_twins(fields, "mapDirBtnBg") == []
+    assert [t["key"] for t in A.label_twins(fields, "title2Color")] == ["titleColor"]  # the richtext twin is another type
+    tw = A.label_twins(fields, "buttonBgColor2")
+    assert A.twin_group("buttonBgColor2", fields["buttonBgColor2"], tw) == "Buttons 2"
+    assert A.untwin("title2Color") == "titleColor" and A.untwin("body2FontSize") == "bodyFontSize"
+
+
+def test_the_entry_names_the_instance_and_the_twins():
+    m = Manifest(twinned())
+    e = A.target_entry(_t(CB_BORDER2), m)
+    assert e["op_target"] == CB1 and e["instance"] == {"id": "contentBlock-1", "title": "Crafted with Care"}
+    titles = [x["title"] for x in e["same_type_on_page"]]
+    assert len(titles) == 5 and titles[:3] == ["Crafted with Care", "Our Story", "Visit Us"]
+    assert e["label_twins"] == [{"key": "buttonBorderColor", "label": "Button Border Color", "group": ""}]
+    assert e["group"] == "second button" and e["twin_role"] == "second"
+    first = A.target_entry(_t("sections.contentBlock.buttonBorderColor"), m)
+    assert first["twin_role"] == "first" and first["label_twins"][0]["key"] == "buttonBorderColor2"
+    # with the r7 label fix: the group is the editor heading the label now carries
+    fixed = Manifest(twinned(fixed_label=True))
+    assert A.target_entry(_t(CB_BORDER2), fixed)["group"] == "Buttons 2"
+    assert A.ambiguity(_case_for(fixed, "buttonBorderColor2", "the Crafted with Care block's button border"), fixed) \
+        .startswith("ambiguous_twin")
+    # a field with no twin has none of it; a global target has no instance
+    assert "label_twins" not in A.target_entry(_t(CB_GAP), Manifest(gated()))
+    assert "instance" not in A.target_entry(_t(NEW_ADDR), Manifest(grown()))
+
+
+def test_reauthor_targets_and_superseding_the_ambiguous_drafts():
+    from souschef_lab.retrain import prepare as PREP
+    m = Manifest(twinned())
+    vague = _case_for(m, "buttonBorderColor2", "content block second button border purple")
+    named = _case_for(m, "buttonBorderColor2", "the Crafted with Care block's second button border, purple")
+    for i, c in enumerate((vague, named)):
+        c.update(id=f"a{i}", holdout=False)
+    # the training manifest already has the key: only `reauthor` makes it a target, whatever its coverage
+    targets, rep = A.find_targets(twinned(), m, pool=[vague, named] * 4)
+    assert targets == []
+    targets, rep = A.find_targets(twinned(), m, pool=[vague, named] * 4, reauthor={CB_BORDER2, "sections.nope.x"})
+    assert [(t["address"], t["reason"], t["min_positive"]) for t in targets] == [(CB_BORDER2, "reauthor", A.MIN_POSITIVE_REAUTHOR)]
+    assert targets[0]["covered"] == 4  # only the drafts that name the instance and the twin count
+    assert rep["reauthor"] == 1 and rep["reauthor_unknown"] == ["sections.nope.x"]
+    assert [w["reason"] for w in rep["wanted_list"]] == ["reauthor"]
+    other = _case_for(m, "buttonBorderColor", "content block button border purple")
+    other.update(id="o", holdout=False)
+    kept, srep = PREP.supersede_ambiguous([vague, named, other], m, [CB_BORDER2], "rt-r7")
+    assert [c["id"] for c in kept] == ["a1", "o"] and srep["count"] == 1 and srep["by_reason"] == {"ambiguous_instance": 1}
+    assert vague["meta"]["superseded_by"] == "rt-r7"
+    # the clear draft that stays splits per case like this round's new drafts; the other target's case is untouched
+    assert srep["regrouped"] == 1 and named["meta"]["group"] == f"author:{CB_BORDER2}#a1"
+    assert other["meta"].get("group") != f"author:{CB_BORDER2}#o"
+    assert PREP.supersede_ambiguous([vague], m, [], "rt-r7")[0] == [vague]
+    assert PREP.reauthor_list({"trigger": {"reauthor": [CB_BORDER2, " "]}}, env={}) == [CB_BORDER2]
+    assert PREP.reauthor_list({}, env={"SOUSCHEF_REAUTHOR": f"{CB_BORDER2}, a.b.c"}) == ["a.b.c", CB_BORDER2]
+
+
+def test_prepare_relabels_pool_asks_that_give_a_value():
+    from souschef_lab.retrain import prepare as PREP
+    from souschef_lab.state import build_state
+    m = Manifest(grown())
+    st = build_state(m)
+
+    def ask(cid, text, **meta):
+        return {"id": cid, "request": text, "target": BTN, "fields": ["buttonShadowColor"], "site_state": st,
+                "score": {"mode": "ask"}, "kind": "ask", "holdout": False, "expected": {"ops": []},
+                "meta": {"family": "F3", **meta}}
+    cases = [ask("v", "can we rethink the button shadow"), ask("d", "the button shadow is too dark"),
+             ask("p", "add a blank page", capability="create_page"), {**ask("n", "make it #222222"), "target": None},
+             ask("h", "the button shadow is too dark") | {"holdout": True},
+             ask("u", "hide the button shadow")]  # clear, but no evidence for a write on a colour: out (r7 review)
+    rep = PREP.check_ask_cases(cases, m)
+    by = {c["id"]: c for c in cases}
+    assert set(by) == {"v", "d", "p", "h"} and rep["dropped_ids"] == ["n", "u"] and rep["unsure"] == 1
+    assert by["v"]["score"]["mode"] == "ask" and by["v"]["meta"]["ask_family"] == "choice_missing"
+    d = by["d"]
+    assert d["score"]["mode"] == "keys" and d["expected"]["keys"] == [{"target": BTN, "key": "buttonShadowColor", "list": ""}]
+    assert d["expected"]["direction"] == {"key": "buttonShadowColor", "dir": "lighter", "from": None}
+    assert d["meta"]["ask_rule"]["kind"] == "direction" and "ask_rule" in d["meta"]["fixed"]
+    assert d["meta"]["ask_rule"]["evidence"] == "direction:lighter"
+    assert by["p"]["score"]["mode"] == "ask" and by["p"]["meta"]["ask_family"] == "page_title_missing"
+    assert by["h"]["score"]["mode"] == "ask"  # the exam stays as scored
+    assert rep["relabelled"] == 1 and rep["kept_vague"] == 1 and rep["exempt"] == 1
+
+
+@pytest.fixture(scope="module")
+def twinned_engine(tmp_path_factory):
+    _need_engine()
+    p = tmp_path_factory.mktemp("t") / "manifest.json"
+    p.write_text(json.dumps(twinned()), encoding="utf-8")
+    eng = E.PersistentEngine(manifest_path=p, size=2)
+    yield eng, Manifest(twinned())
+    eng.close()
+
+
+def test_author_round_on_a_reauthored_twin_reaches_its_floor(twinned_engine):
+    """FakeAsk (the DRY rounds' author) names the instance and the twin as RULES asks, so its drafts pass the checks;
+    a re-authored target aims for MIN_POSITIVE_REAUTHOR."""
+    from souschef_lab.state import load_context_fixture
+    eng, m = twinned_engine
+    t = {**_t(CB_BORDER2), "reason": "reauthor", "min_positive": A.MIN_POSITIVE_REAUTHOR}
+    train, _, rep = A.author_round([t], m, eng, load_context_fixture(), ask=A.FakeAsk(m), round_id="rt-tw", pool=[],
+                                   leak_index=None, progress=lambda s: None)
+    pt = rep["per_target"][0]
+    assert A.MIN_POSITIVE_REAUTHOR == 14  # r7 review: 10 broke even only at a 0.65 keep rate
+    assert pt["min_positive"] == 14 and pt["positive"] >= 14 and rep["short_of_positive"] == {}, pt
+    assert not any(r["reason"].startswith(("ambiguous", "ask_turn")) for r in pt["reject_details"]), pt["reject_details"]
+    assert all(A.ambiguity(c, m) is None for c in train)
+    # a re-authored target's cases split per case (not all-or-none by address): r6's perks keys trained 0 rows, all in val
+    assert {c["meta"]["group"] for c in train} == {f"author:{CB_BORDER2}#{c['id']}" for c in train}
+
+
+def test_author_group_is_per_case_only_for_reauthored_targets():
+    from souschef_lab.r4dataset import h100
+    assert A.author_group({"address": "sections.x.k", "reason": "added_field"}, "aX-F7-0001") == "author:sections.x.k"
+    assert A.author_group({"address": "sections.x.k", "reason": "reauthor"}, "aX-F7-0001") == "author:sections.x.k#aX-F7-0001"
+    # why: this short key's whole author group hashes into val (r4dataset val_pct 8)
+    assert h100("author:sections.perksIcons.buttonOnImageOffset") < 8
+
+
+# --- r7 four keys: the hero pair, the tag picker, the Pack filter setting (scratchpad r7/four) ------------------------
+
+HERO = {"kind": "section", "page": "home", "sectionId": "hero"}
+PRODUCTS = {"kind": "page", "page": "products"}
+PDP = {"kind": "page", "page": "product-details"}
+HERO_W = "sections.hero.contentWidth"
+HERO_BTN = "sections.hero.slides[].btnSize"
+TAG = "pages.product-details.productDetail.customDescriptionTagName"
+PACK = "pages.products.packFilterDisplay"
+EDIBLES = "pages.products.packFilterDisplay.edibles"
+
+
+def four() -> dict:
+    """The exam manifest plus the four r7 keys as the r7 manifest (3914e2e4) has them: the hero pair's contentWidth and
+    slides[].btnSize (btnSize a slides[0] mirror key), the products page's Pack filter (a "text" parent, an enum
+    .prerolls, a "text" .edibles) and the product-details custom description tag (text, gated)."""
+    d = _doc()
+    for name in ("hero", "heroBanner"):
+        s = d["sections"][name]
+        s["fields"]["contentWidth"] = {"path": "settings.contentWidth", "label": "Content Width", "type": "range",
+                                       "min": 20, "max": 100, "step": 5, "unset_value": None}
+        s["lists"]["slides"]["item"]["btnSize"] = {"path": "settings.slides[].btnSize", "type": "number", "min": 10,
+                                                   "max": 40, "step": 1, "default": "", "unset_value": None,
+                                                   "label": "Border Color › Button size in pixels"}
+        s["mirror"]["keys"] = sorted(set(s["mirror"]["keys"]) | {"btnSize"})
+    p = d["pages"]["products"]["fields"]
+    p["packFilterDisplay"] = {"path": "pageVisibility.products.packFilterDisplay", "label": "Pack filter display",
+                              "type": "text", "unset_value": None}
+    p["packFilterDisplay.prerolls"] = {"path": "pageVisibility.products.packFilterDisplay.prerolls", "type": "enum",
+                                       "label": "Pack filter display", "enum": [None, "grams"], "unset_value": None,
+                                       "enum_labels": {"null": "Units", "grams": "Grams"}, "writes": ["packFilterDisplay"]}
+    p["packFilterDisplay.edibles"] = {"path": "pageVisibility.products.packFilterDisplay.edibles", "type": "text",
+                                      "label": "Pack filter display"}
+    q = d["pages"]["product-details"]["fields"]
+    q["productDetail.showCustomDescription"] = {"path": "pageVisibility.productDetail.showCustomDescription",
+                                                "label": "Show custom description", "type": "bool", "unset_value": None}
+    q["productDetail.customDescriptionTagName"] = {
+        "path": "pageVisibility.productDetail.customDescriptionTagName", "label": "Custom description tag", "type": "text",
+        "conditional_on": {"key": "productDetail.showCustomDescription", "value": True}}
+    return d
+
+
+def _four_case(m, ops, request, *, home=None, view=None, history=(), option_lists=None, state=None, mode="exact",
+               address=HERO_W, cid="x"):
+    from souschef_lab.state import build_state
+    c = {"id": cid, "request": request, "history": list(history), "holdout": False,
+         "site_state": state if state is not None else build_state(m, home_sections=home),
+         "context": {"page": "home"}, "score": {"mode": mode}, "expected": {"ops": ops},
+         "meta": {"view": view, "page": "home", "author": {"round": "rt-r6"}, "target_address": address}}
+    if option_lists is not None:
+        c["option_lists"] = option_lists
+    return c
+
+
+def _r6_home():
+    from souschef_lab.state import DEFAULT_HOME_SECTIONS
+    return [dict(r) for r in DEFAULT_HOME_SECTIONS] + [{"id": "hero", "enabled": True}]
+
+
+def test_a_hero_case_is_a_legacy_hero_site_not_two_hero_banners():
+    """r6 appended an empty `hero` row beside the fixture's heroBanner (both "Hero Banner" in the editor): the teacher
+    wrote the real one in 42 of 55 rows and every non-focus case failed. Now the case home swaps heroBanner out."""
+    from souschef_lab.state import find_section, section_summaries
+    m = Manifest(four())
+    assert A.alias_type(m, "hero") == "heroBanner" and A.alias_type(m, "heroBanner") == "hero"
+    assert A.alias_type(m, "reviews") == "testimonials"
+    # the contentBlock editor's four types are distinct sections a site holds side by side: no alias, still appended
+    assert A.alias_type(m, "perksCards") is None and A.case_home(m, "perksCards")[-1] == {"id": "perksCards", "enabled": True}
+    assert A.case_home(m, "contentBlock-1") is None and A.alias_home(m, "heroBanner") is None
+    t = {"address": HERO_W, "kind": "field", "reason": "reauthor", "holdout": False}
+    e = A.target_entry(t, m)
+    assert e["op_target"] == HERO and e["instance"] == {"id": "hero", "title": "Fresh picks every week"}
+    raw = _raw("verbatim", [{"op": "set_fields", "target": HERO, "values": {"contentWidth": 70}}],
+               request="set the hero banner content width to 70")
+    c = A.to_case(raw, t, e, m, case_id="h-1", round_id="rt-1", holdout=False)
+    rows = section_summaries(c["site_state"]["homeSections"])
+    assert [r["id"] for r in rows if r["id"] in ("hero", "heroBanner")] == ["hero"] and rows[0]["id"] == "hero"
+    assert rows[0]["title"] == "Fresh picks every week"
+    assert len(find_section(c["site_state"], "hero")["settings"]["slides"]) == 2
+    assert A.ambiguity(c, m) is None
+    # the slide list target lists the slides, so a request can name one
+    b = A.target_entry({**t, "address": HERO_BTN}, m)
+    assert [r["index"] for r in b["rows"]] == [0, 1] and b["rows"][0]["title"] == "Fresh picks every week"
+    assert "Rows:" in A.RULES and "`rows`" in A.RULES
+
+
+def test_alias_instance_retires_the_r6_two_hero_cases_but_not_the_focused_ones():
+    from souschef_lab.retrain import prepare as PREP
+    m = Manifest(four())
+    op = [{"op": "set_fields", "target": HERO, "values": {"contentWidth": 60}}]
+    r6 = _four_case(m, op, "make the hero banner content narrower, 60", home=_r6_home(), cid="a")
+    why = A.ambiguity(r6, m)
+    assert why.startswith("alias_instance:") and "'heroBanner'" in why
+    focus = _four_case(m, op, "content width 60 here", home=_r6_home(), cid="f",
+                       view={"tab": "editor", "activeSectionId": "hero"})
+    assert A.ambiguity(focus, m) is None
+    swapped = _four_case(m, op, "hero content width 60", home=A.alias_home(m, "hero"), cid="s")
+    assert A.ambiguity(swapped, m) is None
+    kept, rep = PREP.supersede_ambiguous([r6, focus, swapped], m, [HERO_W], "rt-r7")
+    assert [c["id"] for c in kept] == ["f", "s"] and rep["by_reason"] == {"alias_instance": 1}
+
+
+def test_a_slide_write_names_the_slide():
+    m = Manifest(four())
+    home = A.alias_home(m, "hero")
+
+    def upd(i, request, view=None):
+        ops = [{"op": "edit_list", "target": HERO, "list": "slides", "action": "update", "index": i, "item": {"btnSize": 20}}]
+        return A.ambiguity(_four_case(m, ops, request, home=home, view=view, address=HERO_BTN), m)
+    assert upd(1, "make the hero button 20px").startswith("ambiguous_row:")
+    assert upd(1, "make the hero button 20px", view={"tab": "editor", "activeSectionId": "hero"}).startswith("ambiguous_row")
+    assert upd(1, "second slide's button, 20px") is None and upd(1, "slide 2 button size 20") is None
+    assert upd(0, "the Fresh picks slide button: 20") is None and upd(0, "first slide button 20") is None
+    # the flat mirror key writes slide 0 (the engine writes the same paths): it names the slide too
+    flat = [{"op": "set_fields", "target": HERO, "values": {"btnSize": 20}}]
+    assert A.ambiguity(_four_case(m, flat, "hero button size 20", home=home, address=HERO_BTN), m).startswith("ambiguous_row")
+    assert A.ambiguity(_four_case(m, flat, "hero button size 20 on the first slide", home=home, address=HERO_BTN), m) is None
+    # r6's empty appended hero (the engine makes one slide): nothing to tell apart
+    assert A.row_ambiguity(_four_case(m, flat, "hero button size 20", home=_r6_home(), address=HERO_BTN,
+                                      view={"tab": "editor", "activeSectionId": "hero"}), m) is None
+
+
+def test_case_addresses_count_a_mirror_write_and_the_whole_pack_setting():
+    m = Manifest(four())
+    flat = {"expected": {"ops": [{"op": "set_fields", "target": HERO, "values": {"btnSize": 20}}]}}
+    assert {"sections.hero.btnSize", HERO_BTN} <= A.case_addresses(flat, m)
+    both = {"expected": {"ops": [{"op": "set_fields", "target": PRODUCTS, "values": {
+        "packFilterDisplay.prerolls": "grams", "packFilterDisplay.edibles": "grams"}}]}}
+    assert PACK in A.case_addresses(both, m) and EDIBLES in A.case_addresses(both, m)
+    one = {"expected": {"ops": [{"op": "set_fields", "target": PRODUCTS, "values": {"packFilterDisplay.prerolls": "grams"}}]}}
+    assert PACK not in A.case_addresses(one, m)
+    reset = {"expected": {"ops": [{"op": "reset", "target": PRODUCTS, "keys": ["packFilterDisplay"]}]}}
+    assert A.case_addresses(reset, m) == {PACK}
+
+
+def test_bad_values_invented_tags_and_pack_filter_text_are_rejected():
+    from souschef_lab.retrain import prepare as PREP
+    from souschef_lab.state import build_state, set_path
+    m = Manifest(four())
+    tags = A.store_tags(TAG, "rt-1")
+    assert len(tags) == A.TAG_DRAW + 3 and tags == A.store_tags(TAG, "rt-1")
+    assert {"Staff Picks", "New", "Sale"} <= {t["name"] for t in tags}
+    lists = {"tags": tags, "brands": []}
+    pick = next(t for t in tags if t["id"] >= A.TAG_ID_BASE)
+
+    def tag(v, request, ol=lists):
+        ops = [{"op": "set_fields", "target": PDP, "values": {"productDetail.customDescriptionTagName": v}}]
+        return A.bad_value(_four_case(m, ops, request, option_lists=ol, address=TAG), m)
+    assert tag("house-rosin", "use the house-rosin tag").startswith("tag_not_in_store")  # r6 0250
+    assert tag(pick["slug"], f"use the {pick['slug']} tag").startswith("tag_not_in_store")  # a slug, not the name
+    assert tag(pick["name"], "use the other tag").startswith("tag_not_named")
+    assert tag(pick["name"], f"custom description only on the {pick['name'].lower()} tag") is None
+    # an r6 case carries no list: the fixture's tags count ("staff-pick" was r6 0249's answer key)
+    assert tag("staff-pick", "staff pick tag", ol=None).startswith("tag_not_in_store")
+    assert tag("Staff Picks", "only for the staff picks tag", ol=None) is None
+    pack = [{"op": "set_fields", "target": PRODUCTS, "values": {"packFilterDisplay": "Pack Qty"}}]
+    assert A.bad_value(_four_case(m, pack, "just say Pack Qty", address=PACK), m).startswith("bad_value")  # r6 0291
+    edi = [{"op": "set_fields", "target": PRODUCTS, "values": {"packFilterDisplay.edibles": "Pieces per package"}}]
+    assert A.bad_value(_four_case(m, edi, "edibles pack filter: Pieces per package", address=EDIBLES), m).startswith("bad_value")
+    grams = [{"op": "set_fields", "target": PRODUCTS, "values": {"packFilterDisplay.edibles": "grams"}}]
+    assert A.bad_value(_four_case(m, grams, "edibles pack sizes in grams", address=EDIBLES), m) is None
+    st = build_state(m)
+    set_path(st, "pageVisibility.products.packFilterDisplay", "Taste the difference")  # r6 0297's seed
+    reset = [{"op": "reset", "target": PRODUCTS, "keys": ["packFilterDisplay"]}]
+    assert A.bad_value(_four_case(m, reset, "pack filter back to normal", state=st, address=PACK), m).startswith("bad_seed")
+    kept, rep = PREP.supersede_ambiguous([_four_case(m, pack, "just say Pack Qty", address=PACK, cid="p"),
+                                          _four_case(m, grams, "edibles in grams", address=EDIBLES, cid="g")],
+                                         m, [PACK, EDIBLES], "rt-r7")
+    assert [c["id"] for c in kept] == ["g"] and rep["by_reason"] == {"bad_value": 1}
+
+
+def test_the_rule_fields_get_their_note_value_shape_and_state():
+    from souschef_lab.state import get_path
+    m = Manifest(four())
+    t = {"address": TAG, "kind": "field", "reason": "reauthor", "holdout": False}
+    e = A.target_entry(t, m, round_id="rt-1")
+    assert e["note"].startswith("A tag picker") and e["store_tags"] == A.store_tags(TAG, "rt-1")
+    assert "relative" not in A.style_plan(t, entry=e) and "relative" not in A.topup_styles(12, e)
+    raw = _raw("verbatim", [{"op": "set_fields", "target": PDP, "values": {"productDetail.customDescriptionTagName": "Sale"}}],
+               request="custom description for the sale tag")
+    c = A.to_case(raw, t, e, m, case_id="t-1", round_id="rt-1", holdout=False)
+    assert c["option_lists"]["tags"] == e["store_tags"]
+    p = A.target_entry({**t, "address": PACK}, m)
+    assert p["field"]["type"] == "object" and "never renames" in p["note"] and "relative" not in A.style_plan(t, entry=p)
+    raw = _raw("reset", [{"op": "reset", "target": PRODUCTS, "keys": ["packFilterDisplay"]}], request="pack filter back to units")
+    c = A.to_case(raw, {**t, "address": PACK}, p, m, case_id="p-1", round_id="rt-1", holdout=False)
+    assert get_path(c["site_state"], "pageVisibility.products.packFilterDisplay") == {"prerolls": "grams", "edibles": "grams"}
+    assert A.bad_value(c, m) is None
+    ed = A.target_entry({**t, "address": EDIBLES}, m)
+    assert ed["field"]["type"] == "enum" and ed["field"]["enum"] == [None, "grams"]
+
+
+@pytest.fixture(scope="module")
+def four_engine(tmp_path_factory):
+    _need_engine()
+    p = tmp_path_factory.mktemp("four") / "manifest.json"
+    p.write_text(json.dumps(four()), encoding="utf-8")
+    eng = E.PersistentEngine(manifest_path=p, size=2)
+    yield eng, Manifest(four())
+    eng.close()
+
+
+def test_the_four_keys_author_to_their_floor_and_slide_two_applies(four_engine):
+    """FakeAsk (RULES-shaped drafts) on the four keys + .edibles: every target reaches MIN_POSITIVE_REAUTHOR with no
+    rejection but its own duplicates; slide 2 of the swapped hero exists (r6: E_INDEX index 1 out of range); the pack
+    reset's teacher variants all give the oracle's diff."""
+    from souschef_lab.createpage import run_engine_result
+    from souschef_lab.state import load_context_fixture
+    eng, m = four_engine
+    ts = [{"address": a, "kind": "field", "reason": "reauthor", "holdout": False, "min_positive": A.MIN_POSITIVE_REAUTHOR}
+          for a in (HERO_W, HERO_BTN, TAG, PACK, EDIBLES)]
+    train, _, rep = A.author_round(ts, m, eng, load_context_fixture(), ask=A.FakeAsk(m), round_id="rt-four", pool=[],
+                                   leak_index=None, progress=lambda s: None)
+    assert rep["short_of_positive"] == {}, rep["positive_by_target"]
+    for pt in rep["per_target"]:
+        assert {r["reason"].split(":")[0] for r in pt["reject_details"]} <= {"duplicate"}, pt["reject_details"]
+    for c in train:
+        assert A.ambiguity(c, m) is None and A.bad_value(c, m) is None
+    tagc = [c for c in train if c["meta"]["target_address"] == TAG and c["meta"].get("positive")]
+    assert tagc and all(c["option_lists"]["tags"] for c in tagc) and all(c["context"].get("tags") for c in tagc)
+    st = next(c for c in train if c["meta"]["target_address"] == HERO_BTN)["site_state"]
+    r = run_engine_result(eng, st, [{"op": "edit_list", "target": HERO, "list": "slides", "action": "update", "index": 1,
+                                     "item": {"btnSize": 22}}], {"currentPage": "home"})
+    assert r.ok and any("slides[1].btnSize" in str(d.get("path")) for d in r.diff())
+    reset = next(c for c in train if c["meta"]["target_address"] == PACK and c["meta"]["style"] == "reset")
+
+    def leaves(ops):
+        res = run_engine_result(eng, reset["site_state"], ops, {"currentPage": "products"})
+        assert res.ok
+        return {(d["path"], d.get("after")) for d in res.diff()}
+    want = leaves([{"op": "reset", "target": PRODUCTS, "keys": ["packFilterDisplay"]}])
+    assert want == leaves([{"op": "set_fields", "target": PRODUCTS, "values": {
+        "packFilterDisplay.prerolls": None, "packFilterDisplay.edibles": None}}])
+    assert want == leaves([{"op": "restore_default", "target": PRODUCTS,
+                            "keys": ["packFilterDisplay", "packFilterDisplay.prerolls", "packFilterDisplay.edibles"]}])

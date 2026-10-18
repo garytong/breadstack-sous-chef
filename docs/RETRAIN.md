@@ -42,6 +42,29 @@ W=$PIPE/runs/$RUN
 Total about 9–12 h from the drift to the decision message. Any failure posts
 `stage_failed` with the mention, releases the lock and keeps every artifact.
 
+**What changed for r7** (pre-registered: answer key `ask-rule-r7-2026-10-18`,
+committed before the r7 round starts; nothing below changes after r7's eval is
+seen). r6 (`c-rt-20261016-2102-3eeb97-eb908674`) went live on int on
+2026-10-17 over a failed bar; it asks a question on clear relative requests
+("make our logo smaller": 15/48 relative rows against r4's 4/48). The cause is
+the training labels, not the teacher (`rules.go:94` already says to ask only
+when a request gives "no value, no direction and no change to make"): r6's
+ask rows went from 7 to about 300, many of them first turns that carry a value
+or a direction. r6 also failed its new-key gate on 25 keys. No `service/` or
+`infra/` change: `rules.go` stays byte-identical, so the carry keeps r6's rows.
+
+| change | where | switch | section |
+|---|---|---|---|
+| **the ask rule** (`souschef_lab/askrule.py`): a request may be labelled `ask` only when it is VAGUE (no value, no direction, no action; image requests are the action `pick_asset`). An ask-first turn that is not vague becomes a WRITE case (`askfirst1r-…`, mode keys, with the direction when one is clear; on a page with several sections of the target's type the case focuses the source's section, so it is not a "which one?") **only on evidence** (`askrule.write_evidence`: the source oracle's literal is in the turn, a direction on a colour / number field, or a toggle named by its label); a clear turn without evidence is left out (`unsure`: "the headings look too plain" had become `headingFont` in one case and `buttonFont` in another), and one text relabelled to different fields leaves entirely (`conflicting_keys`); a pool ask that is not vague becomes a keys case on the same evidence (else dropped, `unsure`); "too X" / "not X enough" count as a direction only for a size, amount, spacing, speed or strength word, "more / less X" not for a style word ("more modern"), a colour word describing what is there ("the grey text", "looks so white") and reported speech ("people say …") give no value, and "rename … to X" / "should be X" give X even when the site shows a name X starts with (review fixes; every single-turn exam row now classifies as its answer key says, a test); an authored follow-up whose ask turn is not vague is rejected (`ask_turn_not_vague`); the dataset re-checks every kept ask row's rendered text, carried rows included (`ask_rule_violation`) | prepare, dataset | none (always on) | [R1](#r1-prepare), [R3](#r3-dataset-and-the-parity-gate) |
+| **ask / write pairs**: each vague ask gets write twins in its split group (`meta.ask_pair`): F8 vague asks two (`contrast1-F8-12xx`: "…, it's too light" / "…, try #hex") and, on a colour / number field, a third in the OTHER direction (`contrast1-F8-13xx`: the logo height had only "a bit smaller" next to the exam's "bigger"), ask-first asks one (`askpair1-…`: both turns as one request). An ask row whose twin has no kept row is dropped (`ask_unpaired`); clarify, which-one and no-title create_page asks are exempt | prepare, dataset | none | [R1](#r1-prepare), [R3](#r3-dataset-and-the-parity-gate) |
+| **ask cap**: ask + clarify rows at most 3 % of the rows (r4 0.25 %, r6 7.8 %), floors per ask family (`complaint`, `which_one`, `page_title_missing` all; `text_missing`, `choice_missing` 25 each), over-cap rows dropped as `ask_cap` (their twins stay) | dataset | `"trigger": {"ask_share_max": 0.03}` (0 = off), or `SOUSCHEF_ASK_SHARE_MAX` | [R3](#r3-dataset-and-the-parity-gate) |
+| **exam answer key `.k3`**: h022, p030, p047 become ask-allowed; h006 requires `bodyFont` (the footer body font allowed); p050 / p053 stay strict (an image request's answer is `pick_asset`; all 9 such rows would move together, never 2) | eval, drift | none | [R2a](#r2a-scoring-policy-r4score), [DRIFT.md](DRIFT.md) |
+| **authoring names the instance and the twin**: a request on a page with several sections of the target's type names the one it means ("the Crafted with Care section") unless the view focuses it (`ambiguous_instance`); a "…2" field's request says "second" and its first twin's does not (`ambiguous_twin`). r6's 25 short keys failed at collect: the teacher rightly asked "which one?" | prepare | none | [R1](#r1-prepare) |
+| **the four keys r6 could not answer**: a case of a section type the fixture home lacks takes its legacy twin's place (`hero` for heroBanner, its slides; r6 appended an empty `hero`, both "Hero Banner", and the teacher wrote the real one: `alias_instance` retires those); a write to one slide names it (`ambiguous_row`); the custom description tag is a picker of the case's store tags (`option_lists.tags`, the request names one: `tag_not_in_store` / `tag_not_named`); the Pack filter display is the whole Units / Grams setting, never text (`bad_value`, `bad_seed`; a case writing both kinds counts for it) | prepare, dataset | none | [R1](#r1-prepare) |
+| **re-authoring the 25 short keys** (+ `packFilterDisplay.edibles`): listed addresses are targets again (reason `reauthor`, 14 kept positives each: 18 of them have no keep rate of their own or one below 0.65, where 10 broke even), r6's ambiguous drafts for them leave the round (`report.json` `ambiguous_superseded`), and their cases split train / val **per case** (`author:<address>#<case id>`) instead of per address: 9 of the 25 had their whole author group hashed into val, so r6 trained none of their rows (perksIcons.buttonOnImageOffset: 9 kept rows, 0 in train) | prepare, dataset | `"trigger": {"reauthor": [addresses], "positives_required": [addresses]}`, or `SOUSCHEF_REAUTHOR`, `SOUSCHEF_POSITIVES_REQUIRED` (comma lists) | [R1](#r1-prepare), [R3](#r3-dataset-and-the-parity-gate) |
+| **r4 floor**: the bar also compares the candidate with r4's recorded calibration replicates (`<set>:vs-r4` rows, rule `r4_floor`: every set within tol and the pooled McNemar not significantly worse; the file is pinned by its own sha256 `496a5ca0…`, the model by its digest `f657…`; with `sigma_seed` measured the reference rows add **1**·σ_seed², r4 being one fixed model); a second, report-only comparison with r4 **re-run** in r6's round (`<set>:vs-r4_rerun`, rule `r4_rerun_floor`: same prompt, scorer and nearly the same manifest, pairs the `.k2` rows); report-only "asks on clear requests" per arm and exam class. How a holdout-only failure is read is fixed in advance: [Reading r4_floor](#reading-r4_floor) | eval | `config/thresholds.json` `r4_reference` (`"bar": false` reports only; `"rerun_bar": true` gates the re-run comparison too; `null` off) | [R6](#r6-candidate-and-the-paired-eval) |
+| **launcher labels** (cookie-cutter branch `r7-labels`): in contentBlock, perksCards and perksIcons the second panel's fields read `"Buttons 2 › Button Border Color"`, `"Content 2 › Headline"` (39 labels; the first twin keeps its label) | launcher manifest | none | [Running r7](#running-r7-in-order) |
+
 **What changed for r6** (r5, 2026-10-14, retrained r4's data and lost 3.5 rows
 on holdout; the analysis found a training-run reroll read as a loss, a probe
 no model could pass, and authoring that produced no positive cases). Each
@@ -78,11 +101,159 @@ gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGI
 The stages also read environment variables (`SOUSCHEF_SCORE_POLICY`,
 `SOUSCHEF_FONT_POLICY`, `SOUSCHEF_FONT_PAIR`,
 `SOUSCHEF_MIN_NEW_KEY_POSITIVES`, `SOUSCHEF_NEW_KEY_POSITIVES_WAIVE`,
+`SOUSCHEF_ASK_SHARE_MAX`, `SOUSCHEF_REAUTHOR`, `SOUSCHEF_POSITIVES_REQUIRED`,
 `COLLECT_CARRY*`, `TRAIN_*`), which win over the trigger. Use them only as a
 per-execution override on a stage run by hand (`gcloud run jobs execute …
 --update-env-vars=…`). Never set them with `gcloud run jobs update`: the value
 would stay on the job template for every later round, and the next
 `terraform apply` would silently revert it.
+
+### Running r7, in order
+
+r6 serves int throughout. Nothing here needs a Terraform apply, a workflow
+change or a hand-made service deploy. Who does each step is named; "a person"
+is a step an agent does not take (a commit, a merge, a bucket write).
+
+0. **Freeze cookie-cutter `master`** from step 2 until the r7 decision. A
+   launcher deploy mid-round makes the round stale (`stale_round`, Skip
+   recommended) or, without a new engine snapshot, `engine_stale`.
+1. **Commit the lab** (a person; the exam `.k3` amendments, the ask rule, the
+   ask cap and the r4 floor are pre-registered with this commit). If the
+   commit is not dated 2026-10-18, change `exam.ANSWER_KEY_R7` to the commit
+   date first. Pushing sous-chef `main` makes CI build `sous-chef-lab`,
+   **and a new `sous-chef-trainer`** (`images/trainer/tag.sh` hashes every
+   file under `lab/` except the tests, so the r7 lab commit is a new trainer
+   tag, the ~15 GB build), and roll the int service (the same `service/`
+   code, rebuilt). The Python packages are pinned (`train-constraints.txt`)
+   and the layer is cached, so the risk is low; still, before the round
+   either check that CI's trainer build passed and its `train-env ok` line
+   lists the same versions as r6's, or run a SMOKE (US$10–15, [SMOKE](#smoke)).
+2. **Merge the launcher labels** (a person: cookie-cutter `r7-labels`, off
+   `bitbucket/master` 26a6356e, pushed to Bitbucket `master`). CI deploys the
+   launcher on int; `state/deployed.json` should show the manifest hash
+   `3914e2e4…` (only 39 labels change from r6's `eb908674…`).
+3. **Vendor the engine snapshot right after the deploy**, or the round refuses
+   to start (`engine_stale`). The script's work folder must not be on the
+   nearly full `/tmp` tmpfs (the r7 builders hit `Errno 122` there), and the
+   checkout must have the merge commit:
+
+   ```bash
+   git -C ~/projects/breadstack-cookie-cutter fetch bitbucket
+   mkdir -p ~/.cache/engine-vendor-tmp
+   TMPDIR=~/.cache/engine-vendor-tmp bash lab/tools/engine-vendor.sh ~/projects/breadstack-cookie-cutter <merge sha> --upload
+   ```
+
+   (DRIFT.md §6). No sous-chef fixture re-capture.
+4. **Copy r4's baseline to its own place** (a person; a bucket write) before
+   the Mistral cleanup deletes `experiments/mistral/`:
+   `gcloud storage cp $PIPE/baselines/sha256:f657e11053e3baf801b489421637b8a0aaccf450951046ec4c9853ca0c7287b4/baseline.json $PIPE/baselines/reference/r4/baseline.json`.
+   Until then the eval reads the live `baselines/sha256:f657…` copy (the same
+   bytes on 2026-10-17). Re-copy r4's adapter (`base/adapters/r4-sft`) before
+   about 2026-11-10.
+5. **Pre-flight (reads only)**:
+   - `state/deployed.json` shows `3914e2e4…`; `engine/index.json` lists the
+     merge sha;
+   - the r4 reference **file's** sha256 is `496a5ca0084ca3da560b4c9cf4bdb9929a2711492771a2313f11f0203a5d585c`
+     (`gcloud storage cat $PIPE/baselines/reference/r4/baseline.json | sha256sum`;
+     thresholds `r4_reference.file_sha256` pins it, a copy with other bytes
+     is skipped). `f657…` is the **model** digest inside the file (its
+     `digest` field), not the file's hash;
+   - no bucket override of `r4_reference` or `sigma_seed` in
+     `config/thresholds.json` (the bucket file is merged key by key over the
+     committed one, so an override would quietly change a pre-registered floor);
+   - **the rules are unchanged since r6's teacher build**:
+     `git diff --stat 28491da HEAD -- service/` is empty. The carry compares
+     `system[0]` of r6's rows with the round's rules (`rules_changed`); r6
+     carried nothing for exactly that reason and asked the teacher about all
+     4,970 cases (US$177). On 2026-10-17 the rules rendered on `3914e2e4`
+     with the current service binary equal r6's dataset rows' (sha256
+     `631134813ac4…`). `carry: "required"` only stops the round when the
+     carry cannot run, **not** when it carries nothing: watch the collect
+     stage's first progress line (`carry: … candidate row(s)`) and cancel the
+     round if the live model's source is `skipped: rules_changed`;
+   - `state/model.json` is r6; no `state/locks/retrain.json`.
+6. **r7 round** (expected about US$90–150 with two arms, 11–15 h; worst case
+   about US$250 if the carry carries nothing):
+
+   ```bash
+   REAUTHOR='["globalPanels.FooterSection.footerBodyFont","globalPanels.FooterSection.footerLinkFontSize",
+     "pages.blog.readMoreColor","pages.product-details.productDetail.customDescriptionTagName",
+     "pages.products.packFilterDisplay","pages.products.packFilterDisplay.edibles",
+     "sections.contentBlock.buttonBgColor2","sections.contentBlock.buttonBorderColor2",
+     "sections.contentBlock.buttonOnImage","sections.contentBlock.buttonOnImageOffset","sections.contentBlock.buttonTextColor2",
+     "sections.contentBlock.centerContentSwap","sections.contentBlock.stackedImageFullWidth","sections.contentBlock.stackedImageGap",
+     "sections.contentBlock.stackedImageHeight","sections.contentBlock.title2Color","sections.contentBlock.title2FontSize",
+     "sections.featuredCategories.subDisplay","sections.hero.contentWidth","sections.hero.slides[].btnSize",
+     "sections.perksCards.body2FontSize","sections.perksCards.title2Color","sections.perksIcons.buttonBorderColor2",
+     "sections.perksIcons.buttonOnImageOffset","sections.perksIcons.buttonOnImagePosition","sections.perksIcons.stackedImageFullWidth"]'
+   REQUIRED=$(echo "$REAUTHOR" | jq -c 'map(select(. != "pages.products.packFilterDisplay.edibles"))')
+   gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGION --data="{\"mode\":\"full\",
+     \"trigger\":{\"reason\":\"r7\",\"carry\":\"required\",\"reauthor\":$REAUTHOR,\"positives_required\":$REQUIRED,
+                \"ask_share_max\":0.03,
+                \"train\":{\"arms\":[\"base:3407\",\"warm:3407\"],\"init_adapter\":\"base/adapters/r4-sft\"}}}"
+   ```
+
+   26 keys are re-authored (r6's 25 short keys plus
+   `products.packFilterDisplay.edibles`, whose 8 r6 rows taught free text);
+   **25** must reach 6 train rows — all of r6's short keys, the four that an
+   earlier draft of this plan waived included (`positives_required` must be
+   the list itself: a string is read as one comma-separated list).
+   `.edibles` is re-authored only to replace its bad rows; it is not
+   required. The four keys' r6 cases were unanswerable, not the teacher's
+   miss, and the lab now authors them right:
+   - **`hero.contentWidth`, `hero.slides[].btnSize`**: r6's case home held
+     the fixture's `heroBanner` plus an empty appended `hero` row, both
+     "Hero Banner" in the editor; the teacher wrote the real one. A case of a
+     section type the fixture home lacks now gets a legacy site
+     (`author.alias_home`: `hero` in heroBanner's place, its 2 slides), r6's
+     17 two-hero cases leave the round (`alias_instance`), and a slide write
+     names the slide (`ambiguous_row`).
+   - **`productDetail.customDescriptionTagName`**: a tag picker. Each case now
+     carries its store's tags (`option_lists.tags`), the request names one
+     and the oracle writes its exact name (`tag_not_in_store`,
+     `tag_not_named`); r6's 10 invented-tag cases leave the round.
+   - **`products.packFilterDisplay`**: the whole Units / Grams setting, never
+     a label. Writes set both kinds to Grams, resets clear it from Grams on
+     both, a case writing both kinds counts for the setting; r6's string
+     writes leave the round (`bad_value`, `bad_seed`; 9 + 8 `.edibles`).
+
+   Estimated train positives (simulated on r6's data): tag 10.4,
+   pack 10.4, hero width 12.5, slide button 11.6 (low case 6.7 / 6.7 / 8.7 /
+   7.8). A key short of 6 stops the dataset stage: read its
+   `reject_details` and waive it then (R3) rather than before. The warm arm
+   starts from **r4**, not r6 (r6's adapter is the over-asker). `base:2` as a
+   third arm adds about 2.2 H100-hours (about US$15–25).
+7. **Read the report**: the bar (vs r6) and `r4_floor` (vs r4's recording,
+   [Reading r4_floor](#reading-r4_floor)); `r4_rerun_floor` (report only);
+   "asks on clear requests" (target: relative about r4's 4/48); the ask_ok
+   rows (at least r6's); F9H (at least r6 − tol); `stats.json` `ask` (share
+   about 3 %, `violations_kept` 0, `unpaired_kept` 0); `new_key_positives`.
+   Decide on the thermometer. **Recalibrate drift only on Skip**: on Approve,
+   r7's candidate baseline (with the `.k3` rows, on `3914e2e4`) becomes the
+   drift baseline by itself; on Skip, r6's baseline still scores h022, p030,
+   p047 and h006 on the old key, so recalibrate it (DRIFT.md, the `.k3` rows).
+
+#### Reading r4_floor
+
+Fixed before the round, so a result cannot change how it is read.
+`r4_floor`'s tolerance is eval noise only while thresholds `sigma_seed` is
+empty, and a retrain of the same data moves the holdout too: r5, a plain
+retrain of r4's data, lost 3.5 holdout rows to the reroll. A no-change
+retrain could therefore fail this floor. The rule's detail says "within a
+reroll's reach" when every failing set is within tol + 3.5 rows.
+
+- **A regression** (Skip): `r4_floor` fails on more than holdout, or holdout
+  falls more than tol + 3.5 rows below r4 (r6: −6.3 against tol 2), or the
+  relative "asks on clear requests" is above 8/48 (twice r4's 4/48), or
+  `r4_rerun_floor` also fails beyond its tolerance + 3.5.
+- **Inconclusive, not a regression**: a holdout-only failure within reach,
+  with relative clear asks at or below 8/48, and the lost holdout rows not
+  asks on clear requests (the report's per-row clear-asks keys). The decision
+  then rests on the live bar against r6, which must pass; Approve is a
+  person's call over the failing rule, and the thermometer note says so.
+- Once the seed-noise experiment fills `sigma_seed`, the reference rows add
+  **1**·σ_seed² (r4 is one fixed model; the live bar adds 2·σ_seed², both
+  models being draws), and this reading is replaced by the rule itself.
 
 ### Running r6, in order
 
@@ -803,6 +974,13 @@ r6; `POLICY_VERSION` r6-4).** Two scoring modes:
   The dropdown is required only for a cut or unknown list (the service rules
   ask no more for a list of 16–100).
 
+**The r7 answer key (`.k3`, `exam.ANSWER_KEY_R7`).** An amendment may carry
+`_rev`; `amend()` writes `<id>.k<rev>`. h022.k3, p030.k3 and p047.k3 are
+`ask_ok` (no URL / title given); h006.k3 requires `bodyFont` and allows the
+footer body font (a question is `no_write`; an extra heading font is
+`stray_writes`). p050 / p053 stay strict. `font_policy as_authored` restores
+the built rows by `meta.superseded.id`, as for `.k2`. DRIFT.md "Re-keyed rows".
+
 **Exam p137 → p137.k2** ("create a new page for events"). Its key was
 report_unsupported `pages`; it now expects create_page `{title: "Events"}`
 (`exam.AMENDMENTS`, answer key `create-page-2026-10-15`) **unless the site
@@ -882,6 +1060,35 @@ final hold-out check. Gates, each of which fails the stage:
    itself. When it fails, read `stats.json` and `prepare/author-report.json`
    (`reject_details`) for why authoring came up short; a re-run of prepare
    for the round reads its authored file back and does not re-author.
+   r7: `trigger.positives_required` (or `SOUSCHEF_POSITIVES_REQUIRED`) adds
+   addresses to this gate that are not new (the re-authored keys, reason
+   `positives_required`).
+6. **Ask rule** (r7; `stats.json` `ask`). In order, each moving rows to
+   `rejects.jsonl` with its reason: every kept `ask` row's rendered user text
+   must be VAGUE under `askrule` (no value, no direction, no action; carried
+   rows included) — `ask_rule_violation`; every ask row needs a kept row of
+   its write twin (case `meta.ask_pair`; clarify, which-one and no-title
+   create_page asks exempt) — `ask_unpaired`; ask + clarify rows at most
+   `ask_share_max` (default 0.03, `trigger.ask_share_max`,
+   `SOUSCHEF_ASK_SHARE_MAX`; 0 = off) of the rows, chosen by sha1 of the case
+   id round-robin over fields after the family floors — `ask_cap` (twins
+   stay). `stats.json` `ask` holds `rows`, `share`, `cap` (by family before
+   and after), `violations_kept`, `unpaired_kept`, `exempt` and `pairs` (per
+   field: ask rows, twin write rows, other relative write rows). The gate:
+   `violations_kept == 0` and `unpaired_kept == 0`. `prepare/report.json`
+   `ask_rule` has the pool's relabels (`pool`, with `unsure`: clear asks
+   with no evidence for a write, dropped), the ask-first split
+   (`ask_first`: `kept_vague`, `relabelled`, `twins`, `dropped_rule` —
+   `unsure`, `conflicting_keys`, `no_field` —, `twins_dropped`), `vague`
+   and `vague_twins` (two per vague case, three on a colour / number
+   field); a relabelled case's `meta.ask_rule.evidence` says why it is a
+   write (`oracle:…`, `direction:…`, `toggle:…`, `literal:…`); `reauthor` and
+   `ambiguous_superseded` (`count`, `by_reason`, `regrouped`) cover the
+   re-authored keys. Authoring rejects a draft as `ask_turn_not_vague`,
+   `ambiguous_instance`, `ambiguous_twin`, `alias_instance`, `ambiguous_row`,
+   `tag_not_in_store`, `tag_not_named`, `bad_value` or `bad_seed`
+   (`author-report.json` `rejects`); the last six also supersede earlier
+   rounds' drafts of a re-authored key (`ambiguous_superseded.by_reason`).
 
 It also writes `model/context.tar.gz` (the image's `lab/model-image/`) for R5,
 so Cloud Build needs no repository access.
@@ -1256,6 +1463,34 @@ current model's baseline. The candidate passes when all hold:
    current; a round triggered by exam drift: the deployed-manifest total
    improves by ≥ σ_Δ;
 6. ghost writes ≤ current.
+7. `r4_floor` (r7; thresholds `r4_reference`): the candidate against r4's
+   **recorded** calibration replicates (`baselines/reference/r4/baseline.json`,
+   else the live `baselines/sha256:f657…` copy, else the Mistral snapshot's;
+   every copy found is hashed; a copy whose file sha256 is not
+   `r4_reference.file_sha256` (`496a5ca0…`) is skipped, and a model digest
+   other than `f657…` is refused), on paraphrase, holdout, real and followup:
+   each set Δ_vs_r4 ≥ −tol (r4's own σ_run; with `sigma_seed` set, plus
+   **1**·σ_seed², since r4 is one fixed recorded model and only the
+   candidate is a seed draw — 2·σ_seed² would have let r6's −6.3 pass at
+   σ_seed 2.5) and the pooled McNemar not significantly worse. A failure is
+   read as [Reading r4_floor](#reading-r4_floor) says. Re-keyed rows
+   (`.k2`/`.k3`) and rows stale on the round's manifest drop out of the
+   pairing and are counted (`results.r4_reference`). No file: the rule passes
+   "NOT MEASURED" and `report.json` `warnings` says so. Without this rule r7
+   would only be judged against r6, which already lost 6.5 holdout rows.
+   The `:vs-r4` rows show r4 in the "current" column. Next to it, report
+   only unless `r4_reference.rerun_bar` is true, `r4_rerun_floor`: the same
+   comparison with r4 **re-run** in `rows_run`'s round (r6's: r4 as its
+   current arm, under r6's prompt, scorer and manifest; `<set>:vs-r4_rerun`
+   rows, `results.r4_rerun_reference`). It is the better-matched floor — r4
+   scores +2.3 paraphrase and +1.2 holdout above its recording when re-run,
+   so `r4_floor` is about 1–2 rows lenient — and it pairs the `.k2` rows too
+   (4 rows left out instead of 23). On r6's real eval both fail: holdout −6.3
+   vs the recording, −6.5 vs the re-run. Beside it, the
+   report-only **asks on clear requests**: per arm (and r4's recorded rows of
+   `rows_run`), the rows answered with a question although `askrule` calls
+   the request not vague, by exam class (relative, synonym, unnamed,
+   selected). Read it first.
 
 **The tolerance counts eval noise only, not training noise.** `σ_Δ,s` is how
 much the same weights vary between two passes over the exam. A retrain of the
@@ -1554,12 +1789,12 @@ Locks are only ever broken by a person, after checking
 | stage | duration | cost |
 |---|---|---|
 | prepare | 30–60 min | Anthropic authoring: a few US$ per round (reported in `prepare/report.json`) |
-| collect | about 1 h with the carry (estimate); 2.2–2.8 h at 6 workers without | **r6 asks every case: about US$110–125** (R2: the rules changed since r4 and r5 were collected, so the carry carries nothing; about 3,750 cases at r5's rate, including about US$3–5 for the 82 create_page / listing cases and the 17 relabelled page creates); about US$30–40 from r7 with the carry; without it US$100–175 (r5 asked 3,408 cases for US$101.57) |
+| collect | about 1 h with the carry (estimate); 2.2–2.8 h at 6 workers without | **r6 asks every case: about US$110–125** (R2: the rules changed since r4 and r5 were collected, so the carry carries nothing; about 3,750 cases at r5's rate, including about US$3–5 for the 82 create_page / listing cases and the 17 relabelled page creates); about US$30–40 from r7 with the carry; without it US$100–175 (r5 asked 3,408 cases for US$101.57). **r7**: the carry should keep r6's rows (rules unchanged, checked 2026-10-17); the label change re-asks about 363 rows (about US$13), plus the new twins, relabels and re-authored keys: about US$50–100. If nothing carries (`rules_changed`), r6's US$177 for 4,970 cases plus r7's new cases: **about US$200–250** |
 | dataset | 15 min | — |
 | train + export | 2.4–2.8 h + 0–4 h Flex-start wait; about 2.2 h more per extra arm, base or warm (three arms: 7–8.5 h of H100, inside the 12 h attempt; an A100 rung trains no extra arm) | about 3 H100-hours, plus 2.0–2.4 a seed. **The rate is not verified**: US$6.57/h is the training VM's Spot rate (TRAIN-REMOTE.md); Vertex bills its own Flex-start / Spot rate. Read r5's job `customJobs/5995030053153406976` in the billing report before quoting a budget |
 | image | 15–25 min | Cloud Build minutes; about US$0.90/month per kept tag |
 | candidate + paired eval | 2–3 h on two L4s | about US$1.05/h each |
-| **round** | **about 9–12 h** (about 13–17 h with three seeds) | **r6 with three seeds: about US$165–190** (about US$115–130 Claude — collect plus a few US$ of authoring —, US$46–56 H100 at the recorded rate, US$7 L4); one seed about US$135–150; from r7, with the carry, about US$100–120 |
+| **round** | **about 9–12 h** (about 13–17 h with three seeds) | **r6 with three seeds: about US$165–190** (about US$115–130 Claude — collect plus a few US$ of authoring —, US$46–56 H100 at the recorded rate, US$7 L4); one seed about US$135–150; **r7 with two arms and the carry: about US$90–150; worst case about US$250** if the carry carries nothing (pre-flight step 5 checks the rules) |
 | seed-noise experiment (R10, once) | about 10–12 h (training in parallel, evals one at a time) | about US$47–57 for two arms (2.4 H100-hours an arm measured on r5, at the recorded rate; US$11.55 of L4), no Claude spend; each further arm about US$24–29 |
 | SMOKE | 2–6 h (the trainer image pull, the base tar, up to 30 min of Flex-start) | about US$2 of API, 1 H100-hour, 30 L4-minutes (about US$10–15) |
 

@@ -98,7 +98,8 @@ an object at `$PIPE/config/thresholds.json` overrides it without a rebuild.
 | **`retrain`** | **(a)** Δ_total > 3 σ_Δ **and** ≥ 4 points · **(b)** on a set with n ≥ 12, Δ_set > 3 σ_Δ,set **and** ≥ 15 points · **(c)** `out_of_scope` + `out_of_scope_holdout` drop ≥ 3 rows **and** > 3 σ_Δ of the two sets combined · **(d)** ≥ 2 dodged keys, or every probed key of a new container dodged · **(e)** `stale_training_rows` ≥ 3 % of the dataset, or `stale_exam_rows` ≥ 5 % of the exam · **(f)** arm D has ≥ 3 more ghost writes than arm T · **(g)** ≥ 90 days since training **and** any R2/R3 change |
 
 **Re-keyed rows.** An exam row whose answer key a product decision changed
-gets a new id `<id>.k2` (`exam.AMENDMENTS`): a baseline scored on the old key
+gets a new id `<id>.k<rev>` (`exam.AMENDMENTS`, an entry's `_rev`, 2 by
+default; `exam.AMENDED_ID_RE` matches any): a baseline scored on the old key
 never pairs with it, so it is left out of every Δ until the live model is
 re-calibrated (`drift calibrate --fresh-baseline`, or the approved candidate's
 eval baseline). Twenty rows today: the 19 font and vague-request rows of
@@ -111,6 +112,23 @@ re-calibration a lost p137.k2 counts toward rule (c) like any row of that set.
 set, RETRAIN.md R6 — because the current model there was never offered the
 tool; drift compares a model with itself, so it stays in. The candidate
 baseline records it under `out_of_scope:p137.k2`.)
+
+**The r7 answer key (`.k3`, answer key `ask-rule-r7-2026-10-18`).** Four more
+rows were re-keyed before the r7 round (RETRAIN.md "What changed for r7"):
+h022.k3 ("add our weedmaps page"), p030.k3 ("put our facebook page in the
+footer") and p047.k3 ("change what shows up as the title on google") may be
+answered with a question (`ask_ok`: no URL or title is given); h006.k3 ("the
+body copy font should be Inter") gives its value, so a write is required:
+`bodyFont`, with the footer's body font (`footerBodyFont` deployed,
+`footerBodyTextFontFamily` on the exam manifest) allowed but not required.
+The live drift baseline (r6's `sha256:7fb1…`, set on Approve) and r4's
+`sha256:f657…` hold these rows under their old ids, so drift leaves them out
+of every Δ until the next calibration (`drift calibrate --fresh-baseline`, or
+the approved r7 candidate's eval baseline). So recalibrate **only on Skip**:
+on Approve, r7's candidate baseline (on `3914e2e4`, with the `.k3` rows)
+becomes the drift baseline by itself. The retrain eval's `r4_floor` rule
+counts them as `excluded_amended` (RETRAIN.md R6). p050 / p053 (image
+requests) are deliberately not re-keyed: their answer is `pick_asset`.
 
 **Option lists in the re-derived contexts (2026-10-16).** Arms T and D ask
 the exam with contexts re-derived by `state.context_of`, which now mirrors

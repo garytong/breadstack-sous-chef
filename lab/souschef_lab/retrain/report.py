@@ -13,15 +13,19 @@ and the pool index; writes
                              thermometer) and the decision's candidate_id
 
 `results` = {candidate, current, deployed_manifest, trigger, bar, sets, static,
-training, cases, cost, stale_round, links}. A stale round (the deployed manifest
-moved with an R3 change during the round) recommends Skip.
+training, cases, cost, stale_round, links} plus, when measured (r7), `r4_reference`
+(bar.add_reference: the candidate against r4's recorded answers) and `clear_asks`
+(clear_asks: how often each arm answers a CLEAR request with a question — report
+only, the number to read first). A stale round (the deployed manifest moved with an
+R3 change during the round) recommends Skip. report.json `warnings` lists what was
+not measured (a missing r4 reference).
 """
 from __future__ import annotations
 
 import os
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from . import bar as BAR
 from .common import Store, load_run, model_state, notification, run_prefix, write_result
@@ -134,7 +138,173 @@ def results_of(store: Store, run_id: str, *, bar: dict, eval_info: dict) -> dict
         "stale_round": bool(eval_info.get("stale_round")),
         "links": {"report": store.url(f"{pre}/report.json"), "execution": run.get("execution_url") or "",
                   "page": f"{THERMOMETER}/sous-chef/decisions/{candidate_id(run_id)}"},
+        **_measured_extras(bar, eval_info),
     }
+
+
+# bar.add_reference's summaries: r4's recorded answers (rule r4_floor) and r4 re-run in r6's round (r4_rerun_floor,
+# report only unless thresholds r4_reference.rerun_bar)
+REFERENCE_KEYS = ("r4_reference", "r4_rerun_reference")
+
+
+def _measured_extras(bar: dict, eval_info: dict) -> dict:
+    """results.r4_reference (bar.add_reference's summary, its source and sha256) and results.clear_asks, only when
+    the eval measured or configured them (an older eval's results keep their exact shape)."""
+    out: dict[str, Any] = {}
+    for rkey in REFERENCE_KEYS:
+        ref = bar.get(rkey)
+        if not isinstance(ref, dict):
+            continue
+        src = ref.get("source") or {}
+        out[rkey] = {
+            "measured": bool(ref.get("measured")), "detail": ref.get("detail"),
+            "source": src.get("source"), "sha256": src.get("sha256"), "copies": src.get("copies") or [],
+            "copies_match": src.get("copies_match"), "tag": src.get("tag") or ref.get("name"),
+            "digest": src.get("digest"), "sets": ref.get("sets"), "gate": ref.get("gate", src.get("gate")),
+            "pooled": ref.get("pooled"), "per_set": ref.get("per_set"),
+            "excluded_amended": ref.get("excluded_amended", 0), "excluded_stale": ref.get("excluded_stale", 0),
+            "excluded_unrecorded": ref.get("excluded_unrecorded", 0)}
+        if src.get("label"):
+            out[rkey]["label"] = src["label"]
+        if src.get("rows_run"):
+            out[rkey]["rows_run"] = src["rows_run"]
+    ca = eval_info.get("clear_asks")
+    if isinstance(ca, dict):  # the per-row keys stay in report.json's `eval` (the decision payload rides the workflow)
+        out["clear_asks"] = {**ca, "arms": {a: {**v, "by_class": {c: {k: x for k, x in d.items() if k != "rows"}
+                                                                   for c, d in (v.get("by_class") or {}).items()}}
+                                            for a, v in (ca.get("arms") or {}).items()}}
+    return out
+
+
+def warnings_of(bar: dict, eval_info: dict) -> list[str]:
+    """What the eval could not measure, for report.json `warnings` (a person reads it before deciding)."""
+    w: list[str] = []
+    ref = bar.get("r4_reference")
+    if isinstance(ref, dict):
+        name = ref.get("name") or "r4"
+        for x in (ref.get("source") or {}).get("warnings") or []:
+            w.append(f"{name}_floor: {x}")
+        if not ref.get("measured") and not (ref.get("source") or {}).get("warnings"):
+            w.append(f"{name}_floor: {ref.get('detail') or 'NOT MEASURED'}")
+    ca = eval_info.get("clear_asks")
+    if isinstance(ca, dict) and not ca.get("measured"):
+        w.append(f"clear_asks: not measured ({ca.get('why')})")
+    return w
+
+
+# --- "asks on clear requests" (r7 spec 6.3; report-only, never in the bar) --------------------------------------------
+
+CLEAR_ASK_SETS = ("paraphrase", "holdout", "real")
+
+
+def asked_instead(t: dict, ask_ok: bool) -> bool:
+    """A trimmed eval row whose turn asked (or only answered) instead of writing: no_write with reason
+    asked_or_answered, or clarify_ok on a row whose key does not allow asking."""
+    v = t.get("verdict")
+    if t.get("status") not in (None, "ok"):
+        return False
+    if v == "no_write" and "asked_or_answered" in (t.get("reasons") or []):
+        return True
+    return v == "clarify_ok" and not ask_ok
+
+
+def askrule_vague(m: Any = None) -> Callable[[dict], bool] | None:
+    """askrule's verdict on an exam row's request: classify_case (the row's whole manifest vocabulary: options,
+    toggles, section types, the texts the site shows) when a manifest is given, else classify on the text alone;
+    None when the lab has no askrule module."""
+    try:
+        from .. import askrule as AR
+    except Exception:  # noqa: BLE001 — report-only: a missing or broken askrule leaves the count unmeasured
+        return None
+    by_case = getattr(AR, "classify_case", None)
+
+    def vague(row: dict) -> bool:
+        v = None
+        if by_case is not None and m is not None:
+            try:
+                v = by_case(row, m)
+            except Exception:  # noqa: BLE001 — the vocabulary is a refinement; the text rule still applies
+                v = None
+        if v is None:
+            v = AR.classify(str(row.get("request") or ""))
+        return bool(v.get("vague") if isinstance(v, dict) else getattr(v, "vague", v))
+    return vague
+
+
+def clear_asks(arms_rows: dict[str, list[dict]], exam_rows: list[dict], *, vague: Callable[[dict], bool] | None = None,
+               sets: tuple[str, ...] = CLEAR_ASK_SETS) -> dict:
+    """Per arm: of the row replicates in `sets` (trimmed eval rows, set exactly "<set>", every replicate counted)
+    whose request the ask rule calls NOT vague, how many the arm answered with a question instead of a write
+    (asked_instead), split by the exam class (relative, synonym, unnamed, selected, …). `exam_rows` = the scored
+    rows (request, meta.class, expected.ask_ok), found by (set, id) or, for a row scored before an amendment, by
+    meta.superseded.id. {"measured": False, ...} without a classifier."""
+    if vague is None:
+        return {"measured": False, "why": "the lab has no askrule module", "arms": {}}
+    vague = _guarded(vague)
+    by: dict[tuple[str, str], dict] = {}
+    for r in exam_rows:
+        s = str(r.get("_origin_set") or r.get("set") or "")
+        by[(s, str(r.get("id")))] = r
+        sup = ((r.get("meta") or {}).get("superseded") or {}).get("id")
+        if sup:
+            by.setdefault((s, str(sup)), r)
+    cache: dict[int, bool] = {}
+    out: dict[str, Any] = {"measured": True, "sets": list(sets), "arms": {}}
+    for arm, rows in arms_rows.items():
+        if not rows:
+            continue
+        per: dict[str, dict[str, Any]] = {}
+        unmatched = 0
+        for t in rows:
+            s = str(t.get("set") or "")
+            if s not in sets or t.get("status") not in (None, "ok"):
+                continue
+            ex = by.get((s, str(t.get("id"))))
+            if ex is None:
+                unmatched += 1
+                continue
+            if id(ex) not in cache:
+                cache[id(ex)] = bool(vague(ex))
+            if cache[id(ex)]:
+                continue
+            cls = str((ex.get("meta") or {}).get("class") or "other")
+            ask_ok = bool((ex.get("expected") or {}).get("ask_ok"))
+            for k in (cls, "all"):
+                d = per.setdefault(k, {"asked": 0, "n": 0, "rows": []})
+                d["n"] += 1
+                if asked_instead(t, ask_ok):
+                    d["asked"] += 1
+                    if k == "all" and t.get("key") not in d["rows"]:
+                        d["rows"].append(t.get("key") or f"{s}:{t.get('id')}")
+        for d in per.values():
+            d["rows"] = sorted(d["rows"])
+            if not d["rows"]:
+                d.pop("rows")
+        out["arms"][arm] = {"by_class": per, "unmatched": unmatched}
+    return out
+
+
+def _guarded(vague: Callable[[dict], bool]) -> Callable[[dict], bool]:
+    """A classifier error on one row counts that row as vague (left out), never fails the eval."""
+    def f(row: dict) -> bool:
+        try:
+            return bool(vague(row))
+        except Exception:  # noqa: BLE001
+            return True
+    return f
+
+
+def clear_asks_text(ca: dict | None) -> str:
+    """'Asks on clear requests: candidate relative 3/48, all 9/400; current …'."""
+    if not ca or not ca.get("measured") or not ca.get("arms"):
+        return ""
+    parts = []
+    for arm, a in ca["arms"].items():
+        bc = a.get("by_class") or {}
+        bits = [f"{k} {bc[k]['asked']}/{bc[k]['n']}" for k in ("relative", "all") if k in bc]
+        if bits:
+            parts.append(f"{arm} " + ", ".join(bits))
+    return ("Asks on clear requests: " + "; ".join(parts) + ".") if parts else ""
 
 
 def summary_text(res: dict, *, smoke: bool, expires: datetime) -> str:
@@ -147,7 +317,13 @@ def summary_text(res: dict, *, smoke: bool, expires: datetime) -> str:
         text = "Bar rules failing: " + "; ".join(f"{r['name']}: {r['detail']}" for r in failed)
     else:
         text = f"Every bar rule passes ({len(res['bar']['rules'])})."
-    return text + (" " + arms if arms else "")
+    # the r4 line once: a failing r4_floor's detail already carries it
+    ref = "" if any(r["name"] == "r4_floor" for r in failed) else BAR.reference_text(res.get("r4_reference"))
+    rerun = "" if any(r["name"] == "r4_rerun_floor" for r in failed) else BAR.reference_text(res.get("r4_rerun_reference"))
+    for extra in (ref, rerun, clear_asks_text(res.get("clear_asks")), arms):
+        if extra:
+            text += " " + extra
+    return text
 
 
 def summary_full(res: dict, *, smoke: bool, expires: datetime) -> str:
@@ -157,6 +333,12 @@ def summary_full(res: dict, *, smoke: bool, expires: datetime) -> str:
              f" · bar {bar_word}" + (" · SMOKE (a dry rollout on Approve)" if smoke else "")]
     lines.append(BAR.table_text({"sets": res["sets"]}))
     lines.append(summary_text(res, smoke=smoke, expires=expires))
+    ca = res.get("clear_asks")
+    if ca and ca.get("measured") and ca.get("arms"):
+        for arm, a in ca["arms"].items():
+            bc = a.get("by_class") or {}
+            lines.append(f"  asks on clear requests, {arm}: " +
+                         ", ".join(f"{k} {v['asked']}/{v['n']}" for k, v in sorted(bc.items(), key=lambda kv: kv[0] == "all")))
     if res["stale_round"]:
         lines.append("The launcher's manifest changed again during this round (a hard change): Skip is recommended.")
     lines.append("Approve rolls it out to int now. Skip parks it and batches its cases into the next big drift. "
@@ -174,7 +356,7 @@ def build(store: Store, run_id: str, *, mode: str, bar: dict, eval_info: dict, n
                 "bar_pass": bool(bar["pass"]), "results": res}
     store.write_json(f"{pre}/decision.json", decision)
     report = {"run_id": run_id, "mode": mode, "candidate_id": res["candidate"]["id"], "results": res, "eval": eval_info,
-              "summary": summary_full(res, smoke=smoke, expires=expires),
+              "summary": summary_full(res, smoke=smoke, expires=expires), "warnings": warnings_of(bar, eval_info),
               "stages": {s: store.read_json(f"{pre}/result-{s}.json") for s in ("prepare", "collect", "dataset")},
               "at": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
     store.write_json(f"{pre}/report.json", report)

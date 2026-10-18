@@ -625,6 +625,18 @@ def test_amended_exam_rows_go_back_to_the_r5_key_under_as_authored():
     assert wide == old                                     # accepts headingFont: nothing to widen)
 
 
+def test_r7_k3_rows_go_back_to_their_built_key_under_as_authored():
+    from souschef_lab import exam as X
+    h006 = next(r for r in X.load_set("holdout") if r["id"] == "h006.k3")
+    assert h006["meta"]["answer_key"] == X.ANSWER_KEY_R7
+    assert R.apply_font_policy(h006, "all")[0] is h006  # today's key as written (bodyFont + optional footer font)
+    old, note = R.apply_font_policy(h006, "as_authored")
+    assert note == "font:as_authored" and old == next(r for r in X.load_set("holdout", amended=False) if r["id"] == "h006")
+    p047 = next(r for r in X.load_set("paraphrase") if r["id"] == "p047.k3")
+    old, _ = R.apply_font_policy(p047, "as_authored")
+    assert old["id"] == "p047" and "ask_ok" not in old["expected"]
+
+
 # ── asking before acting ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_ask_mode_rewards_a_question_and_penalises_a_guess():

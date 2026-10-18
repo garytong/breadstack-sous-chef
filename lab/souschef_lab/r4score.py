@@ -93,6 +93,11 @@ their built ids and keys). r6-4 adds a 20th: p137.k2 ("create a new page for
 events", report_unsupported pages before) expects create_page — or, on a site
 that already has the page (the exam's vintage state does), the reply that it
 exists (exam.score_page); "as_authored" restores p137 and its `pages` key.
+r7's answer key (exam.ANSWER_KEY_R7, pre-registered; the scorer and POLICY_VERSION
+are unchanged) re-keys four more under `.k3` ids (an AMENDMENTS entry's `_rev`;
+exam.AMENDED_ID_RE matches every amended id): h022, p030, p047 ask_ok (no URL /
+title given) and h006 (a value given: bodyFont required, the footer body font
+optional). "as_authored" restores them by meta.superseded like the .k2 rows.
 """
 from __future__ import annotations
 

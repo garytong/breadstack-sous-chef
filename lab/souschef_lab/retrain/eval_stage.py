@@ -29,6 +29,14 @@ same rows and contexts:
 The capability rows keep their set's row key (out_of_scope:p137.k2) in the candidate
 baseline, so drift keeps measuring them; only the paired bar leaves them out.
 
+r7: the candidate's rederived rows are also paired with a RECORDED reference model —
+r4's calibration replicates, thresholds `r4_reference` (load_reference: the first
+bucket copy found, every copy hashed and compared) — as `<set>:vs-r4` rows and the
+bar rule `r4_floor` (bar.add_reference; no file: NOT MEASURED, a warning). No GPU and
+no new rows: the reference's answers are the ones it recorded. The report also counts
+each arm's questions on clear requests (report.clear_asks, askrule; report only),
+with the reference's own verdicts from `r4_reference.rows_run` (that round's current arm).
+
 Outputs: runs/<id>/eval/<arm>/<set>-k<k>.jsonl (trimmed rows), eval/bar.json,
 eval/candidate-baseline.json (the candidate's rows on its own training manifest
 = the deployed one, in baseline.py's format: on Approve it becomes
@@ -237,6 +245,105 @@ def _check_errors(out: list[dict], what: str) -> None:
 
 def results(rows: list[dict]) -> dict[str, int]:
     return {r["key"]: int(r["pass"]) for r in rows if r.get("status") == "ok"}
+
+
+# --- the recorded reference (r7: thresholds `r4_reference`, bar.add_reference) -----------------------------------------
+
+def load_reference(store: Store, th: dict, *, key: str = "r4_reference") -> tuple[dict | None, dict | None, dict]:
+    """(replicates per set or None, the reference baseline.json or None, source info) for thresholds[key] =
+    {tag, digest, file_sha256, baseline: [bucket paths, first found wins], rows_run, sets, bar}; null / absent: not
+    configured. Every listed copy that exists is hashed and recorded (copies that differ: the first is used, with a
+    warning). `file_sha256` (r7 review: pre-registered with the floor) pins the FILE itself: a copy with another
+    sha256 — a recalibration written to the same path, a later weekly replicate — is skipped with a warning, and none
+    matching leaves the reference unmeasured. A file whose model digest is not `digest` is refused too: never a
+    silently different floor."""
+    import hashlib
+    from . import bar as BAR
+    cfg = th.get(key)
+    if not isinstance(cfg, dict):
+        return None, None, {"configured": False, "why": f"thresholds {key} is not set", "looked_in": []}
+    paths = [str(p) for p in (cfg.get("baseline") or []) if p]
+    sets = [str(s) for s in (cfg.get("sets") or BAR.REFERENCE_SETS)]
+    info: dict[str, Any] = {"configured": True, "tag": cfg.get("tag"), "digest": cfg.get("digest"), "looked_in": paths,
+                            "sets": sets, "gate": cfg.get("bar", True) is not False, "rows_run": cfg.get("rows_run"),
+                            "copies": [], "warnings": []}
+    found: list[tuple[str, bytes]] = []
+    for p in paths:
+        data = store.read_bytes(p)
+        if data is not None:
+            found.append((p, data))
+            info["copies"].append({"path": p, "sha256": hashlib.sha256(data).hexdigest()})
+    if not found:
+        info["why"] = f"no {cfg.get('tag') or 'reference'} baseline at {', '.join(paths) or '(no path configured)'}"
+        info["warnings"].append(info["why"])
+        return None, None, info
+    pin = str(cfg.get("file_sha256") or "").strip().lower()
+    if pin:
+        info["file_sha256"] = pin
+        other = [c for c in info["copies"] if c["sha256"] != pin]
+        for c in other:
+            info["warnings"].append(f"{c['path']} is not the pinned file (sha256 {c['sha256'][:12]}…, want {pin[:12]}…): skipped")
+        found = [(p, d) for (p, d), c in zip(found, info["copies"]) if c["sha256"] == pin]
+        info["copies"] = [c for c in info["copies"] if c["sha256"] == pin] + other
+        if not found:
+            info["why"] = f"no copy of the pinned {cfg.get('tag') or 'reference'} baseline (sha256 {pin[:12]}…)"
+            info["warnings"].append(info["why"])
+            return None, None, info
+    shas = {c["sha256"] for c in info["copies"]}
+    info["source"], info["sha256"] = found[0][0], info["copies"][0]["sha256"]
+    info["copies_match"] = len(shas) == 1
+    if len(shas) > 1:  # both are the reference model's own answers (a later weekly replicate, say): the first wins
+        info["warnings"].append(f"the reference copies differ, {found[0][0]} used: " +
+                                ", ".join(f"{c['path']} {c['sha256'][:12]}" for c in info["copies"]))
+    try:
+        doc = json.loads(found[0][1].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        info["why"] = f"{found[0][0]} is not JSON ({e})"
+        info["warnings"].append(info["why"])
+        return None, None, info
+    if cfg.get("digest") and doc.get("digest") != cfg.get("digest"):
+        info["why"] = f"{found[0][0]} is the baseline of {str(doc.get('digest'))[:19]}…, not {str(cfg['digest'])[:19]}…"
+        info["warnings"].append(info["why"])
+        return None, None, info
+    reps = BAR.reference_replicates(doc, sets)
+    info["replicates"] = len(doc.get("replicates") or [])
+    if not any(reps.values()):
+        info["why"] = f"{found[0][0]} has no rows in {', '.join(sets)}"
+        info["warnings"].append(info["why"])
+        return None, None, info
+    return reps, doc, info
+
+
+def reference_rows(store: Store, th: dict, *, key: str = "r4_reference") -> list[dict]:
+    """The reference model's trimmed rows WITH verdicts (thresholds[key].rows_run: a round whose `current` arm was
+    the reference, e.g. r6's round for r4): report-only, for report.clear_asks. [] when not configured or absent."""
+    cfg = th.get(key)
+    rr = cfg.get("rows_run") if isinstance(cfg, dict) else None
+    if not rr:
+        return []
+    try:
+        return store.read_jsonl(f"{run_prefix(str(rr))}/eval/current/rows.jsonl")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+
+
+def rerun_replicates(rows: list[dict], sets: list[str] | tuple[str, ...]) -> dict[str, list[dict[str, int]]]:
+    """{set: [replicate {row key: 0|1}]} from a round's trimmed eval rows (reference_rows): the k-th row of a key in
+    a set is replicate k (the eval writes each replicate's rows in turn); only `ok` rows, as results() counts them."""
+    out: dict[str, list[dict[str, int]]] = {}
+    for s in sets:
+        seen: Counter = Counter()
+        reps: list[dict[str, int]] = []
+        for r in rows or []:
+            if r.get("set") != s or r.get("status") != "ok" or not r.get("key"):
+                continue
+            i = seen[r["key"]]
+            seen[r["key"]] += 1
+            while len(reps) <= i:
+                reps.append({})
+            reps[i][r["key"]] = int(r.get("pass") or 0)
+        out[s] = [x for x in reps if x]
+    return out
 
 
 # --- the stage --------------------------------------------------------------------------------------------------------
@@ -497,6 +604,34 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
         nb = BAR.set_row("newest", "rederived", newest_by["current"], newest_by["candidate"], base_cur, th, bar=False)
         nb.pop("_keys", None)
         bar["sets"].append(nb)
+    # r7: the candidate against r4's RECORDED answers as well as the live model (thresholds `r4_reference`; null: off)
+    ref, ref_doc, ref_info = load_reference(store, th)
+    rr_rows = reference_rows(store, th) if ref_info.get("configured") else []
+    if ref_info.get("configured"):
+        BAR.add_reference(bar, results_by["candidate"], ref, ref_doc, th, name=str(ref_info.get("tag") or "r4"),
+                          sets=ref_info.get("sets") or BAR.REFERENCE_SETS, source=ref_info, gate=ref_info.get("gate", True))
+        for w in ref_info.get("warnings") or []:
+            progress(f"eval: r4 reference: {w}")
+        # the same model RE-RUN under the live prompt, scorer and manifest (`rows_run`: r6's round, r4 as its current
+        # arm) — the better-matched floor (r7 review: the recording is about 1–2 rows lenient, and it pairs the `.k2`
+        # rows too). Report only unless thresholds r4_reference.rerun_bar is true.
+        rr = rerun_replicates(rr_rows, ref_info.get("sets") or BAR.REFERENCE_SETS)
+        if any(rr.values()):
+            tag = str(ref_info.get("tag") or "r4")
+            BAR.add_reference(bar, results_by["candidate"], rr, ref_doc, th, name=f"{tag}_rerun",
+                              sets=ref_info.get("sets") or BAR.REFERENCE_SETS,
+                              source={"rows_run": ref_info.get("rows_run"), "tag": f"{tag}_rerun",
+                                      "label": f"{tag} re-run in {ref_info.get('rows_run')}"},
+                              gate=bool((th.get("r4_reference") or {}).get("rerun_bar", False)))
+        elif ref_info.get("rows_run"):
+            ref_info.setdefault("warnings", []).append(
+                f"no rows at runs/{ref_info['rows_run']}/eval/current/rows.jsonl: the re-run comparison is not measured")
+    # report-only: how often each arm answers a clear request with a question (r7 spec 6.3)
+    ref_tag = f"{ref_info.get('tag') or 'r4'} (recorded)"
+    clear = REP.clear_asks({"current": rows_out["current"], "candidate": rows_out["candidate"],
+                            **({ref_tag: rr_rows} if ref_info.get("configured") else {})},
+                           [r for s in REP.CLEAR_ASK_SETS for r in sets["sets"].get(s) or []],
+                           vague=REP.askrule_vague(dep_m))
     store.write_json(f"{pre}/eval/bar.json", bar)
     # the candidate's baseline on its own training manifest (baseline.py's format)
     img = store.read_json(f"{pre}/model/image.json") or {}
@@ -537,6 +672,7 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
                  "harness": harness.describe() if harness is not None else {"dry": True},
                  "candidate_baseline_digest": cand_digest, "tolerated_errors": arms.tolerated,
                  # the round's training arms (base seeds and a warm start), each scored on the validation rows
-                 "training_arms": REP.training_arms(store.read_json(f"{pre}/train/progress.json") or {})}
+                 "training_arms": REP.training_arms(store.read_json(f"{pre}/train/progress.json") or {}),
+                 "clear_asks": clear}
     store.write_json(f"{pre}/eval/info.json", eval_info)
     return REP.build(store, run_id, mode=mode, bar=bar, eval_info=eval_info)

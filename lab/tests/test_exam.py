@@ -597,9 +597,15 @@ def test_the_font_rows_expect_every_site_font_under_new_ids():
     amended = {(r["set"], r["meta"]["superseded"]["id"]): r for name in SIZES for r in X.load_set(name)
                if (r.get("meta") or {}).get("answer_key")}
     assert set(amended) == set(X.AMENDMENTS)
+    r7 = {(s, i) for s, i in X.AMENDMENTS if X.AMENDMENTS[(s, i)].get("_rev") == 3}
+    assert r7 == {("holdout", "h022"), ("paraphrase", "p030"), ("paraphrase", "p047"), ("holdout", "h006")}
     for (s, old_id), r in amended.items():
+        if (s, old_id) in r7:  # the r7 answer key (test_r7_answer_key_rows_get_k3_ids)
+            assert r["id"] == old_id + ".k3" and r["meta"]["answer_key"] == X.ANSWER_KEY_R7
+            continue
         want_key = X.PAGE_CREATE_KEY if (s, old_id) == ("out_of_scope", "p137") else X.ANSWER_KEY
         assert r["id"] == old_id + X.AMENDED_ID_SUFFIX and r["meta"]["answer_key"] == want_key
+        assert X.AMENDED_ID_RE.search(r["id"])
     raw = {r["id"] for r in X.load_set("followup", amended=False)}
     assert "p150" in raw and "p150.k2" not in raw
     p150 = amended[("followup", "p150")]
@@ -646,6 +652,60 @@ def test_a_value_less_request_may_be_answered_with_a_question():
     assert X.score_turn(p031, reported)["verdict"] == "no_write"
     # a request that gives its value is not amended
     assert not any(r["id"].startswith("p002") and r["expected"].get("ask_ok") for r in X.load_set("paraphrase"))
+
+
+# --- the r7 answer key (pre-registered: ask only with no value, no direction, no action) ------------------------------------
+
+def _get(set_name: str, rid: str) -> dict:
+    return next(r for r in X.load_set(set_name) if r["id"] == rid)
+
+
+def test_r7_answer_key_rows_get_k3_ids():
+    hold = {r["id"] for r in X.load_set("holdout")}
+    para = {r["id"] for r in X.load_set("paraphrase")}
+    assert {"h022.k3", "h006.k3"} <= hold and not {"h022", "h006", "h022.k2", "h006.k2"} & hold
+    assert {"p030.k3", "p047.k3"} <= para and not {"p030", "p047"} & para
+    # sizes unchanged, the old ids still there as built
+    assert len(hold) == SIZES["holdout"] and len(para) == SIZES["paraphrase"]
+    assert {"h022", "h006"} <= {r["id"] for r in X.load_set("holdout", amended=False)}
+    for s, i in (("holdout", "h022.k3"), ("paraphrase", "p030.k3"), ("paraphrase", "p047.k3"), ("holdout", "h006.k3")):
+        r = _get(s, i)
+        assert r["meta"]["answer_key"] == X.ANSWER_KEY_R7 and r["meta"]["superseded"]["id"] == i[:-3]
+        assert X.AMENDED_ID_RE.search(r["id"]) and not X.AMENDED_ID_RE.search(r["meta"]["superseded"]["id"])
+    # the decided-against rows stay as built (image requests: pick_asset is the answer)
+    assert {"p050", "p053"} <= para and not _get("paraphrase", "p050")["expected"].get("ask_ok")
+
+
+def test_r7_value_less_rows_may_be_answered_with_a_question():
+    asked = {**row(), "reply": "What title should Google show for your site?"}
+    for s, i in (("paraphrase", "p047.k3"), ("holdout", "h022.k3"), ("paraphrase", "p030.k3")):
+        r = _get(s, i)
+        assert r["expected"]["ask_ok"] is True
+        assert X.score_turn(r, asked)["verdict"] == "clarify_ok", i
+    p047 = _get("paraphrase", "p047.k3")
+    assert [k["key"] for k in p047["expected"]["keys"]] == ["defaults.title"] and p047["expected"]["alt"]  # keys unchanged
+    wrote = ok([sf({"kind": "page", "page": "seo"}, **{"defaults.title": "Hashi Cannabis"})])
+    assert X.score_turn(p047, wrote)["verdict"] == "pass"  # a write still passes
+    # before r7 the same question failed on the built row
+    built = next(r for r in X.load_set("paraphrase", amended=False) if r["id"] == "p047")
+    assert X.score_turn(built, asked)["verdict"] == "no_write"
+
+
+def test_r7_h006_gives_its_value_so_a_write_is_required():
+    h006 = _get("holdout", "h006.k3")
+    assert not h006["expected"].get("ask_ok")
+    assert [k["key"] for k in h006["expected"]["keys"]] == ["bodyFont"]
+    assert {k["key"] for k in h006["expected"]["optional"]} == {"footerBodyFont", "footerBodyTextFontFamily"}
+    asked = {**row(), "reply": "Which body font would you like, Inter for the whole site?"}
+    assert X.score_turn(h006, asked)["verdict"] == "no_write"
+    typo = {"kind": "global", "panel": "TypographyColorsSection"}
+    assert X.score_turn(h006, ok([sf(typo, bodyFont="Inter")]))["verdict"] == "pass"
+    both = ok([sf(typo, bodyFont="Inter"), sf({"kind": "global", "panel": "FooterSection"}, footerBodyFont="Inter")])
+    assert X.score_turn(h006, both)["verdict"] == "pass"  # the footer body font is allowed, never required
+    exam_m = ok([sf({"kind": "global"}, bodyFont="Inter", footerBodyTextFontFamily="Inter")])
+    assert X.score_turn(h006, exam_m)["verdict"] == "pass"
+    assert X.score_turn(h006, ok([sf(typo, bodyFont="Inter", headingFont="Inter")]))["verdict"] == "stray_writes"
+    assert X.score_turn(h006, ok([sf({"kind": "global"}, footerBodyFont="Inter")]))["verdict"] == "wrong_target"
 
 
 # --- create_page (2026-10-15): p137 re-keyed, the pages where-rule split, score_page ---------------------------------------
