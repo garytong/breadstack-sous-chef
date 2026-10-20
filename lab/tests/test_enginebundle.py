@@ -107,3 +107,20 @@ def test_no_snapshot_at_all(tmp_path):
 def test_browser_defaults_of_a_real_snapshot_match_the_fixture():
     doc = BD.generate(os.environ["COOKIE_CUTTER_DIR"])
     assert BD.same_content(json.loads((LAB / "fixtures" / "browser-defaults.json").read_text()), doc)
+
+def test_the_fingerprint_does_not_depend_on_where_the_engine_lies(tmp_path):
+    """Files imported from outside launcher/client (packages/ui) are named relatively, so a bundle extracted
+    anywhere fingerprints as it did when it was packed (absolute names failed every drift check, 2026-10-19)."""
+    fps = []
+    for where in ("packed-here", "extracted/somewhere/else"):
+        snap = tiny_snapshot(tmp_path / where)
+        ops = snap / ENGINE_REL_PATH.parent
+        (ops / "engine.js").write_text("import { r } from '../../../../../packages/ui/src/registry.js'\nexport const run = () => r\n")
+        ui = snap / "packages" / "ui" / "src"
+        ui.mkdir(parents=True)
+        (ui / "registry.js").write_text("export const r = 1\n")
+        fp = engine_fingerprint(snap / ENGINE_REL_PATH)
+        assert "../../packages/ui/src/registry.js" in fp["files"], fp["files"]
+        assert not any(f.startswith("/") for f in fp["files"]), fp["files"]
+        fps.append(fp["fingerprint"])
+    assert fps[0] == fps[1]

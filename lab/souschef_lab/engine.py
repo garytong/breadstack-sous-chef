@@ -265,7 +265,9 @@ def engine_fingerprint(path: str | Path | None = None) -> dict | None:
         try:
             return p.relative_to(client_root).as_posix()
         except ValueError:
-            return p.as_posix()
+            # Outside the client (packages/ui since the canvas templates): relative too, never absolute, so the
+            # fingerprint does not depend on where the engine is checked out or a bundle is extracted.
+            return Path(os.path.relpath(p, client_root)).as_posix()
 
     h = hashlib.sha256()
     names = [rel(p) for p in files]
