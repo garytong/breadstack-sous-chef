@@ -9,7 +9,7 @@
                                             --current-url https://…eval… --candidate-url https://…cand…
     python -m souschef_lab.pipeline decision --run-id rt-… --outcome approved|skipped|expired [--digest sha256:…]
     python -m souschef_lab.pipeline selftest
-    python -m souschef_lab.pipeline retrain-dry --workdir DIR [--smoke]      every stage end to end, no network
+    python -m souschef_lab.pipeline retrain-dry --workdir DIR [--smoke] [--base-family mistral]   every stage end to end, no network
 
 Every retrain stage reads its inputs from and writes its outputs to the pipeline
 bucket (`--bucket`, default $PIPELINE_BUCKET; a local folder works the same
@@ -92,6 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--workdir", required=True)
     r.add_argument("--smoke", action="store_true")
     r.add_argument("--engine-dir")
+    r.add_argument("--base-family", choices=("qwen", "mistral"), default=None,
+                   help="trigger.base_family of the rehearsed round (docs/RETRAIN.md \"The base family\"; default: none)")
     return ap
 
 
@@ -276,7 +278,7 @@ def retrain_dry(a) -> int:
     """Seed a local bucket (the exam manifest as the live model's, a deployed manifest with one new field, a small
     generated pool), then prepare → collect → dataset → (train/build stubbed) → eval → report, all DRY."""
     from .retrain import dry
-    return dry.main(Path(a.workdir), smoke=a.smoke, engine_dir=a.engine_dir)
+    return dry.main(Path(a.workdir), smoke=a.smoke, engine_dir=a.engine_dir, base_family=a.base_family)
 
 
 def main(argv: list[str] | None = None) -> int:

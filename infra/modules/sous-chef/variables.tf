@@ -101,6 +101,16 @@ variable "model_route_allowlist" {
   description = "MODEL_ROUTE_ALLOWLIST: comma-separated routes a request may ask for."
 }
 
+variable "model_route_aliases" {
+  type        = map(string)
+  default     = {}
+  description = "MODEL_ROUTE_ALIASES (README §5): route a turn names (or runs on as DEFAULT_ROUTE) -> the route that answers it, e.g. {\"blueberry-muffin\" = \"chocolate-muffin\"}. Empty = the env var is not set at all, so the service's env (and its revision) is what it was before the option existed. Both names must be in MODEL_ROUTES and the answering route in MODEL_ROUTE_ALLOWLIST; one hop, no chains: a service build that knows the option refuses to boot otherwise (an older build ignores the variable)."
+  validation {
+    condition     = alltrue([for k, v in var.model_route_aliases : can(regex("^[a-z0-9][a-z0-9._-]*$", k)) && can(regex("^[a-z0-9][a-z0-9._-]*$", v)) && k != v])
+    error_message = "model_route_aliases: route names ([a-z0-9][a-z0-9._-]*) on both sides, and never a route aliased to itself."
+  }
+}
+
 variable "model_call_timeout" {
   type        = string
   default     = "60s"

@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -45,11 +46,15 @@ var (
 // Options builds a Table. Routes/Default/Allowlist/APIKey/BaseURL/CallTimeout
 // mirror config.Config; FromConfig fills them.
 type Options struct {
-	Routes      map[string]config.Route
-	Default     string   // route used when a turn names none; must be in Routes
-	Allowlist   []string // routes a turn may name (README §5 MODEL_ROUTE_ALLOWLIST)
-	APIKey      string   // ANTHROPIC_API_KEY, for "anthropic" routes
-	BaseURL     string   // ANTHROPIC_BASE_URL, "" = the SDK's default
+	Routes    map[string]config.Route
+	Default   string   // route used when a turn names none; must be in Routes
+	Allowlist []string // routes a turn may name (README §5 MODEL_ROUTE_ALLOWLIST)
+	// Aliases (MODEL_ROUTE_ALIASES) answers a turn that names a route — or
+	// runs on it as the default — with another route of the table
+	// (config.Config.RouteAliases; config.ValidateAliases). nil = none.
+	Aliases     map[string]string
+	APIKey      string // ANTHROPIC_API_KEY, for "anthropic" routes
+	BaseURL     string // ANTHROPIC_BASE_URL, "" = the SDK's default
 	CallTimeout time.Duration
 	MaxRetries  *int // nil = DefaultMaxRetries
 
@@ -75,6 +80,7 @@ func FromConfig(cfg *config.Config, getenv func(string) string) Options {
 		Routes:      cfg.ModelRoutes,
 		Default:     cfg.DefaultRoute,
 		Allowlist:   cfg.RouteAllowlist,
+		Aliases:     cfg.RouteAliases,
 		APIKey:      cfg.AnthropicAPIKey,
 		BaseURL:     cfg.AnthropicBaseURL,
 		CallTimeout: cfg.ModelCallTimeout,
@@ -110,6 +116,7 @@ type Table struct {
 	backends map[string]*Backend
 	def      string
 	allow    map[string]bool
+	alias    map[string]string // route name → the route that answers it (Options.Aliases)
 }
 
 // Backend is one route, ready to call.
@@ -126,6 +133,9 @@ type Backend struct {
 	// fallback is the backend of route.Fallback, nil when the route names
 	// none (linked by NewTable once every backend exists).
 	fallback *Backend
+	// parserErrors counts this route's calls that failed with a tool-call
+	// parser error (parser.go; routes with parser_retries "off" only).
+	parserErrors atomic.Int64
 }
 
 // NewTable validates the options and builds every route's client. Nothing
@@ -151,7 +161,7 @@ func NewTable(o Options) (*Table, error) {
 	if now == nil {
 		now = time.Now
 	}
-	t := &Table{backends: map[string]*Backend{}, def: o.Default, allow: map[string]bool{}}
+	t := &Table{backends: map[string]*Backend{}, def: o.Default, allow: map[string]bool{}, alias: map[string]string{}}
 	for _, name := range o.Allowlist {
 		if _, ok := o.Routes[name]; !ok {
 			return nil, fmt.Errorf("model: allowlisted route %q is not in the route table", name)
@@ -172,6 +182,12 @@ func NewTable(o Options) (*Table, error) {
 	}
 	if errs := config.ValidateFallbacks(o.Routes); len(errs) > 0 {
 		return nil, fmt.Errorf("model: %w", errors.Join(errs...))
+	}
+	if errs := config.ValidateAliases(o.Routes, o.Aliases, o.Allowlist); len(errs) > 0 {
+		return nil, fmt.Errorf("model: %w", errors.Join(errs...))
+	}
+	for from, to := range o.Aliases {
+		t.alias[from] = to
 	}
 	for _, b := range t.backends {
 		if b.route.Fallback != "" {
@@ -236,6 +252,11 @@ func newBackend(name string, r config.Route, o Options, retries int, now func() 
 		opts = append(opts, option.WithoutEnvironmentDefaults(),
 			option.WithBaseURL(strings.TrimSuffix(r.URL, "/")),
 			option.WithMiddleware(b.sign))
+		if !r.ParserRetriesEnabled() {
+			// A tool-call parser's 500 ends the call on its first attempt
+			// (parser.go); every other retry stays the SDK's.
+			opts = append(opts, option.WithMiddleware(b.parserGuard))
+		}
 		b.stream = false
 	default:
 		return nil, fmt.Errorf("model: route %q: kind %q is not anthropic|messages-compatible", name, r.Kind)
@@ -279,23 +300,62 @@ func (b *Backend) sign(req *http.Request, next option.MiddlewareNext) (*http.Res
 }
 
 // Route returns the backend for name ("" = the default route). A name that
-// is not allowlisted is refused even when it exists.
+// is not allowlisted is refused even when it exists. A name with an alias
+// (Options.Aliases) — the default route's included — is answered by the
+// alias's route: its settings, its report_as, its name in turn.done and in
+// the pending doc a continuation looks up.
 func (t *Table) Route(name string) (*Backend, error) {
 	if name == "" {
-		return t.backends[t.def], nil
+		return t.backends[t.answering(t.def)], nil
 	}
-	b, ok := t.backends[name]
-	if !ok {
+	if _, ok := t.backends[name]; !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownRoute, name)
 	}
 	if !t.allow[name] {
 		return nil, fmt.Errorf("%w: %q", ErrRouteNotAllowed, name)
 	}
-	return b, nil
+	return t.backends[t.answering(name)], nil
+}
+
+// answering is the route that answers name: its alias, else name.
+func (t *Table) answering(name string) string {
+	if to, ok := t.alias[name]; ok {
+		return to
+	}
+	return name
 }
 
 // Default is the default route's name.
 func (t *Table) Default() string { return t.def }
+
+// Aliases returns a copy of the route aliases (nil when there are none).
+func (t *Table) Aliases() map[string]string {
+	if len(t.alias) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(t.alias))
+	for k, v := range t.alias {
+		out[k] = v
+	}
+	return out
+}
+
+// ParserErrors is, for every route with parser_retries "off", its calls on
+// this instance that failed with a tool-call parser error (/version
+// `parser_errors`); nil when no route has the option.
+func (t *Table) ParserErrors() map[string]int64 {
+	var out map[string]int64
+	for name, b := range t.backends {
+		if b.route.ParserRetriesEnabled() {
+			continue
+		}
+		if out == nil {
+			out = map[string]int64{}
+		}
+		out[name] = b.parserErrors.Load()
+	}
+	return out
+}
 
 // Names lists the routes, sorted (for /version).
 func (t *Table) Names() []string {
@@ -353,3 +413,10 @@ func (b *Backend) Server() string {
 // FastFinish reports whether this route's turns may end without the closing
 // model call after a clean batch (config.Route.FastFinishEnabled).
 func (b *Backend) FastFinish() bool { return b.route.FastFinishEnabled() }
+
+// ParserRetries reports whether a tool-call parser's 500 on this route is
+// retried like any other 5xx (config.Route.ParserRetriesEnabled);
+// ParserErrors is how many of this route's calls failed with one on this
+// instance (counted only when they are not retried).
+func (b *Backend) ParserRetries() bool { return b.route.ParserRetriesEnabled() }
+func (b *Backend) ParserErrors() int64 { return b.parserErrors.Load() }

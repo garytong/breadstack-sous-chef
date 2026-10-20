@@ -464,6 +464,54 @@ def leaked_tool_results(row: dict, text: str, instruction_part: str, response_pa
             if m.get("role") == "tool" and (m.get("content") or "")[:200] and (m.get("content") or "")[:200] in trained]
 
 
+# --- Masking for the Mistral family (train.py --family mistral) -----------------------------------------------------------
+# The Ministral 3 (Tekken v13) tokenizer holds every boundary the render writes as ONE control token
+# (serving_mistral.SPECIAL_IDS), so the mask is built from token ids, never from strings or BPE subsequences. An
+# assistant segment starts right after [/INST], or after a [/TOOL_RESULTS] that more context does not follow
+# ([TOOL_RESULTS], [INST], [AVAILABLE_TOOLS], [SYSTEM_PROMPT]); it ends after its </s>, inclusive (the model learns to
+# stop), or at the end of an unclosed prefill. [TOOL_CALLS], the names, [ARGS] and the arguments are trained; the
+# system prompt, the tools, the user turns, the tool results and BOS never are. MARKERS / template_kind above are the
+# Qwen family's and stay as they are.
+
+MISTRAL_IDS = {"bos": 1, "eos": 2, "inst": 3, "inst_end": 4, "tools": 5, "results": 7, "results_end": 8,
+               "system": 17}
+
+
+def mistral_spans(ids: list[int], k: dict = MISTRAL_IDS) -> list[tuple[int, int]]:
+    """[a, b) token ranges of each assistant segment of a tokenized Mistral render."""
+    more_context = {k["results"], k["inst"], k["tools"], k["system"]}
+    spans: list[tuple[int, int]] = []
+    n = len(ids)
+    i = 0
+    while i < n:
+        t = ids[i]
+        if t in (k["inst_end"], k["results_end"]):
+            a = i + 1
+            if a >= n:  # a prompt ends here: its generation point, nothing to train
+                break
+            if ids[a] in more_context:  # more context follows: not a reply
+                i += 1
+                continue
+            b = a
+            while b < n and ids[b] != k["eos"]:
+                b += 1
+            b = min(b + 1, n)  # the </s> belongs to the segment
+            spans.append((a, b))
+            i = b
+            continue
+        i += 1
+    return spans
+
+
+def mistral_labels(input_ids: list[int], history: int = 0, k: dict = MISTRAL_IDS) -> list[int]:
+    """-100 everywhere except the assistant segments after the first `history` (a follow-up's resent replies stay
+    masked); a trained position's label is its own token id (the model shifts labels itself)."""
+    labels = [-100] * len(input_ids)
+    for a, b in mistral_spans(input_ids, k)[max(0, history):]:
+        labels[a:b] = input_ids[a:b]
+    return labels
+
+
 def weighted_loss(parts: list[tuple[float, int]]) -> float | None:
     """The validation loss over every trained token: each row's mean loss
     weighted by how many of its tokens are trained on."""

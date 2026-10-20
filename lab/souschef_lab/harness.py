@@ -19,9 +19,17 @@ It starts:
        {"kind":"messages-compatible","url":<GPU service>,"auth":"id-token","model":"sous-chef",
         "max_tokens":1024,"stream":false,"temperature":0.3,"prime":"on","fast_finish":"on","report_as":<arm>}
      The service mints ID tokens itself (model/idtoken.go: the metadata server of the Cloud Run Job).
-  4. `/version` asserted: every arm's route_info has fields_context true and fallback null.
+     A route serving another base family gets that family's settings on top (`families`, FAMILY_ROUTES):
+     mistral (chocolate-muffin) runs with "prime":"off" — the service's prompt-cache priming was calibrated
+     for Qwen3.5's hybrid attention —, "temperature":0.15 (Mistral's recommended range is <= 0.15; the
+     model image's Modelfile says the same) and "parser_retries":"off" (a MinistralParser 500 is not
+     retried as a hidden extra draw). A qwen route is the deployed route, byte for byte.
+  4. `/version` asserted: every arm's route_info has fields_context true and fallback null, and an arm whose route
+     asks for "parser_retries":"off" (a mistral arm) reports it — a binary that predates the option would redraw
+     every MinistralParser 500 as a hidden fresh sample, so the harness refuses it instead of measuring that.
 
-`auth="none"` and `route_overrides` exist for the lab's own tests (a fake model on 127.0.0.1).
+`auth="none"` and `route_overrides` exist for the lab's own tests (a fake model on 127.0.0.1); `route_overrides`
+applies to every route, after the family's settings.
 Logs: <workdir>/{postgres.log, service.log}. Standard library only.
 """
 
@@ -44,6 +52,19 @@ DEFAULT_BIN = "/opt/sous-chef/bin/sous-chef"
 DEFAULT_PG_PORT = 5433
 ROUTE_DEFAULTS = {"kind": "messages-compatible", "auth": "id-token", "model": "sous-chef", "max_tokens": 1024,
                   "stream": False, "temperature": 0.3, "prime": "on", "fast_finish": "on"}
+# What a route serving each base family (souschef_lab/chatfmt.py) changes in ROUTE_DEFAULTS: nothing for qwen (the
+# deployed blueberry-muffin route); for mistral (the chocolate-muffin route) the service's prompt-cache priming is off
+# (calibrated for Qwen3.5's hybrid attention), the temperature is 0.15, the staged Modelfile's (chatfmt.SERVED), and
+# a call Ollama's MinistralParser answers with a 500 (an unknown tool name, arguments that are not a JSON object) is
+# not retried as a hidden fresh sample (`parser_retries`, a route option of the service; a binary that predates it
+# ignores the key and retries as before — /version route_info says "parser_retries": "off" when it honours it).
+FAMILY_ROUTES = {"qwen": {}, "mistral": {"prime": "off", "temperature": 0.15, "parser_retries": "off"}}
+
+
+def family_route(family: str | None) -> dict:
+    """The route settings a base family's model is served with on top of ROUTE_DEFAULTS (a copy)."""
+    from .chatfmt import check
+    return dict(FAMILY_ROUTES[check(family)])
 
 
 class HarnessError(RuntimeError):
@@ -85,8 +106,11 @@ def baked_build_id(default: str = "dev") -> str:
     return p.read_text(encoding="utf-8").strip() if p.is_file() else default
 
 
-def route_spec(url: str, report_as: str, *, auth: str = "id-token", overrides: dict | None = None) -> dict:
+def route_spec(url: str, report_as: str, *, auth: str = "id-token", overrides: dict | None = None,
+               family: str | None = None) -> dict:
     r = {**ROUTE_DEFAULTS, "url": url, "auth": auth, "report_as": report_as}
+    if family is not None:
+        r.update(family_route(family))
     r.update(overrides or {})
     r.pop("fallback", None)
     return r
@@ -108,13 +132,18 @@ class Harness:
                  binary: str | Path | None = None, build_id: str | None = None, auth: str = "id-token",
                  route_overrides: dict | None = None, default_route: str | None = None, port: int | None = None,
                  pg_port: int | None = None, model_call_timeout: str = "180s", max_concurrent_turns: int = 4,
-                 extra_env: dict | None = None, boot_timeout_s: float = 90.0):
+                 extra_env: dict | None = None, boot_timeout_s: float = 90.0, families: dict | None = None):
         if not routes:
             raise HarnessError("at least one route (arm → GPU service URL)")
         for name in routes:
             if not name.replace("-", "").isalnum() or not name.islower():
                 raise HarnessError(f"route name {name!r}: lowercase letters, digits and dashes")
+        unknown = sorted(set(families or {}) - set(routes))
+        if unknown:
+            raise HarnessError(f"families for routes that are not there: {unknown}")
         self.routes = dict(routes)
+        # route → the base family its GPU service serves (absent: qwen, the deployed route as it is)
+        self.families = {n: f for n, f in (families or {}).items() if f is not None}
         self.run_id = run_id
         self.own_workdir = workdir is None
         self.workdir = Path(workdir or tempfile.mkdtemp(prefix="souschef-harness-"))
@@ -146,7 +175,8 @@ class Harness:
         return f"{self.build}-harness-{self.run_id}"
 
     def model_routes(self) -> dict[str, dict]:
-        return {name: route_spec(u, name, auth=self.auth, overrides=self.route_overrides) for name, u in self.routes.items()}
+        return {name: route_spec(u, name, auth=self.auth, overrides=self.route_overrides, family=self.families.get(name))
+                for name, u in self.routes.items()}
 
     def env(self) -> dict[str, str]:
         keep = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "TMPDIR", "TZ", "LANG", "GCE_METADATA_HOST")}
@@ -245,6 +275,7 @@ class Harness:
             raise HarnessError(f"/version answered {status}")
         doc = json.loads(raw.decode("utf-8"))
         info = doc.get("route_info") or {}
+        routes = self.model_routes()
         for name in self.routes:
             ri = info.get(name)
             if not isinstance(ri, dict):
@@ -252,6 +283,11 @@ class Harness:
             if ri.get("fields_context") is not True or ri.get("fallback") is not None:
                 raise HarnessError(f"/version route {name}: fields_context {ri.get('fields_context')!r}, "
                                    f"fallback {ri.get('fallback')!r} (want true and null)")
+            if routes[name].get("parser_retries") == "off" and ri.get("parser_retries") != "off":
+                raise HarnessError(f"/version route {name}: parser_retries {ri.get('parser_retries')!r}, want \"off\": "
+                                   f"the service binary ({self.binary}) predates the option and would redraw every "
+                                   f"tool-call parser 500 as a hidden fresh sample — use one built from a tree that has "
+                                   f"it (in a job: the lab image of the int service's tag; here: SOUS_CHEF_BIN)")
         if doc.get("build_id") not in (None, self.build_id):
             raise HarnessError(f"/version build_id {doc.get('build_id')!r} is not {self.build_id!r}")
         self.version = doc

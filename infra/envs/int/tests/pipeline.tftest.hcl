@@ -129,3 +129,122 @@ run "pipeline_needs_alert_emails" {
 
   expect_failures = [var.pipeline_alert_emails]
 }
+
+# --- the in-house routes: blueberry-muffin, chocolate-muffin and the switch ---
+# (docs/CHOCOLATE-MUFFIN.md §2 and step 5). With the new variables at their
+# defaults, MODEL_ROUTES, the allowlist and the aliases are what they were.
+
+run "inhouse_routes_as_today" {
+  command = apply
+
+  assert {
+    condition     = keys(jsondecode(local.model_routes)) == ["blueberry-muffin", "default", "opus"] && local.model_route_allowlist == "default,opus,blueberry-muffin" && length(local.model_route_aliases) == 0 && local.default_route == "blueberry-muffin"
+    error_message = "Defaults: blueberry-muffin alone beside Claude, allowlisted, the default route, no alias."
+  }
+  assert {
+    condition = jsondecode(local.model_routes)["blueberry-muffin"] == {
+      kind        = "messages-compatible"
+      url         = module.model_gpu[0].url
+      auth        = "id-token"
+      model       = "sous-chef"
+      max_tokens  = 1024
+      stream      = false
+      temperature = 0.3
+      fallback    = "default"
+      prime       = "on"
+      fast_finish = "on"
+      report_as   = "blueberry-muffin"
+    }
+    error_message = "blueberry-muffin's route is exactly today's (no parser_retries, no fields_context key)."
+  }
+}
+
+run "the_chocolate_muffin_route" {
+  command = apply
+
+  variables {
+    gpu_model_mistral_route = { enabled = true }
+  }
+
+  assert {
+    condition     = keys(jsondecode(local.model_routes)) == ["blueberry-muffin", "chocolate-muffin", "default", "opus"] && local.model_route_allowlist == "default,opus,blueberry-muffin,chocolate-muffin"
+    error_message = "chocolate-muffin joins MODEL_ROUTES and the allowlist."
+  }
+  assert {
+    condition = jsondecode(local.model_routes)["chocolate-muffin"] == {
+      kind           = "messages-compatible"
+      url            = module.model_gpu[0].url
+      auth           = "id-token"
+      model          = "sous-chef"
+      max_tokens     = 1024
+      stream         = false
+      temperature    = 0.15
+      fallback       = "default"
+      prime          = "off"
+      fast_finish    = "on"
+      parser_retries = "off"
+      fields_context = "on"
+      report_as      = "chocolate-muffin"
+    }
+    error_message = "chocolate-muffin's route (CHOCOLATE-MUFFIN.md §2; service/internal/config/chocolate_test.go loads the same JSON): the same model service, 0.15, priming off, parser_retries off."
+  }
+  assert {
+    condition     = jsondecode(local.model_routes)["blueberry-muffin"].prime == "on" && jsondecode(local.model_routes)["blueberry-muffin"].temperature == 0.3 && local.default_route == "blueberry-muffin" && length(local.model_route_aliases) == 0
+    error_message = "Adding the route changes neither blueberry-muffin nor the default route, and switches nothing."
+  }
+}
+
+run "the_switch" {
+  command = apply
+
+  variables {
+    gpu_model_mistral_route = { enabled = true }
+    model_route_aliases     = { "blueberry-muffin" = "chocolate-muffin" }
+  }
+
+  assert {
+    condition     = local.model_route_aliases == tomap({ "blueberry-muffin" = "chocolate-muffin" }) && local.default_route == "blueberry-muffin"
+    error_message = "The switch is the alias; DEFAULT_ROUTE stays blueberry-muffin."
+  }
+}
+
+# The break-glass (docs/CHOCOLATE-MUFFIN.md §5): every in-house turn to Claude's
+# default route, which int's allowlist already holds, with or without the
+# chocolate-muffin route; no spare L4 needed.
+run "the_break_glass" {
+  command = apply
+
+  variables {
+    gpu_model_mistral_route = { enabled = true }
+    model_route_aliases     = { "blueberry-muffin" = "default" }
+  }
+
+  assert {
+    condition     = local.model_route_aliases == tomap({ "blueberry-muffin" = "default" }) && local.default_route == "blueberry-muffin" && contains(split(",", local.model_route_allowlist), "default")
+    error_message = "The break-glass alias passes the check: default is a route of MODEL_ROUTES and allowlisted."
+  }
+}
+
+run "an_alias_needs_its_route" {
+  command = apply
+
+  variables {
+    model_route_aliases = { "blueberry-muffin" = "chocolate-muffin" }
+  }
+
+  expect_failures = [check.model_route_aliases_name_live_routes]
+}
+
+run "no_alias_without_the_model_service" {
+  command = plan
+
+  variables {
+    gpu_model_serve     = false
+    model_route_aliases = { "blueberry-muffin" = "chocolate-muffin" }
+  }
+
+  assert {
+    condition     = length(local.model_route_aliases) == 0
+    error_message = "Without the model service there are no in-house routes, so no alias is passed."
+  }
+}

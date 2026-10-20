@@ -18,7 +18,11 @@ training, cases, cost, stale_round, links} plus, when measured (r7), `r4_referen
 (clear_asks: how often each arm answers a CLEAR request with a question — report
 only, the number to read first). A stale round (the deployed manifest moved with an
 R3 change during the round) recommends Skip. report.json `warnings` lists what was
-not measured (a missing r4 reference).
+not measured (a missing r4 reference). When either arm is not qwen (chocolate-muffin:
+mistral), `results.families` = {current, candidate}; a round whose candidate is
+another family than the live model warns (report.json `warnings`, the decision
+message): an Approve rolls the image, and the int route must take the candidate's
+family's settings (docs/RETRAIN.md "The base family").
 """
 from __future__ import annotations
 
@@ -151,6 +155,8 @@ def _measured_extras(bar: dict, eval_info: dict) -> dict:
     """results.r4_reference (bar.add_reference's summary, its source and sha256) and results.clear_asks, only when
     the eval measured or configured them (an older eval's results keep their exact shape)."""
     out: dict[str, Any] = {}
+    if isinstance(eval_info.get("families"), dict):  # only when an arm is not qwen (eval_stage)
+        out["families"] = dict(eval_info["families"])
     for rkey in REFERENCE_KEYS:
         ref = bar.get(rkey)
         if not isinstance(ref, dict):
@@ -176,9 +182,30 @@ def _measured_extras(bar: dict, eval_info: dict) -> dict:
     return out
 
 
+def family_change(fams: dict | None) -> str:
+    """The decision's base-family warning when the candidate is another family than the live model, else "": what the
+    int route needs around the Approve, in the order whose in-between state only serves a Qwen model with Ministral's
+    settings (docs/CHOCOLATE-MUFFIN.md: the route before a Ministral model, the model before the route back)."""
+    if not isinstance(fams, dict) or fams.get("current") == fams.get("candidate"):
+        return ""
+    cur, cand = fams.get("current"), fams.get("candidate")
+    head = f"Base family change: live {cur} → candidate {cand}. Approve rolls the image out"
+    if (cur, cand) == ("qwen", "mistral"):
+        return (f"{head}, so switch the int route BEFORE you approve: MODEL_ROUTE_ALIASES blueberry-muffin → "
+                "chocolate-muffin (docs/CHOCOLATE-MUFFIN.md step 5), else production serves the Ministral model with "
+                "blueberry-muffin's priming and silent redraws.")
+    if (cur, cand) == ("mistral", "qwen"):
+        return (f"{head}; AFTER it, take the int route's alias away (docs/CHOCOLATE-MUFFIN.md §5: the model first, "
+                "then the route).")
+    return (f"{head}; the int route must also take the {cand} settings (prime, temperature: docs/RETRAIN.md "
+            "\"The base family\"), or production serves it with the live family's.")
+
+
 def warnings_of(bar: dict, eval_info: dict) -> list[str]:
     """What the eval could not measure, for report.json `warnings` (a person reads it before deciding)."""
     w: list[str] = []
+    if family_change(eval_info.get("families")):
+        w.append(family_change(eval_info.get("families")))
     ref = bar.get("r4_reference")
     if isinstance(ref, dict):
         name = ref.get("name") or "r4"
@@ -310,13 +337,18 @@ def clear_asks_text(ca: dict | None) -> str:
 def summary_text(res: dict, *, smoke: bool, expires: datetime) -> str:
     """What the thermometer's post does not already say: it renders the headline (candidate vs live, manifest,
     bar), the table from results.sets, the stale-round and SMOKE notes and the expiry itself. This is the
-    failing bar rules, or a one-line all-clear; the full text for the playbook stays in report.json."""
+    failing bar rules, or a one-line all-clear; the full text for the playbook stays in report.json. A base-family
+    change leads: it is what an approver must act on beside the Approve, and the notification keeps only the first
+    4000 characters (pipeline_common.notification)."""
     failed = [r for r in res["bar"]["rules"] if not r["pass"]]
     arms = arms_text((res.get("training") or {}).get("arms"))
     if failed:
         text = "Bar rules failing: " + "; ".join(f"{r['name']}: {r['detail']}" for r in failed)
     else:
         text = f"Every bar rule passes ({len(res['bar']['rules'])})."
+    fam = family_change(res.get("families"))
+    if fam:
+        text = fam + " " + text
     # the r4 line once: a failing r4_floor's detail already carries it
     ref = "" if any(r["name"] == "r4_floor" for r in failed) else BAR.reference_text(res.get("r4_reference"))
     rerun = "" if any(r["name"] == "r4_rerun_floor" for r in failed) else BAR.reference_text(res.get("r4_rerun_reference"))

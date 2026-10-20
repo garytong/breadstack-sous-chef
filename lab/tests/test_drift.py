@@ -222,6 +222,60 @@ def test_poll_debounces_writes_the_manifest_and_beats_once_a_day(bucket):
     assert not r2["changed"] and r2["check_due"] and r2["notifications"] == []
     r3 = _run(b, "poll", "dr-p3", "--deployed-file", str(same))  # a newer change restarts the debounce
     assert r3["changed"] and not r3["check_due"]
+    assert "route_family" not in r3  # no int URL: nothing to compare
+
+
+def _route_notices(r: dict) -> list[dict]:
+    return [n for n in r.get("notifications") or [] if str(n.get("dedup_key") or "").startswith("drift:route-family:")]
+
+
+def test_poll_flags_an_in_house_route_of_another_family_than_the_live_model(bucket):
+    """docs/CHOCOLATE-MUFFIN.md: int's in-house route (blueberry-muffin, after /version route_aliases) must be the live
+    model's family's. An apply from a tree without model_route_aliases takes the alias away while chocolate-muffin is
+    live; an Approve can put a model of the other family behind the route. A mismatch that outlasts an hour posts one
+    drift_notice a day; a planned switch (alias, model, state/model.json within minutes) posts nothing."""
+    b, _, same, _ = bucket
+    v = {"build_id": "t", "default_route": "blueberry-muffin",
+         "route_info": {"blueberry-muffin": {"kind": "messages-compatible"}, "chocolate-muffin": {"parser_retries": "off"},
+                        "default": {"kind": "anthropic"}}}
+    s = _Srv({"/version": (200, v)})
+    try:
+        poll = lambda rid: _run(b, "poll", rid, "--deployed-file", str(same), "--url", s.url)  # noqa: E731
+        r = poll("dr-rf1")  # r4 (qwen) behind blueberry-muffin: as it should be
+        assert r["route_family"] == {"route": "blueberry-muffin", "answering": "blueberry-muffin", "route_family": "qwen",
+                                     "model": "r4", "model_family": "qwen", "ok": True}
+        assert not _route_notices(r) and not b.exists(D.ROUTE_FAMILY_STATE) and s.seen[-1][1] == "/version"
+        # chocolate-muffin live (state/model.json family mistral) but the alias gone: no notice inside the grace hour
+        b.write_json("state/model.json", {**b.read_json("state/model.json"), "tag": "cm-r7", "family": "mistral"})
+        r = poll("dr-rf2")
+        assert not r["route_family"]["ok"] and r["route_family"]["answering"] == "blueberry-muffin" and not _route_notices(r)
+        st = b.read_json(D.ROUTE_FAMILY_STATE)
+        assert st["key"] == "blueberry-muffin:qwen:cm-r7:mistral" and st["posted_on"] is None
+        # still so an hour later: one notice, then none more that day
+        b.write_json(D.ROUTE_FAMILY_STATE, {**st, "first_seen": "2020-01-01T00:00:00Z"})
+        r = poll("dr-rf3")
+        (n,) = _route_notices(r)
+        assert n["kind"] == "drift_notice" and n["severity"] == "warn" and "blueberry-muffin (qwen)" in n["title"]
+        assert "terraform apply from a tree without model_route_aliases" in n["summary"] and "chocolate-muffin" in n["summary"]
+        assert not _route_notices(poll("dr-rf4"))
+        # the alias back: matched again, the state cleared
+        v["route_aliases"] = {"blueberry-muffin": "chocolate-muffin"}
+        r = poll("dr-rf5")
+        assert r["route_family"]["ok"] and r["route_family"]["answering"] == "chocolate-muffin" and not b.exists(D.ROUTE_FAMILY_STATE)
+        # an Approve of a qwen round while the alias stays: the other way round, the same notice after the hour
+        b.write_json("state/model.json", {k: x for k, x in b.read_json("state/model.json").items() if k != "family"} | {"tag": "c-rt-q"})
+        r = poll("dr-rf6")
+        assert not r["route_family"]["ok"] and r["route_family"]["route_family"] == "mistral" and not _route_notices(r)
+        # the break-glass (in-house turns to Claude's default route): no family to compare, nothing said
+        v["route_aliases"] = {"blueberry-muffin": "default"}
+        assert "route_family" not in poll("dr-rf7")
+        # int down, or a /version without the route: nothing, and the poll still succeeds
+        s.routes = {"/version": (503, {"error": "unavailable"})}
+        assert "route_family" not in poll("dr-rf8")
+        s.routes = {"/version": (200, {"build_id": "t", "route_info": {"default": {}}})}
+        assert "route_family" not in poll("dr-rf9")
+    finally:
+        s.close()
 
 
 def test_calibrate_then_check_finds_the_drift(bucket):

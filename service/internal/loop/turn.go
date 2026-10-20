@@ -355,6 +355,13 @@ func (t *turn) Run(ctx context.Context, em api.Emitter) error {
 		resp, err := t.backend.Message(ctx, t.sendable(), onText)
 		t.recordUsage(ctx, resp, err, t.r.d.Now().Sub(callStart))
 		if err != nil {
+			if pe, ok := model.AsParserError(err); ok {
+				// A route with parser_retries "off": the model server could not
+				// parse the model's own tool call, and the call was not redrawn.
+				// The turn goes on below exactly as after any failed call.
+				t.r.d.Logf("souschef: model parser error: turn %s: call %d on route %s (reported as %s), not retried, %d on this instance: %.200s",
+					t.id, t.calls, t.backend.Name(), t.backend.ReportedModel(""), pe.Count, pe.Message)
+			}
 			if mayEscalate && ctx.Err() == nil {
 				// The same request goes to the fallback: nothing of the
 				// failed call is in the history.

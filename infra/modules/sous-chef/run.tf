@@ -24,6 +24,9 @@ locals {
   }
 
   # Plain env the service alone reads (model routing, turn limits, shipping).
+  # MODEL_ROUTE_ALIASES is set only while an alias exists: with none the
+  # template (and the running revision) is exactly what it was before the
+  # option existed.
   service_env = merge(local.common_env, {
     DEPLOY_NONCE          = var.deploy_nonce
     MODEL_ROUTES          = var.model_routes
@@ -33,7 +36,9 @@ locals {
     TURN_TTL              = var.turn_ttl
     MAX_CONCURRENT_TURNS  = tostring(var.max_concurrent_turns)
     THERMOMETER_API_URL   = var.thermometer_api_url
-  })
+    }, length(var.model_route_aliases) > 0 ? {
+    MODEL_ROUTE_ALIASES = jsonencode(var.model_route_aliases)
+  } : {})
 }
 
 resource "google_cloud_run_v2_service" "sous_chef" {

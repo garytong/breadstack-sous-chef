@@ -39,6 +39,10 @@ run "switches_off" {
     error_message = "config.json: retrain_auto, rollout_enabled and l4_headroom default off."
   }
   assert {
+    condition     = jsondecode(google_storage_bucket_object.config.content).base_family == "qwen"
+    error_message = "config.json: rounds train the qwen family (blueberry-muffin) by default."
+  }
+  assert {
     condition     = google_storage_bucket.pipeline.name == "breadstack-sous-chef-int-pipeline" && google_storage_bucket.pipeline.location == "US-CENTRAL1" && google_storage_bucket.pipeline.public_access_prevention == "enforced" && google_storage_bucket.pipeline.uniform_bucket_level_access
     error_message = "The pipeline bucket: <project>-pipeline in US-CENTRAL1, private."
   }
@@ -246,6 +250,29 @@ run "switches_on" {
     condition     = jsondecode(google_storage_bucket_object.config.content).l4_wait_minutes == 360 && alltrue([for r in jsondecode(google_storage_bucket_object.config.content).trainer.ladder : r.max_pending_s >= 600])
     error_message = "config.json carries the L4 wait and each rung's pending deadline."
   }
+}
+
+run "base_family_mistral" {
+  command = apply
+
+  variables {
+    base_family = "mistral"
+  }
+
+  assert {
+    condition     = jsondecode(google_storage_bucket_object.config.content).base_family == "mistral"
+    error_message = "base_family reaches config.json (the dataset stage reads it)."
+  }
+}
+
+run "base_family_validation" {
+  command = plan
+
+  variables {
+    base_family = "llama"
+  }
+
+  expect_failures = [var.base_family]
 }
 
 run "decision_ttl_capped" {

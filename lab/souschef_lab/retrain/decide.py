@@ -11,7 +11,10 @@ rollout of an Approve, or on a Skip / an expiry. Bucket writes only:
                                                  stale-training-rows rule and the playbook read them for as long
                                                  as the model is live, or in state/model.json history
             state/model.json                   {tag, digest, training_manifest, trained_at, run_id, dataset,
-                                                 training_cases, history: [the previous model, …]}
+                                                 training_cases, history: [the previous model, …]} and, for a
+                                                 model that is not qwen (chocolate-muffin), its base `family`
+                                                 (the round's train-config.json), kept in its history entry too:
+                                                 drift and the next eval serve it with that family's route settings
             cases/pool/index.json              every authored file this round trained on: trained_in = <candidate>
             state/ack.json                     deleted (a new model: drift is measured from its own baseline)
   skipped   state/ack.json                     the drift run's ack-material.json + {at, candidate_id}: rules (a)–(f)
@@ -25,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .common import ConfigError, Store, load_run, model_state, run_prefix, utc_now
+from .common import ConfigError, Store, load_run, model_state, run_prefix, trained_family, utc_now
 from .report import candidate_id
 
 POOL_INDEX = "cases/pool/index.json"
@@ -73,6 +76,7 @@ def approved(store: Store, run_id: str, *, digest: str | None = None, by: str | 
     cb = store.read_json(f"{pre}/eval/candidate-baseline.json")
     if not cb:
         raise ConfigError(f"{pre}/eval/candidate-baseline.json is missing (the eval stage writes it)")
+    family = trained_family(store, run_id)  # before any write: a bad record stops here
     cb.update(digest=digest, tag=img.get("tag") or cb.get("tag"), source="candidate-eval",
               calibrated=len(cb.get("replicates") or []) >= 2, promoted_at=utc_now())
     cases_key, dataset_key = keep_training_inputs(store, run_id, cid)
@@ -80,7 +84,8 @@ def approved(store: Store, run_id: str, *, digest: str | None = None, by: str | 
     prev = model_state(store)
     rep = store.read_json(f"{pre}/prepare/report.json") or {}
     history = list(prev.get("history") or [])
-    history.append({k: prev.get(k) for k in ("tag", "digest", "training_manifest", "trained_at", "run_id", "training_cases", "dataset")
+    history.append({k: prev.get(k) for k in ("tag", "digest", "training_manifest", "trained_at", "run_id", "training_cases", "dataset",
+                                             "family")
                     if k in prev or k in ("tag", "digest", "training_manifest", "trained_at", "run_id")})
     model = {"tag": img.get("tag") or f"c-{run_id}", "digest": digest, "training_manifest": rep.get("manifest") or cb.get("training_manifest"),
              "trained_at": utc_now(), "run_id": run_id, "candidate_id": cid, "dataset": dataset_key or f"{pre}/dataset",
@@ -88,6 +93,8 @@ def approved(store: Store, run_id: str, *, digest: str | None = None, by: str | 
              # what drift's stale-training-rows rule checks: this round's case file, every case on its manifest —
              # the copy under cases/trained/, which outlives runs/ (180-day lifecycle)
              "training_cases": [cases_key]}
+    if family != "qwen":  # absent = qwen: every model before chocolate-muffin (state/model.json keeps today's shape)
+        model["family"] = family
     store.write_json("state/model.json", model)
     idx = store.read_json(POOL_INDEX) or {"files": []}
     marked = []
@@ -99,7 +106,7 @@ def approved(store: Store, run_id: str, *, digest: str | None = None, by: str | 
     store.write_json(POOL_INDEX, idx)
     store.delete("state/ack.json")
     return {"outcome": "approved", "candidate_id": cid, "digest": digest, "baseline": f"baselines/{digest}/baseline.json",
-            "pool_marked": marked, "model": {k: model[k] for k in ("tag", "digest", "training_manifest")}}
+            "pool_marked": marked, "model": {k: model[k] for k in ("tag", "digest", "training_manifest", "family") if k in model}}
 
 
 def skipped(store: Store, run_id: str, *, reason: str = "skipped", by: str | None = None) -> dict:

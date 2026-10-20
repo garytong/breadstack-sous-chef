@@ -3,14 +3,18 @@
 # tools/run-r4.sh adapted to the pipeline bucket: everything comes from and goes to gs://…/runs/<RUN_ID>/.
 #
 #   1  pull runs/<id>/dataset (r4dataset's layout) and base/unsloth-qwen3.5-9b-hf.tar (+ .sha256: sha256sum -c)
+#      (the mistral family: base/mistralai-ministral-3-8b-instruct-2512-bf16-hf.tar; RUNS_ROOT / BASE_ROOT move both)
 #   2  pull runs/<id>/train/checkpoints/ when there (a resume after a Spot preemption / a Vertex restart)
 #   3  row checks (blocks, follow-ups, 0 preview replies, 0 drifted blocks) and the dry plan
 #   4  the resume smoke (2 updates with a checkpoint, then RESUMED to 4) — first attempt only
 #   5  the SFT with --checkpoint-steps 50 --resume; checkpoints pushed every 120 s by a background loop
 #      (SMOKE: --max-steps 4 --checkpoint-steps 2, then a resume to 6)
 #   6  export q4_k_m with base-modelfiles/qwen3.5-9b.modelfile (export.py --method gguf: the image's prebuilt llama.cpp)
+#      (mistral: base-modelfiles/ministral-3-8b.modelfile, then tools/mx_gguf.py check on the GGUF)
 #   7  make model-stage NAME=<id> MODEL_TEMPERATURE=0.3 MODEL_PRESENCE_PENALTY=0 (Modelfile: temperature 0.3,
 #      presence_penalty 0, top_k 20, top_p 0.95 from the base, num_ctx 65536)
+#      (mistral: MODEL_TEMPERATURE=0.15, the TEMPLATE and PARSER ministral from its base Modelfile, then
+#      `python -m souschef_lab.chatfmt check-stage` on the staged Modelfile before anything is pushed)
 #   8  push adapter/, export/, stage/ to runs/<id>/train/
 #   9  DONE + progress.json — exit 0 only after DONE
 #
@@ -48,6 +52,22 @@
 #                             (rt-…: that round's train/adapter/adapter); pulled to $W/init-adapter (train.py --init-adapter)
 #   INIT_LR=5e-5              the warm arms' --lr (default 5e-5; only with INIT_ADAPTER; base arms keep 2e-4)
 #   TRAIN_GEN_CHECK=N         train.py --gen-check N on each SFT (0 = off; the default with one arm)
+#
+# The base family and the bucket prefixes (docs/RETRAIN.md "The base family", docs/MISTRAL.md). Unset, every one is
+# today's value, so a qwen round trains exactly as before:
+#   BASE_FAMILY=qwen|mistral  the base model's chat-format family (train.py --family; souschef_lab/chatfmt.py). It wins
+#                             over train-config.json's `family`, which the dataset stage writes for a round whose
+#                             trigger.base_family or infra config base_family is not qwen (the pipeline's switch: no
+#                             change to the workflow's job spec). The family picks the HF id, hub-cache folder, base tar
+#                             (BASE_TAR still overrides), base Modelfile and the staged temperature (qwen 0.3, mistral
+#                             0.15: chatfmt.SERVED). mistral trains mistralai/Ministral-3-8B-Instruct-2512-BF16 with
+#                             --family mistral (chocolate-muffin's base), checks the exported GGUF (tools/mx_gguf.py:
+#                             arch mistral3, one BOS, control tokens) before it is staged, and the staged Modelfile
+#                             (chatfmt check-stage) before anything is pushed. A warm start continues a LoRA trained on
+#                             the family's base (mistral: chocolate-muffin's, base/adapters/cm-r7); train.py's dry plan
+#                             refuses another (r4's and r6's adapters are Qwen3.5 LoRAs) before any arm trains.
+#   RUNS_ROOT=gs://…/runs     where runs/<id>/ (dataset, train-config.json, train/) lives (default $PIPELINE_BUCKET/runs)
+#   BASE_ROOT=gs://…/base     where the base tar and its .sha256 are read (default $PIPELINE_BUCKET/base)
 set -uo pipefail
 
 RUN=${1:?usage: pipeline-train.sh RUN_ID [full|smoke]}
@@ -56,6 +76,40 @@ case "$MODE" in full|smoke) ;; *) echo "pipeline-train: mode must be full or smo
 B=${PIPELINE_BUCKET:?PIPELINE_BUCKET (gs://… or the bare bucket name) is required}
 case "$B" in gs://*) ;; *) B=gs://$B ;; esac
 B=${B%/}
+RUNS=${RUNS_ROOT:-$B/runs}
+RUNS=${RUNS%/}
+BROOT=${BASE_ROOT:-$B/base}
+BROOT=${BROOT%/}
+# set_family qwen|mistral — what the base family decides here (chatfmt.get / chatfmt.SERVED); 1 on another name. The
+# settings step calls it again when train-config.json names the family (BASE_FAMILY unset).
+set_family() {
+  case "$1" in
+    qwen)
+      DEF_TAR=unsloth-qwen3.5-9b-hf.tar
+      BASE_MODELFILE=base-modelfiles/qwen3.5-9b.modelfile
+      BASE_HF_ID=unsloth/Qwen3.5-9B
+      BASE_CACHE_DIR=models--unsloth--Qwen3.5-9B
+      EXPORT_TAG=qwen3.5:9b
+      STAGE_TEMPERATURE=0.3
+      FAMILY_ARGS=()
+      EXPORT_ARGS=()
+      ;;
+    mistral)
+      DEF_TAR=mistralai-ministral-3-8b-instruct-2512-bf16-hf.tar
+      BASE_MODELFILE=base-modelfiles/ministral-3-8b.modelfile
+      BASE_HF_ID=mistralai/Ministral-3-8B-Instruct-2512-BF16
+      BASE_CACHE_DIR=models--mistralai--Ministral-3-8B-Instruct-2512-BF16
+      EXPORT_TAG=ministral-3:8b
+      STAGE_TEMPERATURE=0.15
+      FAMILY_ARGS=(--family mistral)
+      EXPORT_ARGS=(--base-ollama-tag "$EXPORT_TAG")
+      ;;
+    *) return 1 ;;
+  esac
+  FAMILY=$1
+}
+FAMILY=${BASE_FAMILY:-qwen}
+set_family "$FAMILY" || { echo "pipeline-train: BASE_FAMILY must be qwen or mistral (got '$FAMILY')" >&2; exit 2; }
 LAB=${SOUS_CHEF_LAB:-$(cd "$(dirname "$0")/.." && pwd)}
 cd "$LAB" || exit 2
 PY=${TRAINPY:-$LAB/.venv-train/bin/python}
@@ -64,12 +118,12 @@ W=${PIPELINE_WORKDIR:-/tmp/pipeline-train}
 export HF_HOME=${HF_HOME:-$W/hf}
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 NAME=$RUN
-R=$B/runs/$RUN/train
+R=$RUNS/$RUN/train
 DATA=$LAB/data/$RUN
 ADAPTER_DIR=runs/adapters/$NAME-sft
 CKPT=${CKPT:-50}
-BASE_TAR=${BASE_TAR:-unsloth-qwen3.5-9b-hf.tar}
-BASE_MODELFILE=base-modelfiles/qwen3.5-9b.modelfile
+BASE_TAR_SET=${BASE_TAR:-}  # BASE_TAR overrides the family's tar (DEF_TAR)
+BASE_TAR=${BASE_TAR_SET:-$DEF_TAR}
 LOG=$W/train.log
 # the workflow sends TRAIN_ATTEMPT (vertex_attempt's try number); CLOUD_ML_TRIAL_ID is a hyperparameter-tuning
 # variable a CustomJob never sets
@@ -79,7 +133,11 @@ ATTEMPT=${TRAIN_ATTEMPT:-${PIPELINE_ATTEMPT:-1}}
 # container that exited 1, even after it has marked the job FAILED: the restart used to rewrite `failed`)
 NONCE=${TRAIN_NONCE:-}
 SYNC_EVERY=${PIPELINE_SYNC_EVERY_S:-120}
-FLAGS=(--data "$DATA/dataset" --fields-context on --eval-steps "${EVAL_STEPS:-150}" --val-max-rows "${VAL_MAX_ROWS:-150}")
+family_flags() {  # train.py's flags for every SFT and dry plan (the family's --family last)
+  FLAGS=(--data "$DATA/dataset" --fields-context on --eval-steps "${EVAL_STEPS:-150}" --val-max-rows "${VAL_MAX_ROWS:-150}"
+         ${FAMILY_ARGS[@]+"${FAMILY_ARGS[@]}"})
+}
+family_flags
 mkdir -p "$W" "$HF_HOME"
 CUR_STEP=start
 SYNC_PID=
@@ -255,8 +313,8 @@ if gs_exists "$R/DONE"; then echo "pipeline-train: $R/DONE exists — nothing to
 step "kit"; echo "trainer image: ${TRAIN_IMAGE:-unknown} (nonce ${NONCE:-none})" | tee -a "$LOG"; run "$PY" --version
 step "settings"
 CFG_FILE=()
-if gs_exists "$B/runs/$RUN/train-config.json"; then
-  run gs cp "$B/runs/$RUN/train-config.json" "$W/train-config.json" || fail "pull train-config.json"
+if gs_exists "$RUNS/$RUN/train-config.json"; then
+  run gs cp "$RUNS/$RUN/train-config.json" "$W/train-config.json" || fail "pull train-config.json"
   CFG_FILE=("$W/train-config.json")
 fi
 "$PY" -c 'import sys; from souschef_lab.train import pipeline_config_main; sys.exit(pipeline_config_main(sys.argv[1:]))' \
@@ -264,6 +322,7 @@ fi
 rc=$?
 tee -a "$LOG" < "$W/settings.err"
 [ "$rc" = 0 ] || fail "$(tail -n 1 "$W/settings.err" | tr -d '"\\')"
+SET_FAMILY=
 while IFS='=' read -r k v; do
   case "$k" in
     SEEDS) read -r -a SEEDS <<< "$v" ;;
@@ -273,8 +332,16 @@ while IFS='=' read -r k v; do
     INIT_ADAPTER) INIT_ADAPTER_URL=$v ;;
     INIT_LR) WARM_LR=$v ;;
     GEN_CHECK) GEN_CHECK=$v ;;
+    FAMILY) SET_FAMILY=$v ;;
   esac
 done < "$W/settings.env"
+# the round's base family (BASE_FAMILY, else train-config.json `family`; printed only when it is not qwen)
+if [ -n "$SET_FAMILY" ]; then
+  set_family "$SET_FAMILY" || fail "settings: base family '$SET_FAMILY' is not qwen or mistral"
+  BASE_TAR=${BASE_TAR_SET:-$DEF_TAR}
+  family_flags
+  echo "base family: $FAMILY ($BASE_HF_ID, $BASE_TAR, staged at temperature $STAGE_TEMPERATURE)" | tee -a "$LOG"
+fi
 arm_kind() { printf '%s' "${1%%:*}"; }
 arm_seed() { printf '%s' "${1##*:}"; }
 arm_tag() { if [ "$(arm_kind "$1")" = warm ]; then printf 'w%s' "$(arm_seed "$1")"; else printf 's%s' "$(arm_seed "$1")"; fi; }
@@ -308,12 +375,12 @@ if [ "$GEN_CHECK" -gt 0 ] 2>/dev/null; then
 fi
 step "pull dataset"
 mkdir -p "$DATA"
-run gs rsync --recursive "$B/runs/$RUN/dataset" "$DATA" || fail "pull dataset"
+run gs rsync --recursive "$RUNS/$RUN/dataset" "$DATA" || fail "pull dataset"
 step "pull base"
 if [ ! -f "$HF_HOME/.base-ok" ]; then
-  run gs cp "$B/base/$BASE_TAR" "$B/base/$BASE_TAR.sha256" "$W/" || fail "pull base"
+  run gs cp "$BROOT/$BASE_TAR" "$BROOT/$BASE_TAR.sha256" "$W/" || fail "pull base"
   run bash -c 'cd "$1" && sha256sum -c "$2"' _ "$W" "$BASE_TAR.sha256" || fail "base tar sha256"
-  # The tar holds a Hugging Face hub cache folder (models--unsloth--Qwen3.5-9B/…),
+  # The tar holds a Hugging Face hub cache folder ($BASE_CACHE_DIR/…, e.g. models--unsloth--Qwen3.5-9B/…),
   # which belongs under $HF_HOME/hub: unpacked into $HF_HOME itself, the offline
   # loader finds nothing (2026-10-14: the first SMOKE failed at model load with
   # LocalEntryNotFoundError). A tar that already starts with hub/ goes to $HF_HOME.
@@ -322,13 +389,18 @@ if [ ! -f "$HF_HOME/.base-ok" ]; then
   mkdir -p "$dest"
   run tar -x -C "$dest" -f "$W/$BASE_TAR" || fail "untar base"
   rm -f "$W/$BASE_TAR"
-  [ -f "$HF_HOME/hub/models--unsloth--Qwen3.5-9B/refs/main" ] || fail "base cache layout: no $HF_HOME/hub/models--unsloth--Qwen3.5-9B/refs/main after unpacking"
+  [ -f "$HF_HOME/hub/$BASE_CACHE_DIR/refs/main" ] || fail "base cache layout: no $HF_HOME/hub/$BASE_CACHE_DIR/refs/main after unpacking"
   touch "$HF_HOME/.base-ok"
 fi
 # the export merges into this snapshot folder (export.py local_base_adapter: offline, Unsloth's merge cannot resolve
 # the Hub id): proved here, before the SFT, not after it
-run "$PY" -c 'import sys; from souschef_lab.export import cached_snapshot; s = cached_snapshot("unsloth/Qwen3.5-9B"); print("base snapshot:", s); sys.exit(0 if s else 1)' \
-  || fail "base snapshot: no unsloth/Qwen3.5-9B snapshot with config.json and safetensors under $HF_HOME/hub"
+run "$PY" -c 'import sys; from souschef_lab.export import cached_snapshot; s = cached_snapshot(sys.argv[1]); print("base snapshot:", s); sys.exit(0 if s else 1)' \
+  "$BASE_HF_ID" || fail "base snapshot: no $BASE_HF_ID snapshot with config.json and safetensors under $HF_HOME/hub"
+if [ "$FAMILY" = mistral ]; then
+  # the dry plan's real token counts (train.py family_report reads the pinned tokenizer.json from here)
+  MX_TOKENIZER_DIR=$("$PY" -c 'import sys; from souschef_lab.export import cached_snapshot; print(cached_snapshot(sys.argv[1]) or "")' \
+    "$BASE_HF_ID" 2>/dev/null) && export MX_TOKENIZER_DIR
+fi
 if [ -n "$INIT_ADAPTER_URL" ] && [ "$ANY_WARM" = 1 ]; then
   step "pull init adapter"
   rm -rf "$W/init-adapter"
@@ -542,14 +614,27 @@ fi
 
 step "export q4_k_m"
 run "$PY" -m souschef_lab.export --adapter "$ADAPTER_DIR/adapter" --name "$NAME" --quants q4_k_m \
-  --base-modelfile "$BASE_MODELFILE" || fail "export"
+  --base-modelfile "$BASE_MODELFILE" ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"} || fail "export"
 # Unsloth's intermediates: gguf/ (the merged 16-bit model, ~18 GB, kept when the disk is not tight) and gguf_gguf/
 # (the mmproj and Unsloth's own Modelfile). Only <name>-q4_k_m.gguf, Modelfile.q4_k_m and export.json go up (r4's push
 # excluded gguf/ too)
 rm -rf "runs/exports/$NAME/gguf" "runs/exports/$NAME/gguf_gguf"
+if [ "$FAMILY" = mistral ]; then
+  # before anything is staged or pushed: the GGUF llama-server will load is mistral3, adds the one BOS and holds the
+  # control tokens as control tokens (its check document goes up with export/)
+  step "gguf check"
+  run "$PY" tools/mx_gguf.py check "runs/exports/$NAME/$NAME-q4_k_m.gguf" --family mistral --quant q4_k_m --sha256 \
+    --out "runs/exports/$NAME/gguf-check.json" || fail "gguf check"
+fi
 step "stage"
 run make --no-print-directory model-stage NAME="$NAME" MODEL_STAGE="runs/model-image/$NAME" \
-  MODEL_TEMPERATURE=0.3 MODEL_PRESENCE_PENALTY=0 || fail "model-stage"
+  MODEL_TEMPERATURE="$STAGE_TEMPERATURE" MODEL_PRESENCE_PENALTY=0 || fail "model-stage"
+if [ "$FAMILY" != qwen ]; then
+  # the model image serves exactly this Modelfile: the family's TEMPLATE byte for byte, its PARSER, the temperature,
+  # top_k / top_p / presence_penalty and num_ctx 65536 (r7's limits) — checked before anything is pushed
+  step "stage check"
+  run "$PY" -m souschef_lab.chatfmt check-stage "runs/model-image/$NAME" --family "$FAMILY" || fail "stage check"
+fi
 step "push"
 run gs rsync --recursive --exclude='^checkpoints/.*' "$ADAPTER_DIR" "$R/adapter" || fail "push adapter"
 run gs rsync --recursive --exclude='^gguf(_gguf)?/.*' "runs/exports/$NAME" "$R/export" || fail "push export"

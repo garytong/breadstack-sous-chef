@@ -1,0 +1,812 @@
+{
+ "about": "TestDefaultConfig_UnchangedFromToday (service/internal/loop/default_config_test.go): int's configuration today, three turns; every model request, event, usage row",
+ "inhouse_unasked": 0,
+ "primes": [
+  {
+   "body_bytes": 58971,
+   "body_sha256": "66b655fe255daa74b6d72c08eb5b215e98f676d9379998dc49e950cc09e42ea5",
+   "headers": {
+    "accept": "application/json",
+    "accept-encoding": "gzip",
+    "anthropic-version": "2023-06-01",
+    "content-length": "58971",
+    "content-type": "application/json",
+    "user-agent": "Anthropic/Go 1.78.0",
+    "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+    "x-stainless-lang": "go",
+    "x-stainless-package-version": "1.78.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "go",
+    "x-stainless-timeout": "180"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "query": "beta=true",
+   "shape": {
+    "max_tokens": 1,
+    "members": [
+     "max_tokens",
+     "messages",
+     "model",
+     "system",
+     "temperature",
+     "thinking",
+     "tool_choice",
+     "tools"
+    ],
+    "messages": [
+     "user:text",
+     "assistant:text+tool_use",
+     "user:tool_result+text",
+     "assistant:text",
+     "user:text"
+    ],
+    "model": "sous-chef",
+    "system_chars": [
+     11725,
+     12887
+    ],
+    "temperature": 0.3,
+    "thinking": {
+     "type": "disabled"
+    },
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     "set_fields",
+     "edit_list",
+     "reset",
+     "restore_default",
+     "set_page_layout",
+     "create_page",
+     "reset_pinned_section",
+     "pick_asset",
+     "lookup_fields",
+     "describe_target",
+     "report_unsupported"
+    ]
+   }
+  },
+  {
+   "body_bytes": 58307,
+   "body_sha256": "890891cc1dbba7e85a2f49d378e5dbcd017fafdf11a65dabee542b03dbd16aae",
+   "headers": {
+    "accept": "application/json",
+    "accept-encoding": "gzip",
+    "anthropic-version": "2023-06-01",
+    "content-length": "58307",
+    "content-type": "application/json",
+    "user-agent": "Anthropic/Go 1.78.0",
+    "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+    "x-stainless-lang": "go",
+    "x-stainless-package-version": "1.78.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "go",
+    "x-stainless-timeout": "180"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "query": "beta=true",
+   "shape": {
+    "max_tokens": 1,
+    "members": [
+     "max_tokens",
+     "messages",
+     "model",
+     "system",
+     "temperature",
+     "thinking",
+     "tool_choice",
+     "tools"
+    ],
+    "messages": [
+     "user:text"
+    ],
+    "model": "sous-chef",
+    "system_chars": [
+     11725,
+     12887
+    ],
+    "temperature": 0.3,
+    "thinking": {
+     "type": "disabled"
+    },
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     "set_fields",
+     "edit_list",
+     "reset",
+     "restore_default",
+     "set_page_layout",
+     "create_page",
+     "reset_pinned_section",
+     "pick_asset",
+     "lookup_fields",
+     "describe_target",
+     "report_unsupported"
+    ]
+   }
+  },
+  {
+   "body_bytes": 58802,
+   "body_sha256": "d10e093a31e1ccb8b0a25907fa9f7cd3274795ba13e084cf9692a80ce1d6acc7",
+   "headers": {
+    "accept": "application/json",
+    "accept-encoding": "gzip",
+    "anthropic-version": "2023-06-01",
+    "content-length": "58802",
+    "content-type": "application/json",
+    "user-agent": "Anthropic/Go 1.78.0",
+    "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+    "x-stainless-lang": "go",
+    "x-stainless-package-version": "1.78.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "go",
+    "x-stainless-timeout": "180"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "query": "beta=true",
+   "shape": {
+    "max_tokens": 1,
+    "members": [
+     "max_tokens",
+     "messages",
+     "model",
+     "system",
+     "temperature",
+     "thinking",
+     "tool_choice",
+     "tools"
+    ],
+    "messages": [
+     "user:text",
+     "assistant:text+tool_use",
+     "user:tool_result+text"
+    ],
+    "model": "sous-chef",
+    "system_chars": [
+     11725,
+     12887
+    ],
+    "temperature": 0.3,
+    "thinking": {
+     "type": "disabled"
+    },
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     "set_fields",
+     "edit_list",
+     "reset",
+     "restore_default",
+     "set_page_layout",
+     "create_page",
+     "reset_pinned_section",
+     "pick_asset",
+     "lookup_fields",
+     "describe_target",
+     "report_unsupported"
+    ]
+   }
+  }
+ ],
+ "souschef_lines": null,
+ "turns": [
+  {
+   "claude": [],
+   "events": [
+    {
+     "data": {
+      "seq": 1,
+      "text": "Updating the headline."
+     },
+     "event": "text.delta"
+    },
+    {
+     "data": {
+      "id": "call_s1",
+      "input": {
+       "target": {
+        "kind": "section",
+        "page": "home",
+        "sectionId": "hero-1"
+       },
+       "values": {
+        "headline": "Fresh cookies"
+       }
+      },
+      "name": "set_fields",
+      "seq": 2
+     },
+     "event": "tool.call"
+    },
+    {
+     "data": {
+      "seq": 3,
+      "toolCallIds": [
+       "call_s1"
+      ]
+     },
+     "event": "turn.waiting"
+    },
+    {
+     "data": {
+      "seq": 6,
+      "source": "service",
+      "text": "Done — that change is in your unsaved draft. Review it and save when you're happy."
+     },
+     "event": "text.delta"
+    },
+    {
+     "data": {
+      "fast_finish": true,
+      "models": {
+       "blueberry-muffin": "blueberry-muffin"
+      },
+      "route": {
+       "fallback": "default",
+       "fields_context": true,
+       "model": "blueberry-muffin",
+       "name": "blueberry-muffin"
+      },
+      "routes": [
+       "blueberry-muffin"
+      ],
+      "seq": 7,
+      "stop": "end_turn",
+      "usage": {
+       "cache_creation_input_tokens": 0,
+       "cache_read_input_tokens": 0,
+       "calls": 1,
+       "input_tokens": 15100,
+       "output_tokens": 41
+      }
+     },
+     "event": "turn.done"
+    }
+   ],
+   "inhouse": [
+    {
+     "body_bytes": 57830,
+     "body_sha256": "dc257b6bd65ba1024afdc27108650baa8fb601e3e22b458386ef376e1e3e2fcd",
+     "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip",
+      "anthropic-version": "2023-06-01",
+      "content-length": "57830",
+      "content-type": "application/json",
+      "user-agent": "Anthropic/Go 1.78.0",
+      "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+      "x-stainless-lang": "go",
+      "x-stainless-package-version": "1.78.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "go",
+      "x-stainless-timeout": "60"
+     },
+     "method": "POST",
+     "path": "/v1/messages",
+     "query": "beta=true",
+     "shape": {
+      "max_tokens": 1024,
+      "members": [
+       "max_tokens",
+       "messages",
+       "model",
+       "system",
+       "temperature",
+       "thinking",
+       "tool_choice",
+       "tools"
+      ],
+      "messages": [
+       "user:text"
+      ],
+      "model": "sous-chef",
+      "system_chars": [
+       11725,
+       12887
+      ],
+      "temperature": 0.3,
+      "thinking": {
+       "type": "disabled"
+      },
+      "tool_choice": {
+       "type": "auto"
+      },
+      "tools": [
+       "set_fields",
+       "edit_list",
+       "reset",
+       "restore_default",
+       "set_page_layout",
+       "create_page",
+       "reset_pinned_section",
+       "pick_asset",
+       "lookup_fields",
+       "describe_target",
+       "report_unsupported"
+      ]
+     }
+    }
+   ],
+   "name": "default route: op, clean batch, fast finish"
+  },
+  {
+   "claude": [
+    {
+     "body_bytes": 60026,
+     "body_sha256": "78cc884562e06ecec837666ed35b98584d8efc3c25a3c9303a8f986fddd3bac5",
+     "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip",
+      "anthropic-beta": "server-side-fallback-2026-07-01",
+      "anthropic-version": "2023-06-01",
+      "content-length": "60026",
+      "content-type": "application/json",
+      "user-agent": "Anthropic/Go 1.78.0",
+      "x-api-key": "sk-test",
+      "x-stainless-lang": "go",
+      "x-stainless-package-version": "1.78.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "go",
+      "x-stainless-timeout": "60"
+     },
+     "path": "/v1/messages",
+     "shape": {
+      "cache_control": {
+       "type": "ephemeral"
+      },
+      "fallbacks": "default",
+      "max_tokens": 8192,
+      "members": [
+       "cache_control",
+       "fallbacks",
+       "max_tokens",
+       "messages",
+       "model",
+       "output_config",
+       "stream",
+       "system",
+       "tool_choice",
+       "tools"
+      ],
+      "messages": [
+       "user:text",
+       "assistant:text+tool_use",
+       "user:tool_result+text"
+      ],
+      "model": "claude-sonnet-5-5",
+      "output_config": {
+       "effort": "medium"
+      },
+      "stream": true,
+      "system_chars": [
+       11725,
+       12887
+      ],
+      "tool_choice": {
+       "type": "auto"
+      },
+      "tools": [
+       "set_fields",
+       "edit_list",
+       "reset",
+       "restore_default",
+       "set_page_layout",
+       "create_page",
+       "reset_pinned_section",
+       "pick_asset",
+       "lookup_fields",
+       "describe_target",
+       "report_unsupported"
+      ]
+     }
+    }
+   ],
+   "events": [
+    {
+     "data": {
+      "from": "blueberry-muffin",
+      "reason": "model_error",
+      "seq": 1,
+      "to": "default"
+     },
+     "event": "turn.escalated"
+    },
+    {
+     "data": {
+      "seq": 2,
+      "text": "I made the headline"
+     },
+     "event": "text.delta"
+    },
+    {
+     "data": {
+      "seq": 3,
+      "text": " say Fresh cookies."
+     },
+     "event": "text.delta"
+    },
+    {
+     "data": {
+      "models": {
+       "blueberry-muffin": "blueberry-muffin",
+       "default": "claude-sonnet-5-5"
+      },
+      "route": {
+       "fallback": "default",
+       "fields_context": true,
+       "model": "blueberry-muffin",
+       "name": "blueberry-muffin"
+      },
+      "routes": [
+       "blueberry-muffin",
+       "default"
+      ],
+      "seq": 4,
+      "stop": "end_turn",
+      "usage": {
+       "cache_creation_input_tokens": 0,
+       "cache_read_input_tokens": 0,
+       "calls": 2,
+       "input_tokens": 900,
+       "output_tokens": 12
+      }
+     },
+     "event": "turn.done"
+    }
+   ],
+   "inhouse": [
+    {
+     "body_bytes": 58375,
+     "body_sha256": "e039601cc70d6e3ce332a4fefd76aeeb05b9dbea9f760b0af6a192d0fbcead94",
+     "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip",
+      "anthropic-version": "2023-06-01",
+      "content-length": "58375",
+      "content-type": "application/json",
+      "user-agent": "Anthropic/Go 1.78.0",
+      "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+      "x-stainless-lang": "go",
+      "x-stainless-package-version": "1.78.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "go",
+      "x-stainless-timeout": "60"
+     },
+     "method": "POST",
+     "path": "/v1/messages",
+     "query": "beta=true",
+     "shape": {
+      "max_tokens": 1024,
+      "members": [
+       "max_tokens",
+       "messages",
+       "model",
+       "system",
+       "temperature",
+       "thinking",
+       "tool_choice",
+       "tools"
+      ],
+      "messages": [
+       "user:text",
+       "assistant:text+tool_use",
+       "user:tool_result+text"
+      ],
+      "model": "sous-chef",
+      "system_chars": [
+       11725,
+       12887
+      ],
+      "temperature": 0.3,
+      "thinking": {
+       "type": "disabled"
+      },
+      "tool_choice": {
+       "type": "auto"
+      },
+      "tools": [
+       "set_fields",
+       "edit_list",
+       "reset",
+       "restore_default",
+       "set_page_layout",
+       "create_page",
+       "reset_pinned_section",
+       "pick_asset",
+       "lookup_fields",
+       "describe_target",
+       "report_unsupported"
+      ]
+     }
+    },
+    {
+     "body_bytes": 58375,
+     "body_sha256": "e039601cc70d6e3ce332a4fefd76aeeb05b9dbea9f760b0af6a192d0fbcead94",
+     "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip",
+      "anthropic-version": "2023-06-01",
+      "content-length": "58375",
+      "content-type": "application/json",
+      "user-agent": "Anthropic/Go 1.78.0",
+      "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+      "x-stainless-lang": "go",
+      "x-stainless-package-version": "1.78.0",
+      "x-stainless-retry-count": "1",
+      "x-stainless-runtime": "go",
+      "x-stainless-timeout": "60"
+     },
+     "method": "POST",
+     "path": "/v1/messages",
+     "query": "beta=true",
+     "shape": {
+      "max_tokens": 1024,
+      "members": [
+       "max_tokens",
+       "messages",
+       "model",
+       "system",
+       "temperature",
+       "thinking",
+       "tool_choice",
+       "tools"
+      ],
+      "messages": [
+       "user:text",
+       "assistant:text+tool_use",
+       "user:tool_result+text"
+      ],
+      "model": "sous-chef",
+      "system_chars": [
+       11725,
+       12887
+      ],
+      "temperature": 0.3,
+      "thinking": {
+       "type": "disabled"
+      },
+      "tool_choice": {
+       "type": "auto"
+      },
+      "tools": [
+       "set_fields",
+       "edit_list",
+       "reset",
+       "restore_default",
+       "set_page_layout",
+       "create_page",
+       "reset_pinned_section",
+       "pick_asset",
+       "lookup_fields",
+       "describe_target",
+       "report_unsupported"
+      ]
+     }
+    },
+    {
+     "body_bytes": 58375,
+     "body_sha256": "e039601cc70d6e3ce332a4fefd76aeeb05b9dbea9f760b0af6a192d0fbcead94",
+     "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip",
+      "anthropic-version": "2023-06-01",
+      "content-length": "58375",
+      "content-type": "application/json",
+      "user-agent": "Anthropic/Go 1.78.0",
+      "x-serverless-authorization": "Bearer id-token-for-the-model-service",
+      "x-stainless-lang": "go",
+      "x-stainless-package-version": "1.78.0",
+      "x-stainless-retry-count": "2",
+      "x-stainless-runtime": "go",
+      "x-stainless-timeout": "60"
+     },
+     "method": "POST",
+     "path": "/v1/messages",
+     "query": "beta=true",
+     "shape": {
+      "max_tokens": 1024,
+      "members": [
+       "max_tokens",
+       "messages",
+       "model",
+       "system",
+       "temperature",
+       "thinking",
+       "tool_choice",
+       "tools"
+      ],
+      "messages": [
+       "user:text",
+       "assistant:text+tool_use",
+       "user:tool_result+text"
+      ],
+      "model": "sous-chef",
+      "system_chars": [
+       11725,
+       12887
+      ],
+      "temperature": 0.3,
+      "thinking": {
+       "type": "disabled"
+      },
+      "tool_choice": {
+       "type": "auto"
+      },
+      "tools": [
+       "set_fields",
+       "edit_list",
+       "reset",
+       "restore_default",
+       "set_page_layout",
+       "create_page",
+       "reset_pinned_section",
+       "pick_asset",
+       "lookup_fields",
+       "describe_target",
+       "report_unsupported"
+      ]
+     }
+    }
+   ],
+   "name": "default route: parser 500 on every attempt, retried, escalated"
+  },
+  {
+   "claude": [
+    {
+     "body_bytes": 62625,
+     "body_sha256": "e48e44c9d029036858edf3e9c69b3753f9dba34417f3834451069524713a8cc6",
+     "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip",
+      "anthropic-beta": "server-side-fallback-2026-07-01",
+      "anthropic-version": "2023-06-01",
+      "content-length": "62625",
+      "content-type": "application/json",
+      "user-agent": "Anthropic/Go 1.78.0",
+      "x-api-key": "sk-test",
+      "x-stainless-lang": "go",
+      "x-stainless-package-version": "1.78.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "go",
+      "x-stainless-timeout": "60"
+     },
+     "path": "/v1/messages",
+     "shape": {
+      "cache_control": {
+       "type": "ephemeral"
+      },
+      "fallbacks": "default",
+      "max_tokens": 8192,
+      "members": [
+       "cache_control",
+       "fallbacks",
+       "max_tokens",
+       "messages",
+       "model",
+       "output_config",
+       "stream",
+       "system",
+       "tool_choice",
+       "tools"
+      ],
+      "messages": [
+       "user:text",
+       "assistant:text+tool_use",
+       "user:tool_result+text",
+       "assistant:text",
+       "user:text"
+      ],
+      "model": "claude-opus-5-5",
+      "output_config": {
+       "effort": "medium"
+      },
+      "stream": true,
+      "system_chars": [
+       11725,
+       12887
+      ],
+      "tool_choice": {
+       "type": "auto"
+      },
+      "tools": [
+       "set_fields",
+       "edit_list",
+       "reset",
+       "restore_default",
+       "set_page_layout",
+       "create_page",
+       "reset_pinned_section",
+       "pick_asset",
+       "lookup_fields",
+       "describe_target",
+       "report_unsupported"
+      ]
+     }
+    }
+   ],
+   "events": [
+    {
+     "data": {
+      "seq": 1,
+      "text": "Opus "
+     },
+     "event": "text.delta"
+    },
+    {
+     "data": {
+      "seq": 2,
+      "text": "here."
+     },
+     "event": "text.delta"
+    },
+    {
+     "data": {
+      "route": {
+       "fallback": null,
+       "fields_context": true,
+       "model": "claude-opus-5-5",
+       "name": "opus"
+      },
+      "seq": 3,
+      "stop": "end_turn",
+      "usage": {
+       "cache_creation_input_tokens": 0,
+       "cache_read_input_tokens": 0,
+       "calls": 1,
+       "input_tokens": 800,
+       "output_tokens": 3
+      }
+     },
+     "event": "turn.done"
+    }
+   ],
+   "inhouse": [],
+   "name": "opus"
+  }
+ ],
+ "usage_rows": [
+  {
+   "cache_read_tokens": 0,
+   "input_tokens": 15100,
+   "model": "blueberry-muffin",
+   "operation": "chat",
+   "output_tokens": 41,
+   "status": "ok",
+   "stop_reason": "tool_use"
+  },
+  {
+   "cache_read_tokens": 0,
+   "input_tokens": 0,
+   "model": "blueberry-muffin",
+   "operation": "chat",
+   "output_tokens": 0,
+   "status": "error",
+   "stop_reason": ""
+  },
+  {
+   "cache_read_tokens": 0,
+   "input_tokens": 900,
+   "model": "claude-sonnet-5-5",
+   "operation": "chat",
+   "output_tokens": 12,
+   "status": "ok",
+   "stop_reason": "end_turn"
+  },
+  {
+   "cache_read_tokens": 0,
+   "input_tokens": 800,
+   "model": "claude-opus-5-5",
+   "operation": "chat",
+   "output_tokens": 3,
+   "status": "ok",
+   "stop_reason": "end_turn"
+  }
+ ]
+}

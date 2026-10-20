@@ -319,10 +319,34 @@ history entry back as `state/model.json` (keep the history), or roll forward
 again. A digest the pipeline has never seen (an image rolled out outside the
 pipeline) stops the behavioural modes with a configuration error until a
 person writes its `state/model.json` entry (`tag`, `digest`,
-`training_manifest`, `trained_at`, and `training_cases` if known). An
+`training_manifest`, `trained_at`, and `training_cases` if known; and
+`"family": "mistral"` for chocolate-muffin — absent means qwen, and drift
+refuses a model whose `/api/show` says another family). An
 approved model's training cases and dataset are kept under
 `cases/trained/<candidate>/`, which never expires, so a model can be judged
 for as long as it is live.
+
+**The in-house route against the live model's family (every poll).** Two
+int routes share `sous-chef-model`: blueberry-muffin (Qwen's settings) and
+chocolate-muffin (Ministral's: [CHOCOLATE-MUFFIN.md](CHOCOLATE-MUFFIN.md)).
+The poll reads int's `/version` and finds the route its in-house traffic is
+answered by: `infra/config.json` `route_name` after `route_aliases`. That
+route's family (`chatfmt.ROUTE_FAMILIES`) must be `state/model.json`'s
+`family`. They part when one side moves without the other:
+
+- the route without the model: a `terraform apply` from a tree without
+  `model_route_aliases` takes the alias away while chocolate-muffin is live,
+  so the Ministral model gets Qwen's priming and silent parser redraws;
+- the model without the route: an Approve of a round of the other family, or
+  a hand rollout or rollback whose `state/model.json` was not written.
+
+A mismatch that lasts an hour (a planned switch closes it within minutes)
+posts a `drift_notice` (warn), at most once a UTC day while it lasts
+(`state/route-family.json` holds when it was first seen). It reads
+`state/model.json` itself, not the digest production serves: after a hand
+rollback, the notice fires until the entry is written back. Nothing is said
+when either side has no family: int unreachable, the route not listed, or
+the break-glass alias to Claude's `default` route.
 
 **Reference numbers, not the baseline.** r4's own eval (student alone, H100,
 no fallback): 212/252 on the real-phrasing exam with today's contexts, F0H
@@ -343,11 +367,21 @@ The harness (`harness.py`) is the in-job twin of `vm-solo.sh serve`:
    `inhouse_route`: messages-compatible, `auth: id-token`, `model: sous-chef`,
    `max_tokens: 1024`, `stream: false`, `temperature: 0.3`, `prime` and
    `fast_finish` on) **minus `fallback`**, once per arm, each pointed at a GPU
-   service URL.
+   service URL. A live model of the **mistral** family (chocolate-muffin:
+   `state/model.json` `"family": "mistral"`) is asked with that family's
+   settings on top (`harness.FAMILY_ROUTES`): `prime` off (the priming was
+   calibrated for Qwen3.5's hybrid attention), `temperature: 0.15` and
+   `parser_retries: off`. Before the harness starts, the eval service's
+   `/api/show` must report the recorded family (its GGUF architecture,
+   `mistral3` or `qwen35`); a mismatch is a configuration error
+   ([RETRAIN.md §R11](RETRAIN.md#r11-the-base-family-chocolate-muffin)).
 4. ID tokens come from the job's metadata server through the service's own
    `model/idtoken.go`.
 5. Before asking anything it asserts `/version`: every arm has
-   `fields_context: true` and `fallback: null`.
+   `fields_context: true` and `fallback: null`, and a mistral arm
+   `parser_retries: "off"` (a service binary from before the option would
+   redraw every MinistralParser 500 as a hidden extra sample, so the harness
+   refuses it).
 
 The model is the **live model image** on `sous-chef-model-eval`, whose image the
 workflow sets to the production service's digest before each check: the

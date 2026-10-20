@@ -176,6 +176,25 @@ variable "gpu_model_route" {
     error_message = "gpu_model_route: name is lowercase [a-z0-9-], max_tokens >= 1, temperature 0..2, call_timeout a Go duration such as \"180s\"."
   }
 }
+variable "gpu_model_mistral_route" {
+  type = object({
+    enabled     = optional(bool, false)
+    name        = optional(string, "chocolate-muffin")
+    temperature = optional(number, 0.15)
+    fallback    = optional(string, "default")
+  })
+  default     = {}
+  description = "chocolate-muffin's route (docs/CHOCOLATE-MUFFIN.md §2): a second messages-compatible route on the SAME model service as gpu_model_route, with its Ollama model name, max_tokens and call timeout, and Ministral 3's settings: temperature 0.15, prompt-cache priming off, parser_retries off (needs a service build that knows the option). enabled adds it to MODEL_ROUTES and MODEL_ROUTE_ALLOWLIST while gpu_model_serve is on; it answers only turns that name it until model_route_aliases sends the in-house route to it. Off (the default) leaves both exactly as they were."
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]*$", var.gpu_model_mistral_route.name)) && var.gpu_model_mistral_route.name != var.gpu_model_route.name && var.gpu_model_mistral_route.temperature >= 0 && var.gpu_model_mistral_route.temperature <= 2
+    error_message = "gpu_model_mistral_route: name is lowercase [a-z0-9-] and not gpu_model_route's, temperature 0..2."
+  }
+}
+variable "model_route_aliases" {
+  type        = map(string)
+  default     = {}
+  description = "MODEL_ROUTE_ALIASES, the switch between the two in-house routes (docs/CHOCOLATE-MUFFIN.md step 5): {\"blueberry-muffin\" = \"chocolate-muffin\"} answers every in-house turn — named, or on the default route — with chocolate-muffin's settings and report_as while DEFAULT_ROUTE stays blueberry-muffin. {} (the default) sets nothing. Passed only while gpu_model_serve is on; a check warns when an alias names a route that is not live."
+}
 
 # --- Sous Chef pipeline (modules/pipeline; docs/RETRAIN.md R0 for the order) ---
 variable "pipeline_enabled" {
@@ -219,6 +238,15 @@ variable "pipeline_alert_emails" {
   validation {
     condition     = alltrue([for e in var.pipeline_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
     error_message = "pipeline_alert_emails: email addresses."
+  }
+}
+variable "pipeline_base_family" {
+  type        = string
+  default     = "qwen"
+  description = "The base model family the retrain pipeline trains: qwen (blueberry-muffin) or mistral (chocolate-muffin, Ministral 3 8B). Read by the dataset stage from infra/config.json; a round's trigger.base_family wins (docs/RETRAIN.md \"The base family\")."
+  validation {
+    condition     = contains(["qwen", "mistral"], var.pipeline_base_family)
+    error_message = "pipeline_base_family: qwen or mistral."
   }
 }
 variable "pipeline_thermometer_url" {

@@ -1,0 +1,19 @@
+# Ministral 3 8B Instruct 2512, Mistral v13 layout (mistral-common InstructTokenizerV13, HF chat_template.jinja
+# @f6fae97): system first; tools ONCE before the first [INST]; [TOOL_CALLS] before EACH call; </s> after every
+# assistant turn except an open prefill. No <s> (llama-server adds BOS). Tools/args are Go json.Marshal (compact,
+# sorted keys, HTML-escaped): souschef_lab/serving_mistral.py replicates these bytes; fixtures/parity/served-ministral.json.
+TEMPLATE """{{- $tools := false }}
+{{- range $i, $m := .Messages }}
+{{- if eq $m.Role "system" }}[SYSTEM_PROMPT]{{ $m.Content }}[/SYSTEM_PROMPT]
+{{- else if eq $m.Role "user" }}
+{{- if and $.Tools (not $tools) }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]{{ $tools = true }}{{ end }}[INST]{{ $m.Content }}[/INST]
+{{- else if eq $m.Role "assistant" }}{{ $m.Content }}
+{{- range $m.ToolCalls }}[TOOL_CALLS]{{ .Function.Name }}[ARGS]{{ .Function.Arguments }}{{ end }}
+{{- if or $m.ToolCalls (ne (len (slice $.Messages $i)) 1) }}</s>{{ end }}
+{{- else if eq $m.Role "tool" }}[TOOL_RESULTS]{{ $m.Content }}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}"""
+PARSER ministral
+PARAMETER temperature 0.15
+PARAMETER top_k 20
+PARAMETER top_p 0.95

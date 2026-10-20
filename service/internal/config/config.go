@@ -123,6 +123,35 @@ type Route struct {
 	// a caveat or question 7% of the time; Claude's does in 25%, so an
 	// anthropic route normally leaves it off.
 	FastFinish string `json:"fast_finish,omitempty"`
+	// ParserRetries ("on"|"off"; messages-compatible routes only) decides
+	// whether the SDK retries a call that the model server answered HTTP 500
+	// because it could not parse the model's OWN output into a tool call
+	// (ParserErrorMessage in internal/model: Ollama 0.34.4's MinistralParser
+	// answers a call to a tool name the request did not offer, "tool 'x' not
+	// found", or arguments that are not a JSON object, with a 500). Unset =
+	// on, as before: every 5xx is retried (model.DefaultMaxRetries), and
+	// each retry of a parser error is a fresh sample nobody sees — a hidden
+	// extra draw. "off" (the chocolate-muffin route, a Ministral model): such
+	// a call fails at once, is counted per route (/version
+	// `parser_errors`) and logged ("souschef: model parser error"), and the
+	// turn goes on exactly as after any other failed call — to the route's
+	// fallback (escalation reason model_error), or turn.error
+	// model_unavailable without one. Every other retry (429, 408, other
+	// 5xx, connection errors) stays the SDK's. An anthropic route rejects
+	// "off" (Claude's API answers no parser errors).
+	ParserRetries string `json:"parser_retries,omitempty"`
+}
+
+// ParserRetries values a route may name.
+const (
+	ParserRetriesOn  = "on"
+	ParserRetriesOff = "off"
+)
+
+// ParserRetriesEnabled reports whether a parser-error 500 on this route is
+// retried by the SDK like any other 5xx: on unless the route says "off".
+func (r Route) ParserRetriesEnabled() bool {
+	return r.ParserRetries != ParserRetriesOff
 }
 
 // Prime values a route may name, and the default filler length.
@@ -214,6 +243,46 @@ func ValidateFallbacks(routes map[string]Route) []error {
 	return errs
 }
 
+// ValidateAliases checks MODEL_ROUTE_ALIASES (Config.RouteAliases): every
+// alias names a route of the table and is answered by another route of the
+// table; an answering route is no alias itself (one hop, no loops); and it
+// is allowlisted, because a turn it answers is continued — and rebuilt on
+// another instance — under its own name, which the allowlist must admit.
+// Errors are in alias order.
+func ValidateAliases(routes map[string]Route, aliases map[string]string, allowlist []string) []error {
+	allowed := map[string]bool{}
+	for _, n := range allowlist {
+		allowed[n] = true
+	}
+	names := make([]string, 0, len(aliases))
+	for n := range aliases {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var errs []error
+	for _, from := range names {
+		to := aliases[from]
+		_, fromOK := routes[from]
+		_, toOK := routes[to]
+		_, chained := aliases[to]
+		switch {
+		case !fromOK:
+			errs = append(errs, fmt.Errorf("MODEL_ROUTE_ALIASES[%s]: %q is not in MODEL_ROUTES", from, from))
+		case to == "":
+			errs = append(errs, fmt.Errorf("MODEL_ROUTE_ALIASES[%s]: names no route", from))
+		case to == from:
+			errs = append(errs, fmt.Errorf("MODEL_ROUTE_ALIASES[%s]: names the route itself", from))
+		case !toOK:
+			errs = append(errs, fmt.Errorf("MODEL_ROUTE_ALIASES[%s]: %q is not in MODEL_ROUTES", from, to))
+		case chained:
+			errs = append(errs, fmt.Errorf("MODEL_ROUTE_ALIASES[%s]: %q is an alias itself (%q); only one hop is allowed", from, to, aliases[to]))
+		case !allowed[to]:
+			errs = append(errs, fmt.Errorf("MODEL_ROUTE_ALIASES[%s]: %q is not in MODEL_ROUTE_ALLOWLIST (a turn it answers continues under its name)", from, to))
+		}
+	}
+	return errs
+}
+
 // FastFinish values a route may name.
 const (
 	FastFinishOn  = "on"
@@ -272,6 +341,16 @@ type Config struct {
 	ModelRoutes      map[string]Route
 	DefaultRoute     string
 	RouteAllowlist   []string
+	// RouteAliases (MODEL_ROUTE_ALIASES, a JSON object; unset = none) sends
+	// every turn that names a route — or runs on it as DEFAULT_ROUTE — to
+	// another route of the table: {"blueberry-muffin":"chocolate-muffin"}
+	// answers int's in-house traffic, named or not, with chocolate-muffin's
+	// settings and report_as while DEFAULT_ROUTE stays blueberry-muffin. It
+	// is the switch between two routes that share one model server (only
+	// one of them can match the image it serves). The allowlist is checked
+	// on the name the request says; the answering route must be allowlisted
+	// too (ValidateAliases). Empty = every route answers its own name.
+	RouteAliases     map[string]string
 	ModelCallTimeout time.Duration
 
 	TurnTTL            time.Duration
@@ -346,6 +425,16 @@ func Load(getenv Getenv) (*Config, error) {
 			fail("MODEL_ROUTE_ALLOWLIST: %q is not in MODEL_ROUTES", name)
 		}
 	}
+	if raw := strings.TrimSpace(getenv("MODEL_ROUTE_ALIASES")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.RouteAliases); err != nil {
+			fail("MODEL_ROUTE_ALIASES: invalid JSON (want {\"<route a turn names>\":\"<route that answers it>\"}): %v", err)
+		} else if c.ModelRoutes != nil {
+			errs = append(errs, ValidateAliases(c.ModelRoutes, c.RouteAliases, c.RouteAllowlist)...)
+		}
+		if len(c.RouteAliases) == 0 {
+			c.RouteAliases = nil
+		}
+	}
 
 	if c.ModelCallTimeout, err = durEnv(getenv, "MODEL_CALL_TIMEOUT", 60*time.Second); err != nil {
 		errs = append(errs, err)
@@ -396,6 +485,11 @@ type RouteInfo struct {
 	FieldsContext bool      `json:"fields_context"`
 	Fallback      *string   `json:"fallback"`
 	ReportAs      *string   `json:"report_as"`
+	// ParserRetries is "off" on a route whose parser-error 500s are not
+	// retried (Route.ParserRetries), and absent otherwise — so a route that
+	// leaves the option unset reads exactly as before. The lab checks it to
+	// know the binary it runs honours the option.
+	ParserRetries string `json:"parser_retries,omitempty"`
 }
 
 // RouteInfo describes every configured route, for /version.
@@ -411,9 +505,24 @@ func (c *Config) RouteInfo() map[string]RouteInfo {
 			ra := r.ReportAs
 			info.ReportAs = &ra
 		}
+		if !r.ParserRetriesEnabled() {
+			info.ParserRetries = ParserRetriesOff
+		}
 		out[name] = info
 	}
 	return out
+}
+
+// AnsweredBy is the route that answers a turn naming name ("" = the default
+// route): its alias target (RouteAliases) when it has one, else name itself.
+func (c *Config) AnsweredBy(name string) string {
+	if name == "" {
+		name = c.DefaultRoute
+	}
+	if to, ok := c.RouteAliases[name]; ok {
+		return to
+	}
+	return name
 }
 
 // RouteAllowed reports whether a request may select the named route.
@@ -478,12 +587,20 @@ func validateRoute(name string, r Route) error {
 	default:
 		return fmt.Errorf("MODEL_ROUTES[%s]: prime %q is not on|off", name, r.Prime)
 	}
+	switch r.ParserRetries {
+	case "", ParserRetriesOn, ParserRetriesOff:
+	default:
+		return fmt.Errorf("MODEL_ROUTES[%s]: parser_retries %q is not on|off", name, r.ParserRetries)
+	}
 	if r.PrimeFillerTokens < 0 || r.PrimeFillerTokens > MaxPrimeFillerTokens {
 		return fmt.Errorf("MODEL_ROUTES[%s]: prime_filler_tokens %d is not within 0..%d", name, r.PrimeFillerTokens, MaxPrimeFillerTokens)
 	}
 	if r.Kind == RouteAnthropic {
 		if r.Prime == PrimeOn || r.PrimeFillerTokens != 0 {
 			return fmt.Errorf("MODEL_ROUTES[%s]: prime/prime_filler_tokens are only valid for messages-compatible routes", name)
+		}
+		if r.ParserRetries == ParserRetriesOff {
+			return fmt.Errorf("MODEL_ROUTES[%s]: parser_retries \"off\" is only valid for messages-compatible routes", name)
 		}
 		if r.Thinking != "" {
 			return fmt.Errorf("MODEL_ROUTES[%s]: thinking is only valid for messages-compatible routes (Claude runs adaptive thinking)", name)

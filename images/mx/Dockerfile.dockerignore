@@ -1,0 +1,20 @@
+# The sous-chef-mx image's build context is the repository root, and only the lab goes in (the service binaries
+# and sources come from the sous-chef-lab:28491da base): no data, runs, venvs, caches or env files. BuildKit reads
+# <Dockerfile>.dockerignore beside the Dockerfile.
+*
+!lab
+lab/data
+lab/runs
+lab/tests
+lab/.venv
+lab/.venv-train
+lab/.cache
+lab/unsloth_compiled_cache
+lab/.pytest_cache
+lab/.ruff_cache
+lab/*.egg-info
+**/__pycache__
+**/.ruff_cache
+**/.pytest_cache
+**/.env
+**/.env.*

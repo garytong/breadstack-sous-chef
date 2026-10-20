@@ -52,6 +52,16 @@ text "No such object: …", pages listings, and can race a reader
 Workflows' 100,000-step, 512 KB variable, 256 KB string and 20-level
 limits.
 
+The base family (docs/RETRAIN.md "The base family"): E2E_BASE_FAMILY=mistral
+runs the same phases with infra/config.json `base_family: "mistral"`
+(Terraform's pipeline_base_family) and the Ministral base tar seeded in base/:
+every round trains chocolate-muffin's family — the dataset stage pins it in
+train-config.json, the trainer script trains with --family mistral, checks a
+synthetic mistral3 GGUF (tools/mxtests/gguf_synth) and stages the Ministral
+TEMPLATE at temperature 0.15 (export.student_modelfile, as the real export
+writes it), the eval records both arms' families, and an Approve writes
+`family` into state/model.json. Unset (qwen) the run is what it always was.
+
 Run it with a python3 that has PyYAML (the lab's venv is stdlib-only; the jobs
 themselves run on lab/.venv). Needs: Go (builds the service and the thermometer's test binary), node,
 Postgres server binaries, the throwaway MySQL of the thermometer's README
@@ -189,7 +199,18 @@ def short_rev(name: str) -> str:
 
 MENTION = "<@U07AFF50XL0>"
 THERM_SECRET = "sous-chef-pipeline-thermometer-key"
-MYSQL_DSN = "root:rootpw@tcp(127.0.0.1:13399)/thermtest_souschef_e2e?parseTime=true&charset=utf8mb4&loc=UTC"
+# E2E_MYSQL_DB: another database name, so two worlds (two worktrees) can run at once on the one throwaway MySQL
+MYSQL_DB = os.environ.get("E2E_MYSQL_DB") or "thermtest_souschef_e2e"
+if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", MYSQL_DB):
+    raise SystemExit(f"E2E_MYSQL_DB {MYSQL_DB!r}: letters, digits and _ only")
+MYSQL_DSN = f"root:rootpw@tcp(127.0.0.1:13399)/{MYSQL_DB}?parseTime=true&charset=utf8mb4&loc=UTC"
+# E2E_BASE_FAMILY: the base family every round of this world trains (module docstring); qwen unset
+FAMILY = os.environ.get("E2E_BASE_FAMILY") or "qwen"
+if FAMILY not in ("qwen", "mistral"):
+    raise SystemExit(f"E2E_BASE_FAMILY {FAMILY!r}: qwen or mistral")
+MX_REPO_DIR = "models--mistralai--Ministral-3-8B-Instruct-2512-BF16"
+MX_TAR = "mistralai-ministral-3-8b-instruct-2512-bf16-hf.tar"
+MX_REV = "f6fae9795746f63c9be8344932f01275f3c63734"
 LADDER = [  # infra/modules/pipeline/variables.tf train_ladder default (optional max_wait_s filled in, as jsonencode does)
     {"name": "h100-flex", "region": "us-central1", "machine_type": "a3-highgpu-1g", "accelerator_type": "NVIDIA_H100_80GB", "strategy": "FLEX_START", "attempts": 1, "max_wait_s": 14400},
     {"name": "h100-spot-usc1", "region": "us-central1", "machine_type": "a3-highgpu-1g", "accelerator_type": "NVIDIA_H100_80GB", "strategy": "SPOT", "attempts": 4, "max_wait_s": 0},
@@ -1114,6 +1135,12 @@ class FakeGCP:
         env.update({"SOUS_CHEF_LAB": str(lab), "TRAINPY": str(tp), "GCLOUD": str(g), "FAKE_GCS": str(self.w.gcs),
                     "REAL_PY": str(PY), "PIPELINE_WORKDIR": str(t / f"w-{run_id}-{uuid.uuid4().hex[:4]}"),
                     "HF_HOME": str(t / "hf"), "STUB_LOG": str(t / "stub.log"), "PYTHONPATH": str(lab)})
+        if FAMILY == "mistral":  # the trainer takes the family from train-config.json (the dataset stage's pin)
+            wrap = bindir / "trainpy-family"
+            wrap.write_text(family_wrapper())
+            wrap.chmod(0o755)
+            env.update({"TRAINPY": str(wrap), "INNER_TRAINPY": str(tp), "MXTESTS": str(LAB / "tools" / "mxtests"),
+                        "ARGS_LOG": str(t / "args.log"), "GGUF_KIND": "mistral"})
         r = subprocess.run(["bash", str(LAB / "tools" / "pipeline-train.sh"), run_id, mode], env=env, cwd=str(t),
                            capture_output=True, text=True, timeout=600)
         (self.w.logs / f"trainer-{run_id}.log").write_text(r.stdout + r.stderr)
@@ -1328,6 +1355,19 @@ def stub_scripts() -> tuple[str, str]:
     return found["FAKE_GCLOUD"], found["FAKE_TRAINPY"]
 
 
+def family_wrapper() -> str:
+    """lab/tests/test_pipeline_train_family.py's WRAP_TRAINPY: around the stub trainer, an export also writes a
+    synthetic GGUF of GGUF_KIND (mistral: one mx_gguf's check passes) and the Modelfile export.student_modelfile writes
+    from the --base-modelfile (the real export's: the Ministral TEMPLATE and PARSER for the mistral family)."""
+    import ast
+    tree = ast.parse((LAB / "tests" / "test_pipeline_train_family.py").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id == "WRAP_TRAINPY":
+            return ast.literal_eval(node.value)
+    raise SystemExit("lab/tests/test_pipeline_train_family.py has no WRAP_TRAINPY")
+
+
 # ═══════════════════════════════════════ the services this run starts ═══════════════════════════════════════
 
 class Thermometer:
@@ -1530,7 +1570,7 @@ def setup(w: World, bundle: Path, snapshot: Path) -> None:
     # a clean thermometer database per world: its dedup windows run on real time, so a previous world's posts
     # would suppress this one's
     subprocess.run(["docker", "exec", "therm-usage-test", "mysql", "-uroot", "-prootpw", "-e",
-                    "DROP DATABASE IF EXISTS thermtest_souschef_e2e; CREATE DATABASE thermtest_souschef_e2e"],
+                    f"DROP DATABASE IF EXISTS {MYSQL_DB}; CREATE DATABASE {MYSQL_DB}"],
                    check=True, capture_output=True)
     b = gcsio.bucket(str(w.bucket))
     ms = manifests()
@@ -1561,6 +1601,19 @@ def setup(w: World, bundle: Path, snapshot: Path) -> None:
         subprocess.run(["tar", "-C", td, "-cf", str(base / "unsloth-qwen3.5-9b-hf.tar"), hub.name], check=True)
         sha = subprocess.run(["sha256sum", "unsloth-qwen3.5-9b-hf.tar"], cwd=base, capture_output=True, text=True, check=True).stdout
         (base / "unsloth-qwen3.5-9b-hf.tar.sha256").write_text(sha)
+    if FAMILY == "mistral":
+        # the Ministral base tar beside it, as docs/RETRAIN.md "The base family" copies it from experiments/mistral/base/
+        with tempfile.TemporaryDirectory() as td:
+            hub = Path(td) / MX_REPO_DIR
+            (hub / "refs").mkdir(parents=True)
+            (hub / "refs" / "main").write_text(MX_REV)
+            snap = hub / "snapshots" / MX_REV
+            snap.mkdir(parents=True)
+            for name, body in (("config.json", "{}"), ("model-00001-of-00004.safetensors", "w"), ("tokenizer.json", "{}")):
+                (snap / name).write_text(body)
+            subprocess.run(["tar", "-C", td, "-cf", str(base / MX_TAR), hub.name], check=True)
+            sha = subprocess.run(["sha256sum", MX_TAR], cwd=base, capture_output=True, text=True, check=True).stdout
+            (base / f"{MX_TAR}.sha256").write_text(sha)
     # what Terraform writes into the bucket (bucket.tf), the model-image pins filled in
     mi = LAB / "model-image"
     pins = ";".join(f"{hashlib.sha256((mi / f).read_bytes()).hexdigest()}  model-image/{f}"
@@ -1594,6 +1647,7 @@ def write_config(w: World, int_url: str, therm_url: str, **over: Any) -> dict:
         "build": {"region": GPU, "service_account": f"souschef-builder@{PROJECT}.iam.gserviceaccount.com", "spec": "infra/cloudbuild-model.json"},
         "trainer": {"service_account": f"souschef-trainer@{PROJECT}.iam.gserviceaccount.com", "ladder": LADDER, "disk_gb": 500, "timeout_s": 43200},
         "eval_warm_minutes": 15, "l4_wait_minutes": 360, "lab_image_grace_m": 45, "console_project": PROJECT,
+        "base_family": FAMILY,
     }
     cfg.update(over)
     (w.bucket / "infra").mkdir(parents=True, exist_ok=True)
@@ -1877,6 +1931,24 @@ def check_round(c: Checks, w: World, rid: str | None, *, smoke: bool) -> None:
     c.ok("@sha256:" in ev, f"the eval service runs the production digest ({ev.rsplit('/', 1)[-1][:30]})")
     dec = c.read(f"{pre}/decision.json") or {}
     c.ok(isinstance(dec.get("results"), dict) and "bar_pass" in dec, f"decision.json (bar {dec.get('bar_pass')})")
+    if FAMILY == "mistral":
+        check_family(c, w, pre)
+
+
+def check_family(c: Checks, w: World, pre: str) -> None:
+    """E2E_BASE_FAMILY=mistral: what the round trained, staged, built and measured (docs/RETRAIN.md R11)."""
+    from souschef_lab import chatfmt
+    tc = c.read(f"{pre}/train-config.json") or {}
+    c.ok(tc.get("family") == "mistral", f"train-config.json pins the mistral family ({tc})")
+    mf = w.bucket / pre / "train" / "stage" / "Modelfile"
+    probs = chatfmt.stage_problems(mf.read_text(), "mistral") if mf.is_file() else ["no staged Modelfile"]
+    c.ok(not probs, f"the staged Modelfile is chocolate-muffin's served model: the Ministral TEMPLATE, PARSER ministral, "
+                    f"temperature 0.15, num_ctx 65536 {probs[:2]}")
+    fams = (c.read(f"{pre}/eval/info.json") or {}).get("families") or {}
+    warned = any(str(x).startswith("Base family change") for x in (c.read(f"{pre}/report.json") or {}).get("warnings") or [])
+    c.ok(fams.get("candidate") == "mistral" and warned == (fams.get("current") != "mistral"),
+         f"the eval measured a mistral candidate against a {fams.get('current')} live model "
+         f"({'a family change, warned' if warned else 'no family change'})")
 
 
 def phase3(w: World) -> int:
@@ -1915,6 +1987,9 @@ def phase3(w: World) -> int:
             c.ok(model.get("tag") == f"c-{rid}" and model.get("digest") == img.get("digest") and model.get("training_manifest") == m2,
                  f"state/model.json → c-{rid}, trained on M2")
             c.ok((model.get("history") or [{}])[-1].get("tag") == "r4", "r4 is in the model history")
+            if FAMILY == "mistral":
+                c.ok(model.get("family") == "mistral" and "family" not in (model.get("history") or [{}])[-1],
+                     "state/model.json records chocolate-muffin's family (r4's history entry: none, qwen)")
             bl = c.read(f"baselines/{img.get('digest')}/baseline.json") or {}
             c.ok(bl.get("calibrated") is True and bl.get("digest") == img.get("digest"), "the candidate's baseline promoted (drift baseline reset)")
             c.ok(c.read("state/ack.json") is None, "state/ack.json deleted")

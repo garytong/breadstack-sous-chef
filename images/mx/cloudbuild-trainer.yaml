@@ -1,0 +1,69 @@
+# The Mistral arm's trainer image, sous-chef-trainer-mx:t-<hash12> (docs/MISTRAL.md §(d)). It is the UNCHANGED
+# images/trainer/Dockerfile built from the mistral-arm worktree: no version moves (transformers 5.5.0 has
+# Mistral3ForConditionalGeneration / ministral3, the pinned unsloth llama.cpp b11160-mix converts it to arch
+# mistral3); only the branch's lab/ (BASE_FAMILY, the Mistral renderer and masking, tools/mxarm.py, mx_gguf.py)
+# differs. Manual only — no trigger runs this file. Submit from the worktree's repository root:
+#
+#   gcloud builds submit --project prod-devops-core-project --config images/mx/cloudbuild-trainer.yaml \
+#     --ignore-file=images/images.gcloudignore .
+#
+# What it never does (the pipeline's trainer is r6's, mid-round): push, tag or move sous-chef-trainer:* — not
+# :latest, not a service-tag alias. sous-chef-trainer@<digest> is PULLED only, as the layer cache (the 5+ GB
+# train-env layer is unchanged: same pyproject.toml + train-constraints.txt), by digest so a moving :latest
+# cannot change what is cached. The content tag is images/trainer/tag.sh's (lab + images/trainer), so a tag
+# names exactly one lab tree; an existing tag is not rebuilt.
+substitutions:
+  _PROJECT_ID: breadstack-sous-chef-int
+  _REGION: northamerica-northeast2
+  _AR_REPO: sous-chef
+  # sous-chef-trainer:t-1c9974dcbc36 = latest on 2026-10-16 (r6's trainer): the cache source, read only
+  _CACHE_DIGEST: sha256:7f37d23a02f398ce3f9ff9339d9dfe9b671100c94757be735dd48b770c78a233
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: trainer-mx-check
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REPO="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sous-chef-trainer-mx"
+        case "$$REPO" in */sous-chef/sous-chef-trainer-mx) ;; *) echo "refusing to push to $$REPO"; exit 2 ;; esac
+        # a tool cache anywhere in the lab (lab/tools/.ruff_cache, a pytest cache) would enter the tag and the image:
+        # images.gcloudignore and images/trainer/tag.sh exclude only lab/.ruff_cache and lab/.pytest_cache
+        if find lab images -type d \( -name .ruff_cache -o -name .pytest_cache \) | grep -q .; then
+          echo "tool caches in the uploaded tree: delete them (docs/MISTRAL.md §10, step 1) and resubmit"; exit 2
+        fi
+        T=$$(bash images/trainer/tag.sh)
+        case "$$T" in t-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) echo "bad tag $$T"; exit 2 ;; esac
+        NEED=true
+        if gcloud artifacts docker images describe "$$REPO:$$T" --project "$_PROJECT_ID" >/dev/null 2>&1; then NEED=false; fi
+        CACHE="$_REGION-docker.pkg.dev/$_PROJECT_ID/$_AR_REPO/sous-chef-trainer@$_CACHE_DIGEST"
+        printf 'REPO=%s\nT=%s\nNEED=%s\nCACHE=%s\n' "$$REPO" "$$T" "$$NEED" "$$CACHE" | tee /workspace/trainer-mx.env
+
+  # docker:29 (Docker 29.8 CLI with buildx), pinned by its index digest, on a 2026.09 worker (Engine 29): the root
+  # cloudbuild.yaml's header says why.
+  - name: gcr.io/cloud-builders/docker@sha256:6c9d05f41f8e721e05f7d3d1b5c29904ac2595d1b67de093f59420b6e8146ecf
+    id: trainer-mx-build
+    waitFor: ['trainer-mx-check']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        source /workspace/trainer-mx.env
+        if [ "$$NEED" != true ]; then echo "$$REPO:$$T exists: not building"; exit 0; fi
+        docker pull "$$CACHE" >/dev/null 2>&1 && CF=(--cache-from "$$CACHE") || CF=()
+        docker build --platform linux/amd64 --provenance=false --sbom=false -f images/trainer/Dockerfile \
+          --build-arg BUILDKIT_INLINE_CACHE=1 "$${CF[@]}" -t "$$REPO:$$T" .
+        # the Mistral pieces the jobs run (the Dockerfile already ran the trainer self-test without a GPU)
+        docker run --rm --entrypoint /opt/lab/.venv-train/bin/python "$$REPO:$$T" /opt/lab/tools/mxarm.py selftest --trainer --no-gpu
+        docker push "$$REPO:$$T"
+        docker image inspect -f '{{index .RepoDigests 0}}' "$$REPO:$$T"
+
+timeout: 10800s
+options:
+  workerRelease: "2026.09" # Docker Engine 29
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 300
+  logging: CLOUD_LOGGING_ONLY

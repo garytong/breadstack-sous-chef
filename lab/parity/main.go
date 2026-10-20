@@ -23,6 +23,13 @@
 // is qwen35); chatPrompt's truncation drops leading messages only when the
 // prompt exceeds num_ctx (65,536 in the export; rows stop at 32,768 tokens).
 //
+// Template mode (the Mistral arm, souschef_lab.serving_mistral):
+// `-parser ministral -modelfile <base Modelfile>` renders through that
+// Modelfile's TEMPLATE (Ollama's template package: its message collation, then
+// Execute with the parser's tools) instead of a RENDERER, with no thinking
+// descriptor (a TEMPLATE model has none; "think" prints as "false" when the
+// request disables it). With no flags it is the qwen3.5 renderer, as before.
+//
 // Output: one JSON line per input, {"prompt", "think", "messages", "tools"}.
 // The module pins github.com/ollama/ollama at the version the model image
 // serves (lab/model-image: 0.34.4). A new Ollama means a new pin here and a
@@ -34,19 +41,26 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ollama/ollama/anthropic"
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/model/renderers"
+	"github.com/ollama/ollama/parser"
+	"github.com/ollama/ollama/template"
+	"github.com/ollama/ollama/types/model"
 )
 
-// The export's Modelfile (export.py, lab/model-image): RENDERER qwen3.5, PARSER qwen3.5.
-const (
+// The export's Modelfile (export.py, lab/model-image): RENDERER qwen3.5, PARSER qwen3.5 — the defaults;
+// -renderer/-parser/-modelfile override them (template mode).
+var (
 	rendererName = "qwen3.5"
 	parserName   = "qwen3.5"
+	tmpl         *template.Template
 )
 
 type out struct {
@@ -57,6 +71,31 @@ type out struct {
 }
 
 func main() {
+	flag.StringVar(&rendererName, "renderer", "qwen3.5", "RENDERER")
+	flag.StringVar(&parserName, "parser", "qwen3.5", "PARSER")
+	mf := flag.String("modelfile", "", "template mode: the Modelfile whose TEMPLATE renders")
+	flag.Parse()
+	if *mf != "" {
+		src, err := os.ReadFile(*mf)
+		if err != nil {
+			fail("%v", err)
+		}
+		// a base Modelfile has no FROM (export.py adds the GGUF's); ParseFile insists on one
+		m, err := parser.ParseFile(strings.NewReader("FROM ./model.gguf\n" + string(src)))
+		if err != nil {
+			fail("parse %s: %v", *mf, err)
+		}
+		for _, c := range m.Commands {
+			if strings.EqualFold(c.Name, "template") {
+				if tmpl, err = template.Parse(c.Args); err != nil {
+					fail("template: %v", err)
+				}
+			}
+		}
+		if tmpl == nil {
+			fail("%s has no TEMPLATE", *mf)
+		}
+	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 64<<20), 64<<20)
 	w := bufio.NewWriter(os.Stdout)
@@ -100,9 +139,12 @@ func render(body []byte) (*out, error) {
 	if err := json.Unmarshal(body, &mreq); err != nil {
 		return nil, fmt.Errorf("bind /v1/messages body: %w", err)
 	}
-	desc := renderers.ThinkingForRenderer(rendererName) // server.Model.genericThinking for a RENDERER qwen3.5 model
-	if desc == nil {
-		return nil, fmt.Errorf("renderer %s has no thinking descriptor", rendererName)
+	var desc *model.Thinking
+	if tmpl == nil {
+		desc = renderers.ThinkingForRenderer(rendererName) // server.Model.genericThinking for a RENDERER qwen3.5 model
+		if desc == nil {
+			return nil, fmt.Errorf("renderer %s has no thinking descriptor", rendererName)
+		}
 	}
 	converted, err := anthropic.FromMessagesRequest(mreq, desc)
 	if err != nil {
@@ -136,6 +178,21 @@ func render(body []byte) (*out, error) {
 		last = &req.Messages[k-1]
 	}
 	tools := p.Init(req.Tools, last, think)
+	if tmpl != nil {
+		var b bytes.Buffer
+		tv, tl := false, ""
+		if think != nil {
+			tv, tl = think.Bool(), think.String()
+		}
+		if err := tmpl.Execute(&b, template.Values{Messages: req.Messages, Tools: tools, Think: tv, ThinkLevel: tl, IsThinkSet: think != nil}); err != nil {
+			return nil, fmt.Errorf("template: %w", err)
+		}
+		ts := "<nil>"
+		if think != nil {
+			ts = fmt.Sprintf("%v", think.Value)
+		}
+		return &out{Think: ts, Prompt: b.String(), Messages: len(req.Messages), Tools: len(tools)}, nil
+	}
 	prompt, err := renderers.RenderWithRenderer(rendererName, req.Messages, tools, think)
 	if err != nil {
 		return nil, fmt.Errorf("render: %w", err)

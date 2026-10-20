@@ -146,6 +146,76 @@ model-rollout: ## roll sous-chef-model (production, int) to model:$(TAG) or mode
 	gcloud run services update-traffic sous-chef-model --project $(GCP_PROJECT) --region $(MODEL_REGION) --to-latest
 	@echo "model-rollout: sous-chef-model -> $(MODEL_REF); drift judges the model state/model.json (or its history) names for this digest (calibrating it if it has no baseline)"
 
+# --- the in-house switch: blueberry-muffin (Qwen3.5) <-> chocolate-muffin (Ministral 3) ------------------------------
+# docs/CHOCOLATE-MUFFIN.md step 5 and §5. Both routes share sous-chef-model, so the route (MODEL_ROUTE_ALIASES on
+# the sous-chef service) and the model image change together, each pair in the order whose in-between state only
+# runs the OLD model with the NEW route's settings (harmless), never a Ministral model with Qwen's priming filler
+# and silent parser redraws:
+#   inhouse-switch    the L4 check's PASS for model@$(DIGEST) (VERDICT), then the alias, then the model (make
+#                     model-rollout TAG=$(DIGEST)); a rollout that fails while the old model still serves takes the
+#                     alias away again (back to before the switch)
+#   inhouse-rollback  the model first (TAG=$(DIGEST), the model to go back to), then the alias removed; a rollout that
+#                     fails leaves the alias (the model still serving keeps its own route's settings)
+# The alias is set with gcloud: mirror it, with pipeline_base_family, in int's terraform.tfvars — in the checkout that
+# holds int's tfvars, backend and lock, with this change merged — before the next terraform apply, or that apply
+# takes it away again (CHOCOLATE-MUFFIN.md step 5). Let sous-chef-model-cand and -eval idle first (~20 min after their
+# last request): the us-east4 L4 quota is 3 and a revision swap needs a spare; a swap that gets no L4 fails and
+# leaves the old revision serving. Neither target writes the pipeline's state/model.json: CHOCOLATE-MUFFIN.md step 6.
+SERVICE_REGION ?= northamerica-northeast2
+INHOUSE_ROUTE  ?= blueberry-muffin
+INHOUSE_TARGET ?= chocolate-muffin
+DIGEST         ?=
+VERDICT        ?=
+SOUS_CHEF_URL   = $$(gcloud run services describe sous-chef --project $(GCP_PROJECT) --region $(SERVICE_REGION) --format='value(status.url)')
+# python3 -c programs (stdin: a JSON document; argv[1]: the target's name)
+TRAFFIC_ON_LATEST = import json, sys; t = json.load(sys.stdin).get("status", {}).get("traffic") or []; \
+  sys.exit(0 if any(x.get("latestRevision") and x.get("percent") == 100 for x in t) else sys.argv[1] + ": " + sys.argv[2] + \
+  " traffic is pinned (not 100 % on its latest revision): fix the split first")
+VERSION_NO_ALIAS = import json, sys; v = json.load(sys.stdin); print(sys.argv[1] + ": route_aliases", v.get("route_aliases"), \
+  "default", v.get("default_route")); sys.exit(0 if not v.get("route_aliases") else sys.argv[1] + \
+  ": /version still shows an alias: look at the sous-chef revision and traffic")
+REMOVE_ALIAS = gcloud run services update sous-chef --project $(GCP_PROJECT) --region $(SERVICE_REGION) --remove-env-vars=MODEL_ROUTE_ALIASES
+
+.PHONY: inhouse-switch inhouse-rollback
+
+inhouse-switch: ## after the L4 check's PASS (VERDICT=…/verdict.json): the in-house traffic to $(INHOUSE_TARGET) (alias), then sous-chef-model to model@$(DIGEST) — docs/CHOCOLATE-MUFFIN.md step 5
+	@echo "$(DIGEST)" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "DIGEST=sha256:<64 hex> (the $(INHOUSE_TARGET) model image) is required"; exit 2; }
+	@test -n "$(VERDICT)" && test -f "$(VERDICT)" || { echo "VERDICT=<the L4 check's verdict.json> is required: CHOCOLATE-MUFFIN.md step 3"; exit 2; }
+	@python3 -c 'import json, sys; v = json.load(open(sys.argv[1])); img = str(((v.get("summary") or {}).get("candidate") or {}).get("image") or ""); \
+	  print("inhouse-switch: L4 check", v.get("verdict"), "at", v.get("at"), "on", img or "an unknown image"); \
+	  sys.exit(0 if v.get("verdict") == "PASS" and img.endswith("@" + sys.argv[2]) else "inhouse-switch: the L4 check must be a PASS measured on model@" + \
+	  sys.argv[2] + " (verdict.json summary.candidate.image): CHOCOLATE-MUFFIN.md step 3")' "$(VERDICT)" "$(DIGEST)"
+	@curl -sf "$(SOUS_CHEF_URL)/version" | python3 -c 'import json, sys; v = json.load(sys.stdin); r = (v.get("route_info") or {}).get(sys.argv[1]) or {}; \
+	  ok = r.get("parser_retries") == "off" and not v.get("route_aliases"); \
+	  print("inhouse-switch: sous-chef", v.get("build_id"), "route", sys.argv[1], r or "missing", "aliases", v.get("route_aliases")); \
+	  sys.exit(0 if ok else "inhouse-switch: the route must be live with parser_retries off (a service build that knows it, gpu_model_mistral_route.enabled applied) and no alias set yet: CHOCOLATE-MUFFIN.md step 4")' "$(INHOUSE_TARGET)"
+	@gcloud run services describe sous-chef --project $(GCP_PROJECT) --region $(SERVICE_REGION) --format=json | python3 -c '$(TRAFFIC_ON_LATEST)' inhouse-switch sous-chef
+	@gcloud run services describe sous-chef-model --project $(GCP_PROJECT) --region $(MODEL_REGION) --format=json | python3 -c '$(TRAFFIC_ON_LATEST)' inhouse-switch sous-chef-model
+	gcloud run services update sous-chef --project $(GCP_PROJECT) --region $(SERVICE_REGION) \
+	  --update-env-vars='^@^MODEL_ROUTE_ALIASES={"$(INHOUSE_ROUTE)":"$(INHOUSE_TARGET)"}'
+	@curl -sf "$(SOUS_CHEF_URL)/version" | python3 -c 'import json, sys; a = json.load(sys.stdin).get("route_aliases") or {}; print("inhouse-switch: route_aliases", a); \
+	  sys.exit(0 if a.get(sys.argv[1]) == sys.argv[2] else "inhouse-switch: /version does not show the alias: the model was NOT rolled; look at the sous-chef revision")' "$(INHOUSE_ROUTE)" "$(INHOUSE_TARGET)"
+	@$(MAKE) --no-print-directory model-rollout TAG=$(DIGEST) || { \
+	  echo "inhouse-switch: make model-rollout FAILED (no spare L4? -cand and -eval must have idled)"; \
+	  rev=$$(gcloud run services describe sous-chef-model --project $(GCP_PROJECT) --region $(MODEL_REGION) --format='value(status.latestReadyRevisionName)'); \
+	  img=$$(test -n "$$rev" && gcloud run revisions describe "$$rev" --project $(GCP_PROJECT) --region $(MODEL_REGION) --format='value(spec.containers[0].image)'); \
+	  echo "inhouse-switch: sous-chef-model serves $${rev:-?} ($${img:-unknown})"; \
+	  case "$$img" in \
+	    *@$(DIGEST)) echo "inhouse-switch: the $(INHOUSE_TARGET) model IS serving, so the alias stays; finish with make model-rollout TAG=$(DIGEST), then go on with the next steps";; \
+	    "") echo "inhouse-switch: could not tell what serves: the alias STAYS. Once the old model is seen serving, take it away: $(REMOVE_ALIAS)";; \
+	    *) echo "inhouse-switch: the old model still serves: taking the alias away (back to before the switch)"; \
+	       $(REMOVE_ALIAS) && curl -sf "$(SOUS_CHEF_URL)/version" | python3 -c '$(VERSION_NO_ALIAS)' inhouse-switch;; \
+	  esac; exit 1; }
+	@echo "inhouse-switch: done. Next (CHOCOLATE-MUFFIN.md step 5c, 6): in int's terraform.tfvars (the main checkout, this change merged) model_route_aliases = { \"$(INHOUSE_ROUTE)\" = \"$(INHOUSE_TARGET)\" } and pipeline_base_family = \"mistral\", then terraform plan + apply there; state/model.json + drift calibrate"
+
+inhouse-rollback: ## roll sous-chef-model back to model@$(DIGEST) (e.g. r7's), then remove the alias — docs/CHOCOLATE-MUFFIN.md §5
+	@echo "$(DIGEST)" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "DIGEST=sha256:<64 hex> (the model to go back to: r7's is in CHOCOLATE-MUFFIN.md §5) is required"; exit 2; }
+	@$(MAKE) --no-print-directory model-rollout TAG=$(DIGEST) || { \
+	  echo "inhouse-rollback: make model-rollout FAILED (no spare L4? -cand and -eval must have idled): the alias STAYS, so the model still serving keeps its own route's settings. Run it again once they have idled; to take every in-house turn off the model at once instead, the break-glass (CHOCOLATE-MUFFIN.md §5)"; exit 1; }
+	$(REMOVE_ALIAS)
+	@curl -sf "$(SOUS_CHEF_URL)/version" | python3 -c '$(VERSION_NO_ALIAS)' inhouse-rollback
+	@echo "inhouse-rollback: done. Next (CHOCOLATE-MUFFIN.md §5): in int's terraform.tfvars (the main checkout) model_route_aliases = {} and pipeline_base_family = \"qwen\", then terraform plan + apply there; the old state/model.json back and any state/ack.json moved aside"
+
 # `gcloud workflows execute` starts an execution and returns its name at once (`run` would block until it ends:
 # up to the decision for a retrain). Follow one with `gcloud workflows executions describe <name>` or the console.
 # Never add --call-log-level=log-all-calls: it would log the thermometer key (docs/PIPELINE.md §7).
@@ -164,6 +234,7 @@ pipeline-retrain: ## start a full retrain round by hand (RESUME=<stage> RUN=<run
 pipeline-lint: ## offline lint of the two workflow definitions (+ SCHEMA=<workflows-samples jsonschema/workflows.json>)
 	python3 infra/modules/pipeline/tests/lint_workflows.py $(if $(SCHEMA),--schema $(SCHEMA),)
 
-pipeline-tf-test: ## terraform test for the pipeline module and the int root (mock providers; nothing is read or applied)
+pipeline-tf-test: ## terraform test for the pipeline and sous-chef modules and the int root (mock providers; nothing is read or applied)
 	cd infra/modules/pipeline && terraform init -backend=false -input=false >/dev/null && terraform test
+	cd infra/modules/sous-chef && terraform init -backend=false -input=false >/dev/null && terraform test
 	cd infra/envs/int && terraform init -backend=false -input=false >/dev/null && terraform test

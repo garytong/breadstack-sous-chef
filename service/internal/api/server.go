@@ -34,6 +34,13 @@ type Options struct {
 	DefaultRoute string
 	// DefaultRouteConfigured gates /readyz: the default route must exist.
 	DefaultRouteConfigured bool
+	// RouteAliases (MODEL_ROUTE_ALIASES: a route name → the route that
+	// answers it) is /version `route_aliases`, omitted when empty.
+	RouteAliases map[string]string
+	// ParserErrors reports, per route with parser_retries "off", its calls
+	// on this instance that failed with a tool-call parser error (/version
+	// `parser_errors`); nil, or an empty map, omits the member.
+	ParserErrors func() map[string]int64
 	// Heartbeat is the SSE heartbeat interval; 0 → DefaultHeartbeat, <0 → off.
 	Heartbeat time.Duration
 	// MaxManifestBytes caps PUT /v1/manifests bodies; 0 → 8 MiB.
@@ -254,6 +261,14 @@ func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.opts.DefaultRoute != "" {
 		doc["default_route"] = s.opts.DefaultRoute
+	}
+	if len(s.opts.RouteAliases) > 0 {
+		doc["route_aliases"] = s.opts.RouteAliases
+	}
+	if s.opts.ParserErrors != nil {
+		if pe := s.opts.ParserErrors(); len(pe) > 0 {
+			doc["parser_errors"] = pe
+		}
 	}
 	writeJSON(w, http.StatusOK, doc)
 }

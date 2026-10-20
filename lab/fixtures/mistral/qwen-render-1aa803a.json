@@ -1,0 +1,35 @@
+{
+ "commit": "1aa803a",
+ "captures": {
+  "create_page.refused-stop.faq": {
+   "render_text": "8ac5faa2deb27f786691188343edc7c239183dcf1625a3443e8ca15d81772219",
+   "chars": 58075
+  },
+  "create_page.slug.deals": {
+   "render_text": "cb86c3fdbf44a7ac290bdddc8caceca90283473afa20089d41f8fb8c0d065de5",
+   "chars": 58001
+  },
+  "error.set_field.contentBlock-1.tagline": {
+   "render_text": "b70c4ed002332513cf08fc81e71ee57c7cd674c9928011e8175f2d6e5c651857",
+   "chars": 58083
+  },
+  "fields-context.set_field.contentBlock-1.title": {
+   "render_text": "86f389ee2a0f7d4fe27350962ddb61bdc96c80fe99d651dcfe24a5f9d0cb1233",
+   "chars": 58632
+  },
+  "ok.set_field.contentBlock-1.title": {
+   "render_text": "16bafe9d1ec305582c3a64d18952c7eaf4acd5169c8c77e1b29544ea9695f453",
+   "chars": 57652
+  },
+  "pick_asset.image.gallery.bgImage": {
+   "render_text": "acc10b04ea44781865895ac9138ae3d4d774a1602f3a926243d36c5f8e61fd67",
+   "chars": 60031
+  },
+  "warnings-sectionid.list_add.home.sections.loyaltyForm": {
+   "render_text": "8452a7410c5f95db1586964ce7cdc2de42d3b044d59377817491a47923a9a17d",
+   "chars": 59576
+  }
+ },
+ "gen_check_items": "dfba7b55af0ef833037cac12d0fa3442d7092ecd87e31e4faca55caa1e3dfb97",
+ "gen_check_n": 7
+}

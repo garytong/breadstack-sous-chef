@@ -57,6 +57,12 @@ gpu_model_image_tag     = "r1"
 gpu_model_min_instances = 0
 gpu_model_default       = false
 
+# chocolate-muffin (docs/CHOCOLATE-MUFFIN.md): its route beside blueberry-muffin
+# on the same model service (step 4), then the switch that sends the in-house
+# traffic to it (step 5; rollback §5: the model first, then {} here).
+# gpu_model_mistral_route = { enabled = true }
+# model_route_aliases     = { "blueberry-muffin" = "chocolate-muffin" }
+
 # Sous Chef drift check and automated retraining (modules/pipeline; the
 # order is docs/RETRAIN.md R0): build the lab and trainer images for the
 # serving tag, a targeted apply of the two secrets + their values (no-echo),
@@ -69,3 +75,4 @@ pipeline_retrain_auto = false
 pipeline_rollout      = false
 pipeline_l4_headroom  = false # true once the Cloud Run L4 quota in us-east4 is 5
 pipeline_alert_emails = ["gary.tong@breadstack.com"] # required while pipeline_enabled
+pipeline_base_family  = "qwen"                       # mistral: rounds train chocolate-muffin (docs/RETRAIN.md "The base family")

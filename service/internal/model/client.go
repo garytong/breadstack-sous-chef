@@ -145,7 +145,9 @@ func UnmarshalMessages(data []byte) ([]anthropic.BetaMessageParam, error) {
 // caller's loop is the same either way. onText may be nil.
 //
 // Retries (429, 408, 409, 5xx, connection errors) are the SDK's, with its
-// backoff and Retry-After handling. A messages-compatible route whose
+// backoff and Retry-After handling — except, on a route with
+// parser_retries "off", a tool-call parser's 500 (parser.go), which ends
+// the call at once as a *ParserError. A messages-compatible route whose
 // server rejects stream=true outright (a 4xx before the first event) is
 // retried once without streaming.
 func (b *Backend) Message(ctx context.Context, req Request, onText func(string)) (*Response, error) {
@@ -167,7 +169,9 @@ func (b *Backend) Message(ctx context.Context, req Request, onText func(string))
 		resp, err = b.plain(ctx, params, onText)
 	}
 	if err != nil {
-		return nil, err
+		// A route with parser_retries "off": a tool-call parser's 500 was not
+		// retried (parserGuard) and comes back a counted *ParserError.
+		return nil, b.parserFailure(err)
 	}
 	resp.Latency = b.now().Sub(started)
 	if resp.Model == "" {

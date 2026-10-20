@@ -231,6 +231,50 @@ def model_state(store: Store) -> dict:
     return m
 
 
+# --- the base family (souschef_lab/chatfmt.py; docs/RETRAIN.md "The base family") ---------------------------------------
+# A round trains one family: trigger.base_family, else the bucket's infra/config.json `base_family` (Terraform's
+# pipeline_base_family), else qwen. The dataset stage resolves it once and pins it in runs/<id>/train-config.json
+# (`family`, written only for a non-qwen round), which the trainer, the eval and the decision read. A model's family
+# rides in state/model.json (`family`, absent = qwen: every model before chocolate-muffin) and its history entries.
+
+TRAIN_CONFIG = "train-config.json"
+
+
+def round_base_family(store: Store, trigger: dict | None) -> tuple[str, str]:
+    """(family, where it came from) for a round: trigger.base_family, else infra/config.json base_family, else the
+    default. ConfigError on a name chatfmt does not know."""
+    from .. import chatfmt
+    val, src = (trigger or {}).get("base_family"), "trigger.base_family"
+    if val in (None, ""):
+        cfg = store.read_json("infra/config.json")
+        val, src = (cfg.get("base_family") if isinstance(cfg, dict) else None), "infra/config.json base_family"
+    if val in (None, ""):
+        return chatfmt.DEFAULT, "default"
+    try:
+        return chatfmt.check(val), src
+    except ValueError as e:
+        raise ConfigError(f"{src}: {e}") from None
+
+
+def trained_family(store: Store, run_id: str) -> str:
+    """The family a round trained: runs/<id>/train-config.json `family` (absent: qwen)."""
+    from .. import chatfmt
+    cfg = store.read_json(f"{run_prefix(run_id)}/{TRAIN_CONFIG}")
+    try:
+        return chatfmt.check(cfg.get("family") if isinstance(cfg, dict) else None)
+    except ValueError as e:
+        raise ConfigError(f"{run_prefix(run_id)}/{TRAIN_CONFIG}: {e}") from None
+
+
+def model_family(model: dict | None) -> str:
+    """A state/model.json entry's family (or a history entry's): `family`, absent = qwen."""
+    from .. import chatfmt
+    try:
+        return chatfmt.check((model or {}).get("family"))
+    except ValueError as e:
+        raise ConfigError(f"state/model.json `{(model or {}).get('tag')}`: {e}") from None
+
+
 def save_manifest(doc: dict, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

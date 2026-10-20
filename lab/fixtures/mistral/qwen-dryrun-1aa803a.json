@@ -1,0 +1,81 @@
+{
+ "rc": 0,
+ "stdout": "SFT plan (the thermometer recipe, docs/LAB.md §8)\n  kind              sft\n  base              unsloth/Qwen3.5-9B\n  name              v1\n  output            <TMP>/out\n  adapter           <TMP>/out/adapter\n  data              <TMP>/dataset\n  config            None\n  manifest_hash     727d151b00000000000000000000000000000000000000000000000000000000\n  fields_context    {\"enabled\": false, \"rows\": 6, \"rows_with_block\": 0, \"dataset\": null}\n  precision         bf16 base, fp32 LoRA\n  lora              {\"r\": 16, \"alpha\": 16, \"dropout\": 0, \"bias\": \"none\", \"targets\": \"attention and MLP modules (Unsloth's language layers)\"}\n  lr                0.0002\n  epochs            1.0\n  max_steps         None\n  updates           2\n  batch             1\n  grad_accum        4\n  effective_batch   4\n  max_seq_length    32768\n  optim             adamw_8bit\n  scheduler         linear\n  warmup_ratio      0.03\n  weight_decay      0.01\n  packing           False\n  tiled_mlp         True\n  thinking          False\n  eval_steps        50\n  save_steps        0\n  checkpoint_steps  0\n  resume            False\n  val_max_rows      None\n  seed              3407\n  val_seed          3407\n  start             base\n  init_adapter      None\n  gen_check         0\n  rows              {\"train\": 5, \"val\": 1, \"val_scored\": 1, \"followups\": 1, \"over_length_estimate\": 0}\n  tokens_estimate   {\"median\": 151, \"max\": 159, \"total\": 763, \"chars_per_token\": 3.0}\n1 rows are follow-ups: their earlier replies are masked out of the loss.\nThe [train] extra is not installed: run 'make -C lab train-env' (several GB, once) before training.\nDry run: the data is well-formed. Drop --dry-run to train.\n",
+ "plan": {
+  "kind": "sft",
+  "base": "unsloth/Qwen3.5-9B",
+  "name": "v1",
+  "output": "<TMP>/out",
+  "adapter": "<TMP>/out/adapter",
+  "precision": "bf16 base, fp32 LoRA",
+  "lora": {
+   "r": 16,
+   "alpha": 16,
+   "dropout": 0,
+   "bias": "none",
+   "targets": "attention and MLP modules (Unsloth's language layers)"
+  },
+  "rank": 16,
+  "alpha": 16,
+  "lr": 0.0002,
+  "epochs": 1.0,
+  "max_steps": null,
+  "batch": 1,
+  "grad_accum": 4,
+  "effective_batch": 4,
+  "max_seq_length": 32768,
+  "optim": "adamw_8bit",
+  "scheduler": "linear",
+  "warmup_ratio": 0.03,
+  "weight_decay": 0.01,
+  "packing": false,
+  "eval_steps": 50,
+  "save_steps": 0,
+  "val_max_rows": null,
+  "checkpoint_steps": 0,
+  "resume": false,
+  "seed": 3407,
+  "val_seed": 3407,
+  "gen_check": 0,
+  "init_adapter": null,
+  "start": "base",
+  "tiled_mlp": true,
+  "thinking": false,
+  "data": "<TMP>/dataset",
+  "config": null,
+  "render": "serving-parity: Ollama 0.34.4 qwen3.5 renderer, thinking disabled",
+  "manifest_hash": "727d151b00000000000000000000000000000000000000000000000000000000",
+  "fields_context": {
+   "enabled": false,
+   "rows": 6,
+   "rows_with_block": 0,
+   "dataset": null
+  },
+  "rows": {
+   "train": 5,
+   "val": 1,
+   "val_scored": 1,
+   "followups": 1,
+   "over_length_estimate": 0
+  },
+  "tokens_estimate": {
+   "median": 151,
+   "max": 159,
+   "total": 763,
+   "chars_per_token": 3.0
+  },
+  "updates": 2
+ },
+ "argv": [
+  "--data",
+  "<TMP>/dataset",
+  "--name",
+  "v1",
+  "--output",
+  "<TMP>/out",
+  "--fields-context",
+  "off",
+  "--dry-run"
+ ],
+ "commit": "1aa803a"
+}

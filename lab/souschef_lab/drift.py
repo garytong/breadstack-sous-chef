@@ -27,7 +27,10 @@ only route is the GPU model service (no Claude fallback), on two manifests:
 Verdicts (lab/pipeline/thresholds.json; a bucket's config/thresholds.json wins): ok | notice | retrain — the
 table is `evaluate`'s docstring.
 
-Where turns go: the harness on the eval GPU service (`--eval-url`), or, with DRY=1 / --dry, the lab's fake
+Where turns go: the harness on the eval GPU service (`--eval-url`), its route carrying the live model's base
+family's settings (state/model.json `family`, absent = qwen; checked against the service's /api/show: a mistral
+model, chocolate-muffin, is asked with prime off and temperature 0.15 — harness.FAMILY_ROUTES), or, with DRY=1 /
+--dry, the lab's fake
 service in process: `--dry-model stale` (default) answers every arm as a model trained on the TRAINING manifest
 would (arm D's renamed keys are refused by the engine, new keys are not found), `--dry-model oracle` answers
 every row right. `--fake-engine` checks keys against the manifest instead of running node (tests).
@@ -1081,9 +1084,92 @@ def cmd_poll(job: Job) -> dict:
         job.notifications.append(PC.notification("heartbeat", title="Sous Chef drift poll alive",
                                                  summary=f"deployed {h8(dep['hash'])}", details={"deployed": dep["hash"]}))
         job.b.write_json("state/heartbeat.json", {"date": today, "at": PC.iso(now), "run_id": job.run_id})
-    return {"verdict": None, "deployed": {k: dep.get(k) for k in ("hash", "launcher_build", "generated_from", "last_registered_at",
-                                                               "last_real_turn_at", "real_turns_7d")},
-            "changed": changed, "debounce_until": new_st.get("pending_check_at"), "check_due": check_due, "static": static_summary}
+    out = {"verdict": None, "deployed": {k: dep.get(k) for k in ("hash", "launcher_build", "generated_from", "last_registered_at",
+                                                                "last_real_turn_at", "real_turns_7d")},
+           "changed": changed, "debounce_until": new_st.get("pending_check_at"), "check_due": check_due, "static": static_summary}
+    rf = route_family_check(job)
+    if rf is not None:  # only when int names its in-house route and both sides have a family (never in a qwen world)
+        out["route_family"] = rf
+    return out
+
+
+# ── int's in-house route against the live model's base family (every poll) ──
+
+ROUTE_FAMILY_STATE = "state/route-family.json"
+ROUTE_FAMILY_GRACE = timedelta(hours=1)
+
+
+def route_family_check(job: Job) -> dict | None:
+    """The route int answers its in-house traffic with — infra/config.json `route_name` (blueberry-muffin) after
+    /version `route_aliases` — must be the live model's family's (chatfmt.ROUTE_FAMILIES against state/model.json
+    `family`, absent = qwen). They part when one side moves without the other: a terraform apply from a tree without
+    model_route_aliases takes the alias away while chocolate-muffin is live (Ministral served with Qwen's priming and
+    silent redraws), or an Approve or a hand rollout puts a model of the other family behind the route
+    (docs/CHOCOLATE-MUFFIN.md). A mismatch that outlasts ROUTE_FAMILY_GRACE (a planned switch closes it within
+    minutes: inhouse-switch, then state/model.json) posts a drift_notice, at most once a UTC day while it lasts
+    (state/route-family.json). Anything unknown — no URL, /version not answering, the route not listed, an answering
+    route without a family (Claude's, the break-glass), no state/model.json — is no notice; never raises."""
+    try:
+        return _route_family_check(job)
+    except Exception as e:  # noqa: BLE001 — a notice, never a failed poll
+        job.progress(f"poll: route/family check skipped ({PC.scrub(str(e))[:160]})")
+        return None
+
+
+def _route_family_check(job: Job) -> dict | None:
+    url = job.a.url or os.environ.get("SOUS_CHEF_URL")
+    if not url:
+        return None
+    v = PC.int_version(url)
+    cfg = job.b.read_json("infra/config.json", None)
+    route = str(cfg.get("route_name") or "blueberry-muffin") if isinstance(cfg, dict) else "blueberry-muffin"
+    if not v or route not in (v.get("route_info") or {}):
+        return None
+    aliases = v.get("route_aliases") if isinstance(v.get("route_aliases"), dict) else {}
+    answering = str(aliases.get(route) or route)
+    from . import chatfmt
+    from .retrain.common import model_family
+    route_fam = chatfmt.ROUTE_FAMILIES.get(answering)
+    model = job.b.read_json("state/model.json", None)
+    if route_fam is None or not isinstance(model, dict):
+        return None
+    model_fam = model_family(model)
+    rf = {"route": route, "answering": answering, "route_family": route_fam, "model": model.get("tag"), "model_family": model_fam,
+          "ok": route_fam == model_fam}
+    st = job.b.read_json(ROUTE_FAMILY_STATE, None)
+    if rf["ok"]:
+        if st is not None:
+            job.b.delete(ROUTE_FAMILY_STATE)
+            job.progress(f"poll: int's in-house route {answering} serves {model_fam} again, as `{model.get('tag')}`")
+        return rf
+    key = f"{answering}:{route_fam}:{model.get('tag')}:{model_fam}"
+    now = job.now
+    if not isinstance(st, dict) or st.get("key") != key:
+        st = {"key": key, "first_seen": PC.iso(now), "posted_on": None}
+        job.b.write_json(ROUTE_FAMILY_STATE, st)
+    first = PC.parse_iso(st.get("first_seen")) or now
+    rf["since"] = st.get("first_seen")
+    job.progress(f"poll: int answers in-house turns as {answering} ({route_fam}), the live model `{model.get('tag')}` is "
+                 f"{model_fam} (since {st.get('first_seen')})")
+    today = now.strftime("%Y-%m-%d")
+    if now - first < ROUTE_FAMILY_GRACE or st.get("posted_on") == today:
+        return rf
+    other = "chocolate-muffin" if model_fam == "mistral" else "blueberry-muffin"
+    job.notifications.append(PC.notification(
+        "drift_notice", severity="warn",
+        title=f"Sous Chef drift: int answers in-house turns as {answering} ({route_fam}), the live model is {model_fam}",
+        summary=(f"int's in-house route `{route}` is answered by `{answering}`, whose settings are for a {route_fam} model, "
+                 f"but state/model.json names `{model.get('tag')}`, a {model_fam} model (since {st.get('first_seen')}). "
+                 f"Either the route moved without the model — a terraform apply from a tree without model_route_aliases, "
+                 f"or an alias changed by hand — or the model moved without the route: an Approve of a {model_fam} round, "
+                 f"or a hand rollout or rollback whose state/model.json was not written. If `{model.get('tag')}` is what "
+                 f"sous-chef-model serves, its route is `{other}`; otherwise write state/model.json for what it serves. "
+                 f"docs/CHOCOLATE-MUFFIN.md steps 5–6 and §5 move both in their safe order."),
+        details={**rf, "route_aliases": aliases or None, "build_id": v.get("build_id"),
+                 "model_digest": model.get("digest")},
+        dedup_key=f"drift:route-family:{answering}:{model_fam}:{str(model.get('digest') or model.get('tag'))[7:19]}"))
+    job.b.write_json(ROUTE_FAMILY_STATE, {**st, "posted_on": today})
+    return rf
 
 
 # ── static ──
@@ -1102,9 +1188,30 @@ def cmd_static(job: Job) -> dict:
 
 # ── the behavioural modes ──
 
+def live_family(job: Job, model: dict, url: str) -> str:
+    """The base family the live model is served as: its state/model.json entry's `family` (absent = qwen), checked
+    against what the eval service's /api/show reports (pipeline_common.served_family). A mismatch is a ConfigError: a
+    model rolled out by hand needs `family` in its entry (docs/DRIFT.md "Manual rollbacks"), or drift would ask a
+    Mistral model with Qwen's route settings (prime on, temperature 0.3), or the reverse."""
+    from .retrain.common import model_family
+    fam = model_family(model)
+    seen = PC.served_family(url, auth=job.a.eval_auth)
+    if seen.get("family") is None:
+        if fam != "qwen":
+            job.progress(f"eval service: served family unknown ({seen.get('error') or seen.get('architecture')}); "
+                         f"using state/model.json's {fam}")
+    elif seen["family"] != fam:
+        raise PC.ConfigError(f"the eval service serves a {seen['family']} model ({seen.get('architecture')}, PARSER "
+                             f"{seen.get('parser')}), but `{model.get('tag')}`'s state/model.json entry says {fam}: write "
+                             f"its `family` (docs/DRIFT.md \"Manual rollbacks\") before drift can judge it")
+    return fam
+
+
 @contextmanager
 def gpu_target(job: Job, dep: dict, model: dict) -> Iterator[Target]:
-    """The harness on the eval service (or DRY); the engine bundle active."""
+    """The harness on the eval service (or DRY); the engine bundle active. The route carries the live model's base
+    family's settings (harness.FAMILY_ROUTES: a mistral model, chocolate-muffin, is asked with prime off and
+    temperature 0.15; a qwen model with the deployed route as it was)."""
     with ExitStack() as stack:
         engine_path = None
         if not job.a.fake_engine:
@@ -1131,11 +1238,13 @@ def gpu_target(job: Job, dep: dict, model: dict) -> Iterator[Target]:
                 if not warm["ok"]:
                     raise EvalUnavailable(f"{url} did not answer in {job.th['gpu_warm_minutes']} min ({warm.get('last')})")
                 job.progress(f"eval service warm in {warm['seconds']}s")
+            fam = live_family(job, model, url)
             from .harness import Harness
             harness = stack.enter_context(Harness({ROUTE: url}, run_id=job.run_id, workdir=job.work / "harness",
                                                   auth=job.a.eval_auth,
-                                                  route_overrides={"prime": "off"} if job.a.eval_auth == "none" else None))
-            job.progress(f"harness up: {harness.build_id} → {url}")
+                                                  route_overrides={"prime": "off"} if job.a.eval_auth == "none" else None,
+                                                  **({"families": {ROUTE: fam}} if fam != "qwen" else {})))
+            job.progress(f"harness up: {harness.build_id} → {url}" + (f" (base family {fam})" if fam != "qwen" else ""))
         yield Target(dry=job.dry, dry_model=job.a.dry_model, harness=harness, workers=int(job.th["exam_workers"]),
                      fake_engine=job.a.fake_engine, engine_path=engine_path, progress=job.progress)
 
@@ -1197,7 +1306,8 @@ def _behaviour_locked(job: Job, mode: str, dep: dict, model: dict, digest: str, 
     d_path = _local_manifest(job, "deployed", new_m.doc)
     tag = f"{job.run_id[3:23].replace('-', '')}"
     out: dict[str, Any] = {"deployed": {k: dep.get(k) for k in ("hash", "launcher_build", "generated_from")}, "mode": mode,
-                           "model": {k: model.get(k) for k in ("tag", "digest", "training_manifest", "trained_at")} | {"digest": digest}}
+                           "model": {k: model.get(k) for k in ("tag", "digest", "training_manifest", "trained_at")} | {"digest": digest}
+                           | ({"family": model["family"]} if model.get("family") not in (None, "", "qwen") else {})}
     try:
         with gpu_target(job, dep, model) as tgt:
             measured = _measure(job, mode, tgt, dep, model, digest, sd, imp, old_m, new_m, rows, home, t_path, d_path, tag,

@@ -15,6 +15,12 @@ dataset (the parity gate when $SOUS_CHEF_BIN is set) → train / image build stu
 (train/progress.json, train/job.json, model/image.json as the trainer and Cloud
 Build would leave them) → eval (fake arms) → the report and the decision.
 Needs node + the engine (COOKIE_CUTTER_DIR or --engine-dir).
+
+`--base-family mistral` puts trigger.base_family in run.json (docs/RETRAIN.md
+"The base family"): the dataset stage pins it in train-config.json, the stubbed
+trainer leaves the family's staged Modelfile (the Ministral TEMPLATE, PARSER
+ministral), and the eval and report carry both arms' families (the live r4 is
+qwen: a family change). Unset, everything is as it always was.
 """
 from __future__ import annotations
 
@@ -62,7 +68,7 @@ def generated_pool(m: Manifest, n_train: int, n_hold: int) -> list[dict]:
     return out
 
 
-def seed(root: Path, *, smoke: bool) -> tuple[str, str]:
+def seed(root: Path, *, smoke: bool, base_family: str | None = None) -> tuple[str, str]:
     from ..exam import MANIFEST_FILE
     bucket = root / "bucket"
     store = open_store(bucket)
@@ -83,7 +89,8 @@ def seed(root: Path, *, smoke: bool) -> tuple[str, str]:
     store.write_json(f"runs/{run_id}/run.json", {"run_id": run_id, "mode": "smoke" if smoke else "full",
                                                  "deployed": {"hash": gm.hash, "launcher_build": "dry",
                                                               "generated_from": grown["generated_from"]},
-                                                 "trigger": {"drift_run": None, "reason": "retrain-dry"}})
+                                                 "trigger": {"drift_run": None, "reason": "retrain-dry",
+                                                             **({"base_family": base_family} if base_family else {})}})
     return str(bucket), run_id
 
 
@@ -97,9 +104,23 @@ def stub_training(store, run_id: str) -> None:
     store.write_bytes(f"{pre}/train/DONE", b"dry\n")
     store.write_json(f"{pre}/model/image.json", {"tag": f"c-{run_id}", "digest": "sha256:dry-candidate",
                                                  "image": f"…/sous-chef-model/model:c-{run_id}"})
+    from .. import chatfmt
+    from .common import trained_family
+    fam = trained_family(store, run_id)
+    if fam != chatfmt.DEFAULT:  # the family's staged Modelfile, as pipeline-train.sh's stage step leaves it
+        from .. import LAB_DIR
+        from ..export import student_modelfile
+        f = chatfmt.get(fam)
+        text = student_modelfile((LAB_DIR / f.base_modelfile).read_text(encoding="utf-8"), f"{run_id}-q4_k_m.gguf",
+                                 f.base_ollama_tag, 65536)
+        keep = [ln for ln in text.splitlines() if not ln.startswith(("PARAMETER temperature", "PARAMETER presence_penalty",
+                                                                      "PARAMETER num_ctx"))]
+        keep += [f"PARAMETER temperature {chatfmt.stage_temperature(fam)}", "PARAMETER presence_penalty 0",
+                 "PARAMETER num_ctx 65536"]
+        store.write_bytes(f"{pre}/train/stage/Modelfile", ("\n".join(keep) + "\n").encode("utf-8"))
 
 
-def main(work: Path, *, smoke: bool = False, engine_dir: str | None = None) -> int:
+def main(work: Path, *, smoke: bool = False, engine_dir: str | None = None, base_family: str | None = None) -> int:
     from .. import pipeline
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -107,7 +128,7 @@ def main(work: Path, *, smoke: bool = False, engine_dir: str | None = None) -> i
     if not engine_dir:
         print("retrain-dry: needs the engine: --engine-dir or COOKIE_CUTTER_DIR")
         return 2
-    bucket, run_id = seed(work, smoke=smoke)
+    bucket, run_id = seed(work, smoke=smoke, base_family=base_family)
     store = open_store(bucket)
     mode = "smoke" if smoke else "full"
     common = ["--run-id", run_id, "--bucket", bucket, "--mode", mode, "--workdir", str(work / "jobs"),

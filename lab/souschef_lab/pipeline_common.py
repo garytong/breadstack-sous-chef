@@ -242,6 +242,41 @@ def gpu_warm(url: str, *, model: str = "sous-chef", wait_s: float = 900.0, every
     return {"ok": False, "seconds": round(time.monotonic() - t0, 1), "last": scrub(last)}
 
 
+def int_version(url: str, *, timeout: float = 15.0) -> dict | None:
+    """int's GET /version (the service answers it without a key), or None when it does not answer 200 with a JSON
+    object. Never raises: the drift poll reads it for a notice, never to fail a poll."""
+    try:
+        status, raw = _http("GET", f"{url.rstrip('/')}/version", timeout=timeout)
+    except PipelineError:
+        return None
+    doc = _json_body(raw) if status == 200 else None
+    return doc if isinstance(doc, dict) else None
+
+
+def served_family(url: str, *, model: str = "sous-chef", auth: str = "id-token", timeout: float = 120.0) -> dict:
+    """The base family a GPU service's model IS (souschef_lab/chatfmt.py), from Ollama's POST /api/show: the GGUF's
+    general.architecture (qwen35 → qwen, mistral3 → mistral), else the PARSER line of its modelfile (0.34.4 shows the
+    parser only there). {family, architecture, parser} — family None when the answer says neither (or no answer:
+    `error`). Never raises: the callers compare it with the family they recorded and refuse a mismatch."""
+    from . import chatfmt
+    try:
+        hdr = {"Authorization": f"Bearer {id_token(url)}"} if auth == "id-token" else {}
+        status, raw = _http("POST", f"{url.rstrip('/')}/api/show", headers=hdr, timeout=timeout, body={"model": model})
+    except PipelineError as e:
+        return {"family": None, "error": scrub(str(e))[:200]}
+    if status != 200:
+        return {"family": None, "error": f"/api/show {status}"}
+    doc = _json_body(raw)
+    doc = doc if isinstance(doc, dict) else {}
+    arch = (doc.get("model_info") or {}).get("general.architecture") if isinstance(doc.get("model_info"), dict) else None
+    try:
+        parser = chatfmt.modelfile_facts(str(doc.get("modelfile") or ""))["parser"]
+        by_mf = chatfmt.of_modelfile(str(doc.get("modelfile") or ""))
+    except Exception:  # noqa: BLE001 — an odd modelfile text is "unknown", never a crash
+        parser, by_mf = None, None
+    return {"family": chatfmt.of_architecture(arch) or by_mf, "architecture": arch, "parser": parser}
+
+
 def post_notification(url: str, key: str, payload: dict, timeout: float = 30.0) -> dict:
     """POST /api/ingest/souschef/notifications (the playbook's manual path)."""
     status, raw = _http("POST", f"{url.rstrip('/')}/api/ingest/souschef/notifications",

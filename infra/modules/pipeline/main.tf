@@ -78,6 +78,7 @@ locals {
     model_repo         = { location = var.model_repo_location, repository = var.model_repository_id, image = "${local.model_repo}/model" }
     ollama_model       = var.ollama_model
     route_name         = var.inhouse_route_name
+    base_family        = var.base_family
     thermometer_url    = trimsuffix(var.thermometer_url, "/")
     thermometer_secret = google_secret_manager_secret.pipeline["thermometer"].secret_id
     retrain_auto       = var.retrain_auto

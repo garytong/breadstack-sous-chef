@@ -18,6 +18,7 @@ module "sous_chef" {
   model_routes          = local.model_routes
   default_route         = local.default_route
   model_route_allowlist = local.model_route_allowlist
+  model_route_aliases   = local.model_route_aliases
   model_call_timeout    = local.model_call_timeout
   turn_ttl              = var.turn_ttl
   max_concurrent_turns  = var.max_concurrent_turns
@@ -98,6 +99,7 @@ module "pipeline" {
   rollout_enabled = var.pipeline_rollout
   l4_headroom     = var.pipeline_l4_headroom
   alert_emails    = var.pipeline_alert_emails
+  base_family     = var.pipeline_base_family
 }
 
 # The in-house route exists only while the model service does: its URL is
@@ -146,7 +148,53 @@ locals {
     report_as = var.gpu_model_route.name
   }
 
-  model_routes          = local.inhouse_live ? jsonencode(merge(local.base_routes, { (var.gpu_model_route.name) = local.inhouse_route })) : var.model_routes
-  model_route_allowlist = local.inhouse_live ? join(",", distinct(concat(split(",", var.model_route_allowlist), [var.gpu_model_route.name]))) : var.model_route_allowlist
+  # chocolate-muffin (docs/CHOCOLATE-MUFFIN.md §2): a second in-house route on
+  # the SAME model service and Ollama model, with what a Ministral 3 model
+  # needs. Off by default (gpu_model_mistral_route.enabled): then MODEL_ROUTES
+  # and the allowlist are byte for byte what they were. On, it answers only a
+  # turn that names it, until model_route_aliases sends the in-house route to
+  # it (the switch, CHOCOLATE-MUFFIN.md step 5). Both routes share one model
+  # server, and only one of them matches the image it serves.
+  mistral_route_on = local.inhouse_live && var.gpu_model_mistral_route.enabled
+  mistral_route = {
+    kind        = "messages-compatible"
+    url         = local.inhouse_live ? module.model_gpu[0].url : null
+    auth        = "id-token"
+    model       = var.gpu_model_route.model
+    max_tokens  = var.gpu_model_route.max_tokens
+    stream      = false
+    temperature = var.gpu_model_mistral_route.temperature # Mistral recommends <= 0.15 for Ministral 3; 0.15 scored slightly above 0.3 in the arm
+    fallback    = var.gpu_model_mistral_route.fallback
+    # The prompt-cache priming is calibrated for Qwen3.5's hybrid attention
+    # (the 1015-token filler, the -1024 checkpoint): off for a transformer
+    # that reuses the shared prefix by itself, as the arm measured it.
+    prime       = "off"
+    fast_finish = "on"
+    # A call Ollama's MinistralParser answers HTTP 500 (an unknown tool name,
+    # arguments that are not a JSON object) fails at once instead of being
+    # redrawn by the SDK as a hidden fresh sample (README §5 parser_retries;
+    # a service build without the option ignores the key).
+    parser_retries = "off"
+    fields_context = "on" # the default, stated: the route's JSON is the one service/internal/config/chocolate_test.go loads
+    report_as      = var.gpu_model_mistral_route.name
+  }
+  inhouse_routes = merge({ (var.gpu_model_route.name) = local.inhouse_route },
+  [for r in [local.mistral_route] : { (var.gpu_model_mistral_route.name) = r } if local.mistral_route_on]...)
+
+  model_routes          = local.inhouse_live ? jsonencode(merge(local.base_routes, local.inhouse_routes)) : var.model_routes
+  model_route_allowlist = local.inhouse_live ? join(",", distinct(concat(split(",", var.model_route_allowlist), [var.gpu_model_route.name], local.mistral_route_on ? [var.gpu_model_mistral_route.name] : []))) : var.model_route_allowlist
   model_call_timeout    = local.inhouse_live ? var.gpu_model_route.call_timeout : var.model_call_timeout
+  # The switch between the two in-house routes: only while they exist (an
+  # alias naming a route that is not in MODEL_ROUTES stops the service from
+  # booting; Cloud Run then keeps the previous revision).
+  model_route_aliases = local.inhouse_live ? var.model_route_aliases : {}
+}
+
+check "model_route_aliases_name_live_routes" {
+  assert {
+    condition = alltrue([for from, to in local.model_route_aliases :
+      contains(keys(jsondecode(local.model_routes)), from) && contains(keys(jsondecode(local.model_routes)), to) &&
+    contains(split(",", local.model_route_allowlist), to)])
+    error_message = "model_route_aliases: every alias must name two routes of MODEL_ROUTES, the answering one allowlisted (for chocolate-muffin: gpu_model_mistral_route.enabled = true). The service refuses to boot on anything else, and Cloud Run keeps the previous revision."
+  }
 }

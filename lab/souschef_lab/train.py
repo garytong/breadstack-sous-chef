@@ -58,7 +58,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import fields, serving, trainkit
+from . import chatfmt, fields, serving, serving_mistral, trainkit
 from .trainkit import (MARKERS, check_rows, die, estimate_tokens, history_turns, leaked_tool_results, load_split,
                        mask_history_turns, say, template_kind, trained_spans, updates_for, utc_now, utc_stamp,
                        val_subset, weighted_loss)
@@ -74,7 +74,8 @@ RECIPE = {
 }
 
 CONFIG_KEYS = tuple(RECIPE) + ("data", "name", "output", "max_steps", "instruction_part", "response_part",
-                                "fields_context", "checkpoint_steps", "resume", "init_adapter", "val_seed", "gen_check")
+                                "fields_context", "checkpoint_steps", "resume", "init_adapter", "val_seed", "gen_check",
+                                "family")
 
 # The validation subset (--val-max-rows) and the generation check's rows are drawn with this seed whatever --seed
 # says, so every seed of a round is scored on the same rows (r4 drew its subset with its own --seed, 3407: the same).
@@ -88,7 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="souschef_lab.train", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", help="settings file (.yaml/.yml/.json) whose keys are these flags; a flag given here wins")
-    p.add_argument("--base", default=RECIPE["base"], help="Hugging Face id of the base model (default: %(default)s)")
+    p.add_argument("--base", default=None,
+                   help=f"Hugging Face id of the base model (default: the --family's base, {RECIPE['base']} for qwen)")
+    p.add_argument("--family", choices=chatfmt.FAMILIES, default=chatfmt.DEFAULT,
+                   help="the base model's chat-format family: qwen (Ollama's qwen3.5 renderer, the default) or mistral "
+                        "(Ministral 3, Ollama's TEMPLATE + PARSER ministral; serving_mistral.py) (default: %(default)s)")
     p.add_argument("--data", type=Path, default=trainkit.DATASET_DIR,
                    help="folder with train.jsonl / val.jsonl (default: lab/data/dataset)")
     p.add_argument("--name", help="run name; output goes to runs/adapters/<name> (default: <base>-<UTC time>)")
@@ -155,6 +160,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = build_parser()
     argv = trainkit.apply_config(p, sys.argv[1:] if argv is None else argv, CONFIG_KEYS)
     args = p.parse_args(argv)
+    if args.base is None:
+        args.base = chatfmt.get(args.family).base
     args.data = Path(args.data)
     if args.output is not None:
         args.output = Path(args.output)
@@ -173,24 +180,61 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def render_text(messages: list[dict], tools: list[dict] | None, history: int = 0) -> str:
+def render_text(messages: list[dict], tools: list[dict] | None, history: int = 0, fmt=None) -> str:
     """A row's training text: the conversation as Ollama renders it for the
     served student (serving.render_training — the qwen3.5 renderer with
     thinking disabled, every assistant turn opened by the empty think block
     the served generation prompt ends with). Never the base's chat template:
     its tools block and echoed tool calls are not the served bytes
-    (docs/LAB.md §5 "Serving parity")."""
-    return serving.render_training(messages, tools, history)
+    (docs/LAB.md §5 "Serving parity"). fmt (chatfmt.Format, default qwen)
+    picks the family's render: mistral is serving_mistral.render_training."""
+    return (fmt.render_training if fmt is not None else serving.render_training)(messages, tools, history)
 
 
-def served_markers(tok) -> None:
+def served_markers(tok, fmt=None) -> None:
     """Stop unless the ChatML markers the serving render writes are single
     special tokens of this base's tokenizer: the masking (MARKERS) and the
-    render assume Qwen's vocabulary."""
-    missing = [t for t in serving.SPECIAL_TOKENS if len(tok(t, add_special_tokens=False)["input_ids"]) != 1]
-    if missing:
-        die(f"this base's tokenizer has no single token for {', '.join(missing)}: the serving render (Ollama's "
-            "qwen3.5 renderer) and the ChatML masking need a Qwen3.5 base")
+    render assume Qwen's vocabulary. For the mistral family (fmt), each
+    marker must be one token AND that token must be the id the masking
+    expects (serving_mistral.SPECIAL_IDS): a tokenizer that holds [ARGS] as
+    another id would mask the wrong spans."""
+    if fmt is None or fmt.name == "qwen":
+        missing = [t for t in serving.SPECIAL_TOKENS if len(tok(t, add_special_tokens=False)["input_ids"]) != 1]
+        if missing:
+            die(f"this base's tokenizer has no single token for {', '.join(missing)}: the serving render (Ollama's "
+                "qwen3.5 renderer) and the ChatML masking need a Qwen3.5 base")
+        return
+    bad = []
+    for t in fmt.special_tokens:
+        ids = tok(t, add_special_tokens=False)["input_ids"]
+        want = (fmt.special_ids or {}).get(t)
+        if len(ids) != 1 or (want is not None and ids[0] != want):
+            bad.append(f"{t} → {ids} (want [{want}])")
+    if bad:
+        die(f"this base's tokenizer does not hold the {fmt.name} markers as the expected single tokens: "
+            f"{'; '.join(bad)} — the render (serving_{fmt.name}.py) and the id-level masking need "
+            f"{fmt.base}@{fmt.revision}'s tokenizer")
+
+
+def history_spans(row: dict, fmt=None) -> int:
+    """How many leading assistant SEGMENTS of a row's render are resent history: history_turns for qwen; for mistral
+    the collated assistant messages (Ollama's collate merges consecutive ones) that hold any of the first
+    history_turns assistant messages — a merged segment holding history is masked whole."""
+    k = history_turns(row)
+    if fmt is None or fmt.name == "qwen" or k <= 0:
+        return k
+    seen, segments = 0, 0
+    prev_role = None
+    for m in row["messages"]:
+        role = m.get("role")
+        if role == "assistant":
+            if prev_role != "assistant":
+                segments += 1
+            seen += 1
+            if seen >= k:
+                return segments
+        prev_role = role
+    return segments
 
 
 def validation_loss(model, rows, torch, bf16: bool = False) -> float | None:
@@ -343,6 +387,11 @@ _CALL = re.compile(r"<tool_call>\s*<function=([^>\n]*)>(.*?)</function>\s*</tool
 _PARAM = re.compile(r"<parameter=([^>\n]*)>\n?(.*?)\n?</parameter>", re.S)
 
 
+# The mistral family's reading of a reply (Ollama's MinistralParser: [TOOL_CALLS]name[ARGS]{…}); images/trainer/selftest
+# checks it beside parse_tool_calls.
+parse_tool_calls_mistral = serving_mistral.parse_tool_calls
+
+
 def parse_tool_calls(text: str) -> list[tuple[str, dict]]:
     """The tool calls in a rendered (or generated) assistant turn — qwen3.5's <tool_call><function=…><parameter=…>
     form (serving.render_conversation) — as (name, {parameter: value}), a value JSON-decoded when it is JSON, so the
@@ -359,32 +408,36 @@ def parse_tool_calls(text: str) -> list[tuple[str, dict]]:
     return calls
 
 
-def gen_check_items(rows: list[dict], n: int, seed: int = VAL_SEED) -> list[dict]:
+def gen_check_items(rows: list[dict], n: int, seed: int = VAL_SEED, fmt=None) -> list[dict]:
     """n validation rows (not follow-ups, a seeded draw in their own order: the same rows for every --seed) as
     {id, prompt, expected}: the served prompt up to the first assistant turn's generation point, and that turn's
-    reference tool calls (none: a reply)."""
+    reference tool calls (none: a reply). fmt (default qwen) is the family's render, generation points, end-of-turn
+    marker and call reader."""
+    fmt = fmt or chatfmt.get("qwen")
     pool = [r for r in rows if not history_turns(r) and any(m.get("role") == "assistant" for m in r["messages"])]
     items = []
     for r in val_subset(pool, n, seed):
         msgs = r["messages"]
         k = next(i for i, m in enumerate(msgs) if m.get("role") == "assistant")
-        text = render_text(msgs[:k + 1], r.get("tools"), 0)
-        cut = text.rfind(serving.GENERATION_PROMPT)
-        if cut < 0:
+        text = render_text(msgs[:k + 1], r.get("tools"), 0, fmt)
+        points = fmt.generation_points(text)
+        if not points:
             continue
-        cut += len(serving.GENERATION_PROMPT)
+        cut = points[-1]
         items.append({"id": r.get("id"), "prompt": text[:cut],
-                      "expected": parse_tool_calls(text[cut:].split(serving.IM_END)[0])})
+                      "expected": fmt.parse_tool_calls(text[cut:].split(fmt.end_of_turn)[0])})
     return items
 
 
-def gen_check_pass(generated: str, expected: list[tuple[str, dict]]) -> bool:
+def gen_check_pass(generated: str, expected: list[tuple[str, dict]], fmt=None) -> bool:
     """A generated first turn matches when its tool calls are the reference's (names and arguments, in order); a
     reference reply (no call) matches a generation with no call."""
-    return parse_tool_calls((generated or "").split(serving.IM_END)[0]) == expected
+    fmt = fmt or chatfmt.get("qwen")
+    return fmt.parse_tool_calls((generated or "").split(fmt.end_of_turn)[0]) == expected
 
 
-def generation_check(model, tok, items: list[dict], torch, fast_model, budget_s: float = GEN_CHECK_BUDGET_S) -> dict:
+def generation_check(model, tok, items: list[dict], torch, fast_model, budget_s: float = GEN_CHECK_BUDGET_S,
+                     fmt=None) -> dict:
     """Greedy generation of each item's first assistant turn; {n, scored, match, rate, seconds, failed_ids}. Never
     raises: an error is recorded (and the check is then incomplete, so `select` falls back to the loss)."""
     t0 = time.monotonic()
@@ -394,18 +447,20 @@ def generation_check(model, tok, items: list[dict], torch, fast_model, budget_s:
         if hasattr(fast_model, "for_inference"):
             fast_model.for_inference(model)
         model.eval()
-        eos = tok.convert_tokens_to_ids(serving.IM_END)
+        fmt = fmt or chatfmt.get("qwen")
+        eos = tok.convert_tokens_to_ids(fmt.end_of_turn)
         for it in items:
             if time.monotonic() - t0 > budget_s:
                 res["stopped"] = f"over {budget_s:.0f}s"
                 break
-            ids = torch.tensor([tok(it["prompt"], add_special_tokens=False)["input_ids"]], device="cuda")
+            ids = torch.tensor([tok(it["prompt"], add_special_tokens=fmt.prompt_add_special_tokens)["input_ids"]],
+                               device="cuda")
             with torch.no_grad():
                 out = model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), do_sample=False,
                                      max_new_tokens=GEN_CHECK_MAX_NEW_TOKENS, eos_token_id=eos, pad_token_id=eos)
             text = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=False)
             res["scored"] += 1
-            if gen_check_pass(text, it["expected"]):
+            if gen_check_pass(text, it["expected"], fmt):
                 res["match"] += 1
             else:
                 res["failed_ids"].append(it["id"])
@@ -530,6 +585,9 @@ def select_main(argv: list[str]) -> int:
 
 PIPELINE_ENV = {"TRAIN_SEED": "seed", "TRAIN_SEEDS": "seeds", "TRAIN_ARMS": "arms", "INIT_ADAPTER": "init_adapter",
                 "INIT_LR": "init_lr", "TRAIN_GEN_CHECK": "gen_check"}
+# The base family (chatfmt): BASE_FAMILY on the job, else train-config.json `family` (the dataset stage writes it from
+# trigger.base_family / infra config base_family when the round is not qwen), else qwen.
+FAMILY_ENV, FAMILY_KEY = "BASE_FAMILY", "family"
 GEN_CHECK_MULTI = 32  # rows the generation check scores by default when several arms are trained
 _GS_SAFE = re.compile(r"^gs://[a-z0-9][a-z0-9._-]*(/[A-Za-z0-9._=@+-]+)+$")
 # A round's training arms (r6, the user's decision of 2026-10-15: from-base seeds AND a warm start in the same round,
@@ -542,6 +600,10 @@ MAX_ARMS = 4  # an H100 trains about 3 r4-sized arms in its 12 h attempt (window
 # arm's fixed part (model load, the validations, a 32-row generation check, the push), the job's head (self-test,
 # the 18 GB base pull and unpack, the resume smoke) and tail (export q4_k_m, stage, push). An A100 is about 2x.
 H100_S_PER_UPDATE = 12.0  # r4: 601 updates in 6,498 s of SFT (10.8 s); r5 measured 2.4 H100-hours an arm
+# The mistral family (Ministral 3 8B, full attention in every layer) trains slower on these long rows than Qwen3.5's
+# hybrid attention: the r7 arm (mx-20261018-m3-8b-r7) took 19,322 s of SFT for 994 updates on an H100 (19.4 s an
+# update, 3,233 tokens/s) where r7's own base arm took 11,834 s (11.9 s, 5,413 tokens/s) on the same rows.
+H100_S_PER_UPDATE_BY_FAMILY = {"qwen": H100_S_PER_UPDATE, "mistral": 20.0}
 ARM_FIXED_S = 900
 JOB_HEAD_S = 1800
 JOB_TAIL_S = 2700
@@ -585,11 +647,11 @@ def _arm_list(v) -> list[tuple[str, int]]:
     return out
 
 
-def window_estimate(n_arms: int, updates: int | None, *, a100: bool = False) -> dict:
+def window_estimate(n_arms: int, updates: int | None, *, a100: bool = False, family: str | None = None) -> dict:
     """The train job's wall time for `n_arms` arms of `updates` updates each (every arm trains on the same rows), on
-    the H100 (a100: about 2x), against the 12 h Vertex window. A planning figure: pipeline-train.sh's own guard
-    measures the arms it actually trains."""
-    per_arm = (updates or 0) * H100_S_PER_UPDATE * (2 if a100 else 1) + ARM_FIXED_S
+    the H100 (a100: about 2x), against the 12 h Vertex window, at the base family's rate (H100_S_PER_UPDATE_BY_FAMILY;
+    default qwen). A planning figure: pipeline-train.sh's own guard measures the arms it actually trains."""
+    per_arm = (updates or 0) * H100_S_PER_UPDATE_BY_FAMILY[chatfmt.check(family)] * (2 if a100 else 1) + ARM_FIXED_S
     total = JOB_HEAD_S + n_arms * per_arm + JOB_TAIL_S
     return {"n_arms": n_arms, "updates_per_arm": updates, "arm_h": round(per_arm / 3600, 2),
             "total_h": round(total / 3600, 2), "window_h": WINDOW_S / 3600, "fits": total <= WINDOW_S,
@@ -607,12 +669,21 @@ def pipeline_config(env, file_cfg: dict | None, bucket: str) -> dict:
     form, every seed from the adapter). arms and seed / seeds are exclusive.
     init_adapter: gs://<the pipeline bucket>/runs/… or …/base/…, a bucket path (runs/… or base/…, the trainer's
     readable prefixes), or a run id (rt-…: that round's trained adapter, runs/<id>/train/adapter/adapter). INIT_LR is
-    the warm arms' --lr (default WARM_LR); base arms keep the recipe's lr."""
+    the warm arms' --lr (default WARM_LR); base arms keep the recipe's lr.
+    family: the base family (BASE_FAMILY, else the file's `family`, which the dataset stage writes for a non-qwen
+    round, else qwen; chatfmt.FAMILIES). The result carries `family` only when it is not qwen, so a qwen round's
+    settings are today's."""
     file_cfg = dict(file_cfg or {})
-    unknown = sorted(set(file_cfg) - set(PIPELINE_ENV.values()))
+    unknown = sorted(set(file_cfg) - set(PIPELINE_ENV.values()) - {FAMILY_KEY})
     if unknown:
         raise ValueError(f"train-config.json: unknown key(s) {', '.join(unknown)} (known: "
-                         f"{', '.join(PIPELINE_ENV.values())})")
+                         f"{', '.join((*PIPELINE_ENV.values(), FAMILY_KEY))})")
+    fam_env = env.get(FAMILY_ENV)
+    fam_env = None if fam_env is None or str(fam_env).strip() == "" else str(fam_env).strip()
+    try:
+        family = chatfmt.resolve(fam_env, file_cfg.get(FAMILY_KEY))
+    except ValueError as e:
+        raise ValueError(f"{FAMILY_ENV if fam_env is not None else 'train-config.json family'}: {e}") from None
     got, source = {}, {}
     for var, key in PIPELINE_ENV.items():
         v = env.get(var)
@@ -672,17 +743,21 @@ def pipeline_config(env, file_cfg: dict | None, bucket: str) -> dict:
     gen = got.get("gen_check", GEN_CHECK_MULTI if multi else 0)
     if isinstance(gen, bool) or not re.fullmatch(r"\d{1,4}", str(gen).strip()):
         raise ValueError(f"TRAIN_GEN_CHECK {gen!r} must be a whole number 0-9999")
-    return {"seeds": [s for _, s in arms], "seed_flag": bool(seeds) or "arms" in got, "multi": multi,
-            "init_adapter": url, "init_lr": repr(lr) if lr is not None else "", "gen_check": int(str(gen).strip()),
-            "arms": [{"arm": f"{k}:{s}", "start": k, "seed": s, "tag": arm_tag(k, s),
-                      "lr": lr if k == "warm" else RECIPE["lr"]} for k, s in arms],
-            "source": source}
+    out = {"seeds": [s for _, s in arms], "seed_flag": bool(seeds) or "arms" in got, "multi": multi,
+           "init_adapter": url, "init_lr": repr(lr) if lr is not None else "", "gen_check": int(str(gen).strip()),
+           "arms": [{"arm": f"{k}:{s}", "start": k, "seed": s, "tag": arm_tag(k, s),
+                     "lr": lr if k == "warm" else RECIPE["lr"]} for k, s in arms],
+           "source": source}
+    if family != chatfmt.DEFAULT:  # a qwen round's settings stay today's, key for key
+        out["family"] = family
+        source[FAMILY_KEY] = "env " + FAMILY_ENV if fam_env is not None else "train-config.json"
+    return out
 
 
 def pipeline_config_main(argv: list[str]) -> int:
     """pipeline-train.sh's resolver: `pipeline_config_main [CONFIG_FILE] BUCKET` prints KEY=value lines (SEEDS,
-    SEED_FLAG, MULTI, INIT_ADAPTER, INIT_LR, GEN_CHECK, ARMS) and the resolved settings as JSON on stderr; exit 2 on a bad
-    setting."""
+    SEED_FLAG, MULTI, INIT_ADAPTER, INIT_LR, GEN_CHECK, ARMS, and FAMILY when the base family is not qwen) and the
+    resolved settings as JSON on stderr; exit 2 on a bad setting."""
     import os
 
     path, bucket = (argv[0], argv[1]) if len(argv) == 2 else ("", argv[0])
@@ -701,6 +776,8 @@ def pipeline_config_main(argv: list[str]) -> int:
     print(f"INIT_LR={c['init_lr']}")
     print(f"GEN_CHECK={c['gen_check']}")
     print(f"ARMS={' '.join(a['arm'] for a in c['arms'])}")
+    if c.get("family"):
+        print(f"FAMILY={c['family']}")
     print("training settings: " + json.dumps(c), file=sys.stderr)
     return 0
 
@@ -725,9 +802,13 @@ def plan(args, train_rows: list[dict] | None = None, val_rows: list[dict] | None
         "seed": args.seed, "val_seed": args.val_seed, "gen_check": args.gen_check,
         "init_adapter": None, "start": "base",
         "tiled_mlp": tiled, "thinking": args.thinking, "data": str(args.data),
-        "config": getattr(args, "config", None), "render": serving.DESCRIPTION,
+        "config": getattr(args, "config", None), "render": chatfmt.get(getattr(args, "family", None)).description,
         "manifest_hash": dataset_manifest(args.data).get("manifest_hash"),
     }
+    fmt = chatfmt.get(getattr(args, "family", None))
+    if fmt.name != "qwen":  # main's plan and run.json carry no family key (byte-identical for qwen)
+        d["family"] = fmt.name
+        d["revision"] = fmt.revision if args.base == fmt.base else None
     if args.init_adapter is not None:
         try:
             d["init_adapter"] = init_adapter_info(args.init_adapter)
@@ -769,6 +850,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.thinking:
         die("--thinking: the rows render in the served form (serving.py: Ollama's qwen3.5 renderer with thinking "
             "disabled, the empty think block first) and the traces carry no thinking — there is no thinking render")
+    fmt = chatfmt.get(args.family)
+    if args.init_adapter is not None and not fmt.warm_start:
+        die(f"--family {fmt.name} --init-adapter: this family has no warm start")
     train_rows, val_rows = load_split(args.data, "train"), load_split(args.data, "val")
     if not train_rows:
         die(f"no training rows in {trainkit.rel(args.data)}/train.jsonl — run `python -m souschef_lab.dataset` first")
@@ -787,6 +871,8 @@ def main(argv: list[str] | None = None) -> int:
     say(render_plan(p))
     if p["rows"]["followups"]:
         say(f"{p['rows']['followups']} rows are follow-ups: their earlier replies are masked out of the loss.")
+    if fmt.name != "qwen":
+        say(family_report(fmt, train_rows, val_rows, args.max_seq_length))
     if args.dry_run:
         if importlib.util.find_spec("unsloth") is None:
             say("The [train] extra is not installed: run 'make -C lab train-env' (several GB, once) before training.")
@@ -795,6 +881,170 @@ def main(argv: list[str] | None = None) -> int:
     if importlib.util.find_spec("unsloth") is None:
         die("the [train] extra is not installed — run 'make -C lab train-env' first (several GB, once)")
     return train(args, p, train_rows, val_rows)
+
+
+def mistral_mask(ds, rows: list[dict], texts: list[str], tok, fmt, which: str):
+    """The mistral family's labels, rebuilt from token ids (trainkit.mistral_labels; a follow-up's resent replies
+    masked by history_spans) for every row of a tokenized split. The trainer's input_ids must be the render's own
+    tokenization (BOS included); when the trainer left the BOS out, the ids (and attention_mask) are replaced by the
+    render's — any other difference stops the run."""
+    if ds is None:
+        return ds
+    cols = set(ds.column_names)
+    if "input_ids" not in cols or len(ds) != len(rows):
+        die(f"cannot build the Mistral labels for the {which} set: the trainer's dataset has {len(ds)} rows for "
+            f"{len(rows)} rendered ({sorted(cols)}) — Unsloth dropped or reordered rows")
+    hs = [history_spans(r, fmt) for r in rows]
+    bos = (fmt.special_ids or {}).get(serving_mistral.BOS, 1)
+    eos = (fmt.special_ids or {}).get(serving_mistral.END_OF_TURN, 2)
+    # one segment per collated assistant message (the render's own count): a literal control string in a row's text
+    # (`</s>`, `[INST]`, … — the tokenizer reads it as the control token) would add, cut or end a span early
+    n_seg = [len(serving_mistral.render_conversation(r["messages"], r.get("tools"), close_last=True)[1]) for r in rows]
+    others = sorted(cols - {"input_ids", "labels", "attention_mask"})
+
+    def fix(ex, i):
+        own = tok(texts[i], add_special_tokens=True)["input_ids"]
+        got = list(ex["input_ids"])
+        if got != own:
+            if got != own[1:] or own[:1] != [bos]:
+                die(f"{which} row {i}: the trainer's tokenization is not the render's (first difference at token "
+                    f"{next((j for j, (a, b) in enumerate(zip(got, own)) if a != b), min(len(got), len(own)))})")
+            if any(isinstance(ex.get(c), list) and len(ex[c]) == len(got) for c in others):
+                die(f"{which} row {i}: the trainer left the BOS out and keeps per-token columns {others}: cannot "
+                    "re-align them")
+        spans = trainkit.mistral_spans(own)
+        if own.count(bos) != 1 or len(spans) != n_seg[i] or own.count(eos) != n_seg[i]:
+            die(f"{which} row {i} ({rows[i].get('id')}): {len(spans)} token spans, {own.count(eos)} </s> and "
+                f"{own.count(bos)} <s> for {n_seg[i]} assistant segments — a control-token string in the row's text "
+                f"({control_strings(rows[i]) or 'none found'}); fix or drop the row")
+        # every row returns the same columns (datasets.map needs one schema): the render's ids, mask and labels
+        out = {"input_ids": own, "labels": trainkit.mistral_labels(own, hs[i])}
+        if "attention_mask" in cols:
+            out["attention_mask"] = [1] * len(own)
+        return out
+
+    return ds.map(fix, with_indices=True)
+
+
+def control_strings(row: dict) -> list[str]:
+    """The Ministral control-token strings (serving_mistral.SPECIAL_TOKENS) a row's messages or tools hold as text."""
+    blob = json.dumps([row.get("messages"), row.get("tools")], ensure_ascii=False)
+    return [t for t in serving_mistral.SPECIAL_TOKENS if t in blob]
+
+
+def mask_problem(row: dict, fmt) -> str | None:
+    """Why the Mistral loss mask cannot train this row as rendered, read from the render alone
+    (serving_mistral.control_ids: no tokenizer, no GPU) — None when it can: its control tokens no longer make one BOS
+    and one </s>-closed span per collated assistant message (mistral_mask stops the run on that), or the spans they
+    make cover other text than the assistant segments (a literal "[/INST]" in a user turn: mistral_mask would train
+    the user's words, unseen — mistral_guard checks the first row only)."""
+    text, want = serving_mistral.render_conversation(row["messages"], row.get("tools"), close_last=True)
+    if text != fmt.render_training(row["messages"], row.get("tools"), history_turns(row)):
+        return "its training text is not the render's"
+    ids, offs = serving_mistral.control_ids(text)
+    bos, eos = serving_mistral.SPECIAL_IDS[serving_mistral.BOS], serving_mistral.SPECIAL_IDS[serving_mistral.END_OF_TURN]
+    spans = trainkit.mistral_spans(ids)
+    if ids.count(bos) != 1 or len(spans) != len(want) or ids.count(eos) != len(want):
+        return (f"{len(spans)} token spans, {ids.count(eos)} </s> and {ids.count(bos)} <s> for {len(want)} assistant "
+                "segments")
+    got = [(offs[a][0], offs[b - 1][1]) for a, b in spans]
+    if got != want:
+        k = next(j for j, (x, y) in enumerate(zip(got, want)) if x != y)
+        return f"token span {k} covers characters {got[k]}, its assistant segment {want[k]}"
+    return None
+
+
+def mistral_guard(ex: dict, row: dict, tok, fmt) -> None:
+    """Stop unless a tokenized training row is what the Mistral arm must train: exactly one BOS first, </s> last and
+    trained, the trained token spans decoding to exactly the renderer's assistant segments (after the history), and no
+    tool output among them."""
+    ids, labels = list(ex["input_ids"]), list(ex["labels"])
+    sid = fmt.special_ids or {}
+    bos, eos = sid.get(serving_mistral.BOS, 1), sid.get(serving_mistral.END_OF_TURN, 2)
+    if len(ids) < 2 or ids[0] != bos or ids[1] == bos:
+        die(f"Mistral guard: the row does not start with exactly one BOS ({ids[:3]})")
+    if ids[-1] != eos or labels[-1] != eos:
+        die(f"Mistral guard: the row does not end with a trained </s> (ids …{ids[-2:]}, labels …{labels[-2:]})")
+    spans, run = [], None
+    for j, lab in enumerate(labels):
+        if lab != -100 and run is None:
+            run = j
+        elif lab == -100 and run is not None:
+            spans.append((run, j))
+            run = None
+    if run is not None:
+        spans.append((run, len(labels)))
+    got = [tok.decode(ids[a:b], skip_special_tokens=False) for a, b in spans]
+    want = serving_mistral.assistant_segments(row["messages"], row["tools"])[history_spans(row, fmt):]
+    if got != want:
+        k = next((j for j, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+        die(f"Mistral guard: the trained spans are not the renderer's assistant segments ({len(got)} vs {len(want)}; "
+            f"first difference in span {k}: {got[k][:120] if k < len(got) else None!r} vs "
+            f"{want[k][:120] if k < len(want) else None!r})")
+    trained = "".join(got)
+    leaks = [m.get("name", "?") for m in row["messages"] if m.get("role") == "tool"
+             and (m.get("content") or "")[:200] and (m.get("content") or "")[:200] in trained]
+    if leaks:
+        die(f"Mistral guard: the result of {', '.join(leaks)} is trained on")
+
+
+def family_report(fmt, train_rows: list[dict], val_rows: list[dict], max_seq_length: int) -> str:
+    """A non-qwen dry run's extra lines: the rows each unservable rule drops (the qwen3.5 echo rule, kept so the row
+    set is the Qwen arms'; the family's own rule), how many rows Ollama's collate merges assistant messages in, a check
+    that every kept row renders one segment per collated assistant message, and — when MX_TOKENIZER_DIR names a folder
+    with the pinned tokenizer.json and the `tokenizers` package is importable — the real token counts (BOS included)."""
+    import os
+
+    rows = train_rows + val_rows
+    by_rule = {"qwen_echo": 0, fmt.name: 0}
+    merged = 0
+    kept: list[dict] = []
+    for r in rows:
+        q = serving.unservable(r["messages"])
+        own = serving_mistral.unservable_mistral(r["messages"]) if fmt.name == "mistral" else []
+        by_rule["qwen_echo"] += bool(q)
+        by_rule[fmt.name] += bool(own)
+        merged += bool(serving_mistral.merged_assistants(r["messages"]))
+        if not fmt.unservable(r["messages"]):
+            kept.append(r)
+    bad = []
+    for r in kept:
+        text, spans = serving_mistral.render_conversation(r["messages"], r.get("tools"))
+        n_assist = sum(1 for m in serving_mistral.collate(r["messages"]) if m.get("role") == "assistant")
+        if len(spans) != n_assist or text != fmt.render_training(r["messages"], r.get("tools"), history_turns(r)):
+            bad.append(r.get("id"))
+    if bad:
+        die(f"{len(bad)} rows do not render one segment per collated assistant message (e.g. {bad[:3]})")
+    ctl = [(r.get("id"), control_strings(r)) for r in kept]
+    ctl = [(i, c) for i, c in ctl if c]
+    if ctl and fmt.name == "mistral":  # the rows the training mask would stop on, found here on CPU, not on the GPU
+        breaking = [(r.get("id"), c, why) for r in kept if (c := control_strings(r)) and (why := mask_problem(r, fmt))]
+        if breaking:
+            die(f"{len(breaking)} rows hold a control-token string that the tokenizer reads as the control token and "
+                f"that moves their token spans, so on the GPU the training mask (mistral_mask) would stop on them or "
+                f"train other text than their replies: {[(i, c) for i, c, _ in breaking[:5]]} ({breaking[0][2]}); fix "
+                "their text or drop them")
+    lines = [f"{fmt.name}: unservable rows by rule {json.dumps(by_rule)} (a row is dropped when either rule hits); "
+             f"{merged} rows have consecutive assistant messages Ollama's collate merges; {len(kept)} rows render "
+             "one segment per collated assistant message."]
+    if ctl:  # none of them changes its token spans (checked above): the mask takes them, the model reads control tokens
+        lines.append(f"{fmt.name}: WARNING {len(ctl)} kept rows hold a control-token string as text (e.g. "
+                     f"{ctl[:3]}): their token spans still match their segments, but the model reads the string as the "
+                     "control token")
+    tdir = os.environ.get("MX_TOKENIZER_DIR")
+    if tdir and fmt.name == "mistral":
+        try:
+            from tokenizers import Tokenizer  # the HF tokenizers package only: never torch
+
+            tk = Tokenizer.from_file(str(Path(tdir) / "tokenizer.json"))
+            counts = sorted(len(tk.encode(fmt.render_training(r["messages"], r.get("tools"), history_turns(r)),
+                                          add_special_tokens=False).ids) + 1 for r in kept)
+            over = sum(1 for n in counts if n > max_seq_length)
+            lines.append(f"{fmt.name}: tokens (pinned tokenizer, BOS included) median {trainkit.median(counts):,} · "
+                         f"max {max(counts, default=0):,} · total {sum(counts):,} · over {max_seq_length:,}: {over}")
+        except Exception as e:  # noqa: BLE001 — a dry run's extra figure, never a reason to stop
+            lines.append(f"{fmt.name}: no token count ({type(e).__name__}: {e})")
+    return "\n".join(lines)
 
 
 def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
@@ -832,21 +1082,34 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
     # A multimodal base (Qwen3.5) hands back a processor; text work uses its tokenizer.
     tok = getattr(processor, "tokenizer", processor)
 
-    # The render is Ollama's (serving.py), ChatML whatever the base's own template says; the masking markers are
-    # ChatML's, and the base's tokenizer must know them as single tokens.
-    kind = template_kind(tok.chat_template or "") or "chatml"
-    instruction_part = args.instruction_part or MARKERS[kind][0]
-    response_part = args.response_part or MARKERS[kind][1]
-    served_markers(tok)
+    fmt = chatfmt.get(args.family)
+    mistral = fmt.name == "mistral"
+    if mistral:
+        # The render is serving_mistral's (Ollama's TEMPLATE, v13 layout). [INST] / [/INST] only give Unsloth's
+        # collator and labels column below; the labels themselves are rebuilt from token ids (trainkit.mistral_labels).
+        kind = "mistral-v13"
+        instruction_part = args.instruction_part or serving_mistral.INST_OPEN
+        response_part = args.response_part or serving_mistral.INST_CLOSE
+    else:
+        # The render is Ollama's (serving.py), ChatML whatever the base's own template says; the masking markers are
+        # ChatML's, and the base's tokenizer must know them as single tokens.
+        kind = template_kind(tok.chat_template or "") or "chatml"
+        instruction_part = args.instruction_part or MARKERS[kind][0]
+        response_part = args.response_part or MARKERS[kind][1]
+    served_markers(tok, fmt)
+    unservable_by_rule = {"qwen_echo": 0, "mistral": 0}
 
     def render(rows: list[dict]) -> tuple[list[dict], list[str], list[int], int, int]:
         kept, texts, lengths, dropped, unservable = [], [], [], 0, 0
         for r in rows:
-            if serving.unservable(r["messages"]):
+            if fmt.unservable(r["messages"]):
                 unservable += 1  # its served echo would read back as another call (serving.unservable): never trained
+                if mistral:
+                    unservable_by_rule["qwen_echo"] += bool(serving.unservable(r["messages"]))
+                    unservable_by_rule["mistral"] += bool(serving_mistral.unservable_mistral(r["messages"]))
                 continue
-            text = render_text(r["messages"], r["tools"], history_turns(r))
-            n = len(tok(text, add_special_tokens=False)["input_ids"])
+            text = render_text(r["messages"], r["tools"], history_turns(r), fmt)
+            n = len(tok(text, add_special_tokens=fmt.prompt_add_special_tokens)["input_ids"])
             if n > args.max_seq_length:
                 dropped += 1  # truncating would cut the answer — the part being learned
                 continue
@@ -863,16 +1126,25 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         f"dropped; {train_unservable + val_unservable} unservable dropped. Longest kept: {max(train_lens, default=0):,} tokens.")
     if not train_texts:
         die("no training row fits --max-seq-length")
-    leaks = leaked_tool_results(train_kept[0], train_texts[0], instruction_part, response_part)
-    if leaks:
-        die(f"with these masking markers the result of {', '.join(leaks)} would be trained on — the base's template "
-            "puts tool output inside the assistant turn; use a Qwen (ChatML) base")
+    if mistral:
+        segments = serving_mistral.assistant_segments(train_kept[0]["messages"], train_kept[0]["tools"])
+        trained_text = "".join(segments[history_spans(train_kept[0], fmt):])
+        leaks = [m.get("name", "?") for m in train_kept[0]["messages"]
+                 if m.get("role") == "tool" and (m.get("content") or "")[:200]
+                 and (m.get("content") or "")[:200] in trained_text]
+        if leaks:
+            die(f"the result of {', '.join(leaks)} would be trained on — the Mistral spans must hold assistant turns "
+                "only (serving_mistral.render_conversation)")
+        sample_spans = segments[history_spans(train_kept[0], fmt):]
+    else:
+        leaks = leaked_tool_results(train_kept[0], train_texts[0], instruction_part, response_part)
+        if leaks:
+            die(f"with these masking markers the result of {', '.join(leaks)} would be trained on — the base's template "
+                "puts tool output inside the assistant turn; use a Qwen (ChatML) base")
+        sample_spans = trained_spans(train_texts[0], instruction_part, response_part)[history_turns(train_kept[0]):]
     # What the model sees, and the part of it that is learned.
     (out / "sample_rendered.txt").write_text(train_texts[0], encoding="utf-8")
-    (out / "sample_trained.txt").write_text(
-        "\n----- masked in between -----\n".join(
-            trained_spans(train_texts[0], instruction_part, response_part)[history_turns(train_kept[0]):]),
-        encoding="utf-8")
+    (out / "sample_trained.txt").write_text("\n----- masked in between -----\n".join(sample_spans), encoding="utf-8")
 
     model = FastModel.get_peft_model(
         model, finetune_vision_layers=False, finetune_language_layers=True, finetune_attention_modules=True,
@@ -972,8 +1244,15 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         return ds.map(lambda ex, i: {"labels": mask_history_turns(ex["input_ids"], ex["labels"], resp_ids, inst_ids,
                                                                   ks[i])}, with_indices=True)
 
-    trainer.train_dataset = mask_followups(trainer.train_dataset, train_kept, "training")
-    trainer.eval_dataset = mask_followups(trainer.eval_dataset, val_kept, "validation")
+    if mistral:
+        trainer.train_dataset = mistral_mask(trainer.train_dataset, train_kept, train_texts, tok, fmt, "training")
+        trainer.eval_dataset = mistral_mask(trainer.eval_dataset, val_kept, val_texts, tok, fmt, "validation")
+        mistral_guard(trainer.train_dataset[0], train_kept[0], tok, fmt)
+        say("Mistral masking: one BOS, </s> trained, the decoded spans are the renderer's, no tool output trained "
+            "(row 0 of the training set).")
+    else:
+        trainer.train_dataset = mask_followups(trainer.train_dataset, train_kept, "training")
+        trainer.eval_dataset = mask_followups(trainer.eval_dataset, val_kept, "validation")
     ckpts, partial = resumable_checkpoints(out / "checkpoints") if args.resume else ([], [])
     if partial:
         say("--resume: skipping incomplete checkpoint(s) " + ", ".join(d.name for d in partial)
@@ -1005,9 +1284,9 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         torch.cuda.empty_cache()
     gen = None
     if args.gen_check:
-        items = gen_check_items(val_rows, args.gen_check, args.val_seed)
+        items = gen_check_items(val_rows, args.gen_check, args.val_seed, fmt)
         say(f"Generation check: the first turn of {len(items)} fixed validation rows, greedy ...")
-        gen = generation_check(model, tok, items, torch, FastModel)
+        gen = generation_check(model, tok, items, torch, FastModel, fmt=fmt)
         log_line({"step": trainer.state.global_step, "gen_check": {k: v for k, v in gen.items() if k != "failed_ids"}})
         say(f"Generation check: {gen['match']}/{gen['scored']} first turns match"
             + (f" ({gen['error']})" if gen.get("error") else "") + f" in {gen['seconds']}s.")
@@ -1046,13 +1325,15 @@ def train(args, p: dict, train_rows: list[dict], val_rows: list[dict]) -> int:
         "gpu": torch.cuda.get_device_name(0),
         "peak_vram_gb": round(peak_reserved, 1),
     }
+    if mistral:  # main's run.json is unchanged for qwen
+        run["rows"]["dropped_unservable_by_rule"] = dict(unservable_by_rule)
     (out / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     say(f"Done in {run['minutes']} min: loss {run['first_loss']} → {run['last_loss']}"
         + (f", validation {evals[0][1]:.3f} → {evals[-1][1]:.3f}" if evals else "") + ".")
     say(f"Adapter: {trainkit.rel(adapter_dir)} · settings: {trainkit.rel(out / 'run.json')}")
     say(f"Next: python -m souschef_lab.dpo --sft-adapter {trainkit.rel(adapter_dir)} --name <name>, or "
         f"python -m souschef_lab.export --adapter {trainkit.rel(adapter_dir)} --name <ollama-name> "
-        "--base-ollama-tag qwen3.5:9b --create")
+        f"--base-ollama-tag {fmt.base_ollama_tag} --create")
     return 0
 
 

@@ -46,6 +46,16 @@ decision.json and the candidate_ready notification.
 DRY (`--dry`): every arm is the lab's fake service (oracle scripts; the current
 arm is scripted from the rows on its own training manifest, as the drift check's
 DRY does), no harness, no GPU.
+
+Base families (chatfmt; docs/RETRAIN.md "The base family"): the current arm is the
+live model's (state/model.json `family`, absent = qwen), the candidate the round's
+(train-config.json `family`; the staged Modelfile must serve it). Each arm's route
+gets its family's settings (harness.FAMILY_ROUTES: a mistral arm, chocolate-muffin,
+runs with prime off and temperature 0.15), and before any row each GPU service's
+/api/show must report the family recorded for it (pipeline_common.served_family):
+a mismatch stops the stage rather than measuring a model with another family's
+settings. The bar and its rules are the same for every family. A qwen-only eval
+records nothing new.
 """
 from __future__ import annotations
 
@@ -60,7 +70,8 @@ from typing import Any, Callable, Iterator
 
 from .. import LAB_DIR
 from ..manifest import Manifest
-from .common import ConfigError, StageError, Store, load_run, model_state, run8, run_prefix, write_jsonl
+from .common import (ConfigError, StageError, Store, load_run, model_family, model_state, run8, run_prefix,
+                     trained_family, write_jsonl)
 
 ARMS = ("current", "candidate")
 EXAM_SETS = ("paraphrase", "holdout", "real", "followup", "out_of_scope", "out_of_scope_holdout")
@@ -455,9 +466,48 @@ def plan_sets(store: Store, run_id: str, *, mode: str, local: Path, th: dict, pr
     return out
 
 
+def arm_families(store: Store, run_id: str, model: dict) -> dict[str, str]:
+    """{current, candidate} → base family: the live model's (state/model.json) and the round's (train-config.json).
+    The staged Modelfile (the candidate image's, runs/<id>/train/stage/Modelfile) must serve the round's family when
+    it names one (ConfigError otherwise: a hand-written train-config.json, or a trainer run with BASE_FAMILY)."""
+    from .. import chatfmt
+    fams = {"current": model_family(model), "candidate": trained_family(store, run_id)}
+    raw = store.read_bytes(f"{run_prefix(run_id)}/train/stage/Modelfile")
+    staged = chatfmt.of_modelfile(raw.decode("utf-8", "replace")) if raw is not None else None
+    if staged is not None and staged != fams["candidate"]:
+        raise ConfigError(f"the candidate's staged Modelfile serves the {staged} family, the round trained "
+                          f"{fams['candidate']} (runs/{run_id}/train-config.json `family`): the image and the record "
+                          "disagree; fix the record or rebuild the candidate")
+    return fams
+
+
+def check_served(families: dict[str, str], urls: dict[str, str], probe: Callable[[str], dict],
+                 progress: Callable[[str], None] = print) -> dict[str, dict]:
+    """Each GPU service's served family (probe: pipeline_common.served_family) against the recorded one. A mismatch
+    is a ConfigError naming the fix; an unknown answer (no /api/show, an older image) is reported and left alone."""
+    seen, bad = {}, []
+    for arm, url in urls.items():
+        got = probe(url) or {}
+        seen[arm] = got
+        fam = got.get("family")
+        if fam is None:
+            progress(f"eval: {arm}: the served family is unknown ({got.get('error') or got.get('architecture')}); "
+                     f"using the recorded {families[arm]}")
+        elif fam != families[arm]:
+            bad.append(f"{arm} serves a {fam} model ({got.get('architecture')}, PARSER {got.get('parser')}) but the "
+                       f"record says {families[arm]}")
+    if bad:
+        raise ConfigError("base family: " + "; ".join(bad) + " — a model rolled out by hand needs `family` in "
+                          "state/model.json (docs/RETRAIN.md \"The base family\"); the candidate's is the round's "
+                          "train-config.json `family`")
+    return seen
+
+
 def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candidate_url: str | None, workdir: Path,
         dry: bool = False, engine_path: str | None = None, workers: int = 2, harness_factory: Callable | None = None,
-        progress: Callable[[str], None] = print) -> dict:
+        progress: Callable[[str], None] = print, served_family: Callable | None = None) -> dict:
+    """served_family: the probe of each GPU service's base family (default pipeline_common.served_family; skipped
+    when a caller supplies its own harness_factory and no probe — the caller owns those routes)."""
     from .. import baseline as BL
     from .. import pipeline_common as PC
     from . import bar as BAR
@@ -467,6 +517,10 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
     local = Path(workdir)
     th = PC.load_thresholds(store.b)
     model = model_state(store)
+    families = arm_families(store, run_id, model)
+    any_other = set(families.values()) != {"qwen"}
+    if any_other:
+        progress(f"eval: base families: current {families['current']}, candidate {families['candidate']}")
     base_cur = store.read_json(f"baselines/{model.get('digest')}/baseline.json") if model.get("digest") else None
     from .. import r4score as R4S
     try:  # trigger.score_policy / font_policy → the scorer's environment (F0H / F9H, and the exam's font rows). The
@@ -547,15 +601,19 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
             newest_by[arm].append(results(tr))
 
     harness = None
+    served_seen = None
     t0 = time.monotonic()
     try:
         if not dry:
             if not current_url or not candidate_url:
                 raise ConfigError("--current-url and --candidate-url (the eval and candidate GPU services) are required")
             from ..harness import Harness
-            harness = (harness_factory or Harness)({"current": current_url, "candidate": candidate_url}, run_id=f"ev{tag}",
-                                                   workdir=local / "harness")
+            urls = {"current": current_url, "candidate": candidate_url}
+            harness = (harness_factory or Harness)(urls, run_id=f"ev{tag}", workdir=local / "harness",
+                                                   **({"families": families} if any_other else {}))
             harness.__enter__()
+            probe = served_family or (PC.served_family if harness_factory is None else None)
+            served_seen = check_served(families, urls, probe, progress) if probe is not None else None
         arms = Arms(harness=harness, dry=dry, engine_path=engine_path, workers=workers, progress=progress,
                     tolerate_errors=frozenset({"candidate"}) if smoke else frozenset())
         errs: list[BaseException] = []
@@ -674,5 +732,9 @@ def run(store: Store, run_id: str, *, mode: str, current_url: str | None, candid
                  # the round's training arms (base seeds and a warm start), each scored on the validation rows
                  "training_arms": REP.training_arms(store.read_json(f"{pre}/train/progress.json") or {}),
                  "clear_asks": clear}
+    if any_other:  # a qwen-only eval's info is today's
+        eval_info["families"] = dict(families)
+        if served_seen is not None:
+            eval_info["served_families"] = served_seen
     store.write_json(f"{pre}/eval/info.json", eval_info)
     return REP.build(store, run_id, mode=mode, bar=bar, eval_info=eval_info)

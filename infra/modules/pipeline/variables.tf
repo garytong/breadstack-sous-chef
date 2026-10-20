@@ -121,6 +121,16 @@ variable "ollama_model" {
   description = "The Ollama model name inside the model image (the warm-up's /api/generate model)."
 }
 
+variable "base_family" {
+  type        = string
+  default     = "qwen"
+  description = "The base model family a retrain round trains (lab/souschef_lab/chatfmt.py): qwen (blueberry-muffin, unsloth/Qwen3.5-9B) or mistral (chocolate-muffin, mistralai/Ministral-3-8B-Instruct-2512-BF16). It goes into infra/config.json; the dataset stage reads it (a round's trigger.base_family wins) and pins it in runs/<id>/train-config.json, which the trainer, the eval and the decision read. The workflows themselves never read it (docs/RETRAIN.md \"The base family\")."
+  validation {
+    condition     = contains(["qwen", "mistral"], var.base_family)
+    error_message = "base_family: qwen or mistral."
+  }
+}
+
 variable "inhouse_route_name" {
   type        = string
   default     = "blueberry-muffin"

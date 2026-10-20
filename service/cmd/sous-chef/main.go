@@ -144,6 +144,8 @@ func serve(ctx context.Context, cfg *config.Config, getenv func(string) string) 
 		RouteInfo:              cfg.RouteInfo(),
 		DefaultRoute:           cfg.DefaultRoute,
 		DefaultRouteConfigured: defaultOK,
+		RouteAliases:           cfg.RouteAliases,
+		ParserErrors:           models.ParserErrors,
 		// README §1 limits: 8 MiB manifests, 256 KB for every other body.
 		MaxManifestBytes: api.DefaultMaxManifestBytes,
 		MaxBodyBytes:     api.DefaultMaxBodyBytes,
@@ -182,6 +184,9 @@ func serve(ctx context.Context, cfg *config.Config, getenv func(string) string) 
 	go func() {
 		log.Printf("sous-chef %s listening on %s (routes: %v, default: %s, keys: %d, usage shipping: %v)",
 			cfg.BuildID, httpSrv.Addr, cfg.RouteNames(), cfg.DefaultRoute, len(cfg.ServiceKeys), usageRec.ShippingEnabled())
+		if len(cfg.RouteAliases) > 0 {
+			log.Printf("sous-chef: route aliases %v: a turn without a model is answered by %s", cfg.RouteAliases, cfg.AnsweredBy(""))
+		}
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}

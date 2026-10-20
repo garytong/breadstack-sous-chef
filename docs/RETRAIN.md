@@ -327,7 +327,9 @@ nothing here needs a Terraform apply or a workflow change.
    drift comparisons.
 
 Workflow input: `{mode: "full" | "smoke", trigger: {drift_run, reason},
-dry_rollout: bool, resume_from?: "<stage>", run_id?: "<id>"}`.
+dry_rollout: bool, resume_from?: "<stage>", run_id?: "<id>"}`. A round of
+chocolate-muffin, the Ministral family: `"trigger": {"base_family": "mistral", …}`
+([R11](#r11-the-base-family-chocolate-muffin)).
 
 ---
 
@@ -1180,6 +1182,7 @@ resolved by `train.py pipeline_config`:
 | `INIT_ADAPTER=rt-…` (or `runs/…`, `base/…`, `gs://<pipeline bucket>/runs/…` or `…/base/…`) | `"init_adapter": …` | a warm start: that adapter's LoRA weights before the first update (same rank and alpha). Any other `gs://` path is refused: the trainer's account cannot read it |
 | `INIT_LR=5e-5` | `"init_lr": 5e-5` | the warm arms' learning rate (default 5e-5; only with `INIT_ADAPTER`); base arms keep 2e-4 |
 | `TRAIN_WINDOW_S=43200`, `TRAIN_TAIL_S=2700` | (env only) | the 12 h window guard below: the job's Vertex timeout, and the time kept for the export, stage and push |
+| `BASE_FAMILY=mistral` | `"family": "mistral"` (the dataset stage writes it from `trigger.base_family` / infra config `base_family`; never a `trigger.train` key) | the base family ([R11](#r11-the-base-family-chocolate-muffin)): chocolate-muffin's Ministral base, its render and masking, the GGUF and stage checks, staged at 0.15. A warm start then needs a Ministral LoRA (`base/adapters/cm-r7`). Unset: qwen |
 
 - **Selection never reads the bar's sets.** With several arms, `train.py
   select` keeps the arms within 1 match of the best generation check, then
@@ -1231,10 +1234,17 @@ resolved by `train.py pipeline_config`:
     gcloud storage cp - $W/train-config.json --content-type=application/json
   ```
 
+  For a **mistral** round ([R11](#r11-the-base-family-chocolate-muffin)) the
+  file must keep `"family": "mistral"` (the dataset stage wrote it there), with
+  a Ministral warm adapter: `{"family": "mistral", "arms": ["base:3407",
+  "warm:3407"], "init_adapter": "base/adapters/cm-r7"}`. A file without it
+  quietly trains Qwen, and only the eval's "Base family change" warning would
+  show it.
+
   The dataset stage also reads the warm adapter's `adapter_config.json` from
   the bucket and refuses one whose LoRA is not r16/α16 on
   `unsloth/Qwen3.5-9B` (what `train.py` would refuse after loading the base
-  on the GPU).
+  on the GPU) — on the Ministral base for a mistral round ([R11](#r11-the-base-family-chocolate-muffin)).
 
 - **Warm starts run beside from-base seeds** (the user's decision,
   2026-10-15: "do both", keep the best on validation). The warm arm trains
@@ -1361,7 +1371,10 @@ with the trainer image's prebuilt llama.cpp, so nothing is cloned or compiled
 at run time (`export.py --method merged --llama-cpp /opt/llama.cpp` is the
 fallback). `train/stage/` is exactly what `lab/model-image/model-context.sh`
 accepts: one GGUF and a `Modelfile` with temperature 0.3, presence_penalty 0,
-top_k 20, top_p 0.95, num_ctx 65536.
+top_k 20, top_p 0.95, num_ctx 65536. A mistral round ([R11](#r11-the-base-family-chocolate-muffin))
+stages the Ministral TEMPLATE and `PARSER ministral` at temperature 0.15 with
+the same limits, and checks it (`chatfmt check-stage`) before the push; the
+image build is the same for both families.
 
 **The image** (Cloud Build, `infra/modules/pipeline/cloudbuild-model.yaml`,
 service account `souschef-builder`, `E2_HIGHCPU_8`, 200 GB, 1 h, worker
@@ -1964,6 +1977,200 @@ alike.
 - An interrupted `eval` (Ctrl-C between polls) releases both locks; run it
   again and it takes them back and keeps polling the same execution. A
   killed shell leaves the locks to expire (8 h).
+
+## R11. The base family (chocolate-muffin)
+
+A round trains one **base family** (`lab/souschef_lab/chatfmt.py`):
+
+| family | model | base | served as |
+|---|---|---|---|
+| `qwen` (the default) | blueberry-muffin | `unsloth/Qwen3.5-9B` | `RENDERER qwen3.5` / `PARSER qwen3.5`, temperature 0.3 |
+| `mistral` | chocolate-muffin | `mistralai/Ministral-3-8B-Instruct-2512-BF16` @ `f6fae97` | the Ministral `TEMPLATE` (`serving_mistral.TEMPLATE`), `PARSER ministral`, temperature 0.15 |
+
+chocolate-muffin is the Mistral arm's model ([MISTRAL.md](MISTRAL.md)). Its r7
+run (`mx-20261018-m3-8b-r7`) beat r7 on r7's data and is about 30–40 % faster a
+turn. With the family left at `qwen`, every round is exactly what it was
+before: the same commands, files, Modelfile and results. The dry end-to-end
+run and every test that existed hold this. The one addition a qwen round
+sees is a read-only `/api/show` call to each GPU service in the eval and
+drift jobs, which checks the served family and records nothing when it
+matches.
+
+### The switch
+
+The family comes from three places, and the first one set wins:
+
+1. `trigger.base_family` (`"qwen"` or `"mistral"`) for one round.
+2. `infra/config.json` `base_family`, which is Terraform's
+   `pipeline_base_family` in `infra/envs/int`. Its default is `"qwen"`. Rounds
+   that drift starts, and `make pipeline-retrain` / `pipeline-smoke` (which send
+   no `base_family`), read it. It follows the live in-house model: the int
+   switch to chocolate-muffin sets it to `"mistral"`
+   ([CHOCOLATE-MUFFIN.md](CHOCOLATE-MUFFIN.md) step 5b) and its rollback sets it
+   back to `"qwen"` (§5), so the next rounds train what production serves.
+3. Otherwise `qwen`.
+
+The **dataset stage** resolves the family once. For a non-qwen round it pins
+the family in `runs/<id>/train-config.json` as `"family": "mistral"`, which
+the trainer, the eval and the decision read. `result-dataset.json` `metrics.base_family`
+says where it came from. If a `train-config.json` already there names
+another family, the stage stops.
+
+The workflows never read the family. `retrain.yaml` and `lib.yaml` are
+unchanged: the job spec, the trainer image (one `sous-chef-trainer:<service
+tag>` for both families), the build and the rollout are the same. To change
+a family by hand, set `BASE_FAMILY` on a trainer job; it wins over the file.
+
+### What a mistral round does differently
+
+| stage | mistral |
+|---|---|
+| dataset | Runs `train.py --family mistral` dry plan. Checks every row under the Ministral render (gate 4: one segment per collated assistant message). A row holding a control-token string as text (`<s>`, `</s>`, `[INST]`, … — the tokenizer reads it as the control token, so a merchant's HTML strike-through `<s>…</s>` is BOS and an early `</s>`) fails the gate when it moves the row's token spans: the training mask would stop on it on the GPU, or train other text than its replies (`train.mask_problem`, read from the render alone, no tokenizer). Rows whose control strings keep their spans are counted (a warning). Checks a warm adapter's `adapter_config.json` against the Ministral base. Uses the window estimate at the Ministral rate (20 s an update). |
+| train (`pipeline-train.sh`) | Uses the Ministral base tar from `base/`, and `train.py --family mistral` for every SFT and dry plan. Masks by token id. Exports with `base-modelfiles/ministral-3-8b.modelfile`. Runs `tools/mx_gguf.py check` on the GGUF before staging. Stages at **`MODEL_TEMPERATURE=0.15`**. Then runs `python -m souschef_lab.chatfmt check-stage` on the staged Modelfile before anything is pushed. The check requires the TEMPLATE byte for byte, `PARSER ministral` with no RENDERER, and exactly once each temperature 0.15, top_k 20, top_p 0.95, presence_penalty 0 and num_ctx 65536 (r7's limits). |
+| model image | No change: `lab/model-image/` and `cloudbuild-model.yaml` are untouched, so the pinned model-image hashes hold and no `terraform apply` is needed. Ollama 0.34.4 serves the staged TEMPLATE and PARSER. |
+| candidate and eval | The live model's family comes from `state/model.json` `family` (absent = qwen); the candidate's comes from `train-config.json`, and the staged Modelfile must agree. Each arm's harness route carries its family's settings (`harness.FAMILY_ROUTES`). A mistral arm gets `prime` off (the priming was calibrated for Qwen3.5's hybrid attention), temperature 0.15 and `parser_retries` off (a MinistralParser 500 is not retried as a hidden extra draw). Before any row, each GPU service's `/api/show` must report the recorded family (`pipeline_common.served_family`); a mismatch fails the stage. The bar, its rules and its tolerances are unchanged. `eval/info.json` has `families` and `served_families`. |
+| report | `results.families`. A candidate of another family than the live model adds a warning to `report.json` `warnings` and a line to the decision message: Approve rolls the image, and **the int route must take the new family's settings** (the chocolate-muffin route) or production serves it with the old family's. |
+| decide | Approve writes `"family": "mistral"` into `state/model.json`, and history entries keep theirs. Drift then asks the live model with its family's route (`drift.live_family`, checked against the eval service's `/api/show`). |
+
+A qwen round adds none of these keys, steps or files.
+
+### One-time copies (a person; bucket writes, server-side, minutes)
+
+The trainer reads only `runs/` and `base/`, and `experiments/mistral/` is
+deleted after the arm ([MISTRAL.md §7](MISTRAL.md#7-cleanup)). Copy the
+two things a mistral round needs into `base/`, which has no lifecycle rule,
+before that cleanup:
+
+```bash
+PIPE=gs://breadstack-sous-chef-int-pipeline; EXP=$PIPE/experiments/mistral; MX=mx-20261018-m3-8b-r7
+TAR=mistralai-ministral-3-8b-instruct-2512-bf16-hf.tar
+# 1. the Ministral base tar beside the Qwen one (17.9 GB; pipeline-train.sh runs sha256sum -c on it)
+gcloud storage cp $EXP/base/$TAR $EXP/base/$TAR.sha256 $PIPE/base/
+gcloud storage cat $PIPE/base/$TAR.sha256          # 4b75e9b5f546952d56262d861a7c914a9682e25d62e6baabed59f01cb28f452d  mistralai-…-hf.tar
+gcloud storage hash --hex $PIPE/base/$TAR | grep md5; gcloud storage hash --hex $EXP/base/$TAR | grep md5   # the same line
+# 2. chocolate-muffin r7's adapter, the warm start (196 MB: adapter/, run.json, loss.jsonl, the samples)
+SRC=$EXP/runs/$MX/train/adapter; DST=$PIPE/base/adapters/cm-r7
+gcloud storage cat "$SRC/adapter/adapter_config.json" | jq '{peft_type, r, lora_alpha, base_model_name_or_path}'
+#    expect LORA, 16, 16, "mistralai/Ministral-3-8B-Instruct-2512-BF16"
+gcloud storage rsync --recursive "$SRC" "$DST"
+gcloud storage hash --hex "$DST/adapter/adapter_model.safetensors" | grep md5    # c5d098aa53c014d37a94f8fe0c9fd020
+gcloud storage cat "$DST/run.json" | jq '{name, family, seed, steps, last_eval_loss}'
+#    mx-20261018-m3-8b-r7-sft, mistral, 3407, 994, 0.3723
+```
+
+The dataset stage refuses `init_adapter: base/adapters/cm-r7` until step 2
+is done. It also refuses r4's adapter for a mistral round, and cm-r7 for a
+qwen round, because the LoRA's base must be the family's base.
+
+### The chocolate-muffin r7 serving image and its state (one-off; a person)
+
+[CHOCOLATE-MUFFIN.md](CHOCOLATE-MUFFIN.md) holds the commands, in the order they
+must run:
+
+- **Step 1, the image.** The arm's export (`experiments/mistral/runs/mx-20261018-m3-8b-r7/train/export`,
+  GGUF sha256 `9b396018…`) is re-staged at 0.15 (`make model-stage`; the export's
+  own `train/stage/` was staged at 0.3), checked with the trainer's own `chatfmt
+  check-stage`, and built through the model-image path every round uses —
+  `lab/model-image/` (r7's `model/context.tar.gz`), Terraform's pinned
+  `infra/cloudbuild-model.json` on `souschef-builder` — as `model:cm-r7`.
+  `tests/test_base_family.py` runs the staging step on the export's exact
+  Modelfile.
+- **Steps 2–5**: the L4 check (r7 on the eval service against the candidate,
+  under the pipeline's `retrain` and `gpu-eval` locks), the route, the switch
+  (`make inhouse-switch`, which takes only the check's PASS for that digest),
+  then, in the checkout that holds int's tfvars, `model_route_aliases` and
+  **`pipeline_base_family = "mistral"`** mirrored and applied, so the next
+  rounds train chocolate-muffin.
+- **Step 6, the pipeline's state.** A model rolled out by hand needs its
+  `state/model.json` entry ([DRIFT.md "Manual rollbacks"](DRIFT.md#manual-rollbacks)),
+  here with **`"family": "mistral"`**: without it drift and the eval refuse to
+  ask the model, whose `/api/show` says `mistral3`. chocolate-muffin r7 trained
+  on r7's dataset and manifest (`3914e2e4…`), so the entry keeps r7's
+  `training_manifest`, `dataset` and `training_cases`, and r7's entry goes into
+  `history`. Then `drift calibrate` gives the new digest a baseline (about 3 h
+  of L4).
+- **§5, the rollback**: r7's image first, then the route (`make
+  inhouse-rollback`), then r7's `state/model.json` entry back (and any
+  `state/ack.json` written meanwhile moved aside), then `model_route_aliases =
+  {}` and `pipeline_base_family = "qwen"` applied. r7's baseline is still under
+  `baselines/sha256:0f301196deae…/`.
+
+### Running r8 as chocolate-muffin, in order
+
+1. **Images.** Commit this lab (a person: the user's go-ahead), then build the lab and trainer
+   images for the serving tag (`make lab-image TAG=<T> && make trainer-image
+   TAG=<T>`, PIPELINE.md §4.3). One trainer image serves both families. The
+   Mistral arm trained with the unchanged `images/trainer/Dockerfile`:
+   transformers 5.5.0 has `mistral3`, and the pinned llama.cpp converts it.
+   The model image needs no rebuild and no apply.
+2. **Copies:** the base tar and `base/adapters/cm-r7`, as above.
+3. **SMOKE** (about US$10–15). It is the first run of a Ministral model
+   through the pipeline's own Vertex job, Cloud Build and candidate service,
+   and of the served-family probe on real L4s:
+
+   ```bash
+   gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGION --data='{"mode":"smoke",
+     "trigger":{"reason":"r8 smoke (chocolate-muffin)","base_family":"mistral",
+                "train":{"arms":["base:3407","warm:3407"],"init_adapter":"base/adapters/cm-r7"}}}'
+   ```
+
+4. **The round:** r8's own trigger keys. Once chocolate-muffin is live, the
+   switch has set `pipeline_base_family = "mistral"` (CHOCOLATE-MUFFIN.md step
+   5b), so every round, drift-started ones included, trains chocolate-muffin;
+   `"base_family":"mistral"` in the trigger says so explicitly. Before the
+   switch (r8 against a live blueberry-muffin), the trigger key is what makes
+   the round mistral:
+
+   ```bash
+   gcloud workflows execute souschef-retrain --project $PROJECT --location $WF_REGION --data='{"mode":"full",
+     "trigger":{"reason":"r8","base_family":"mistral","carry":"required",
+                "train":{"arms":["base:3407","warm:3407"],"init_adapter":"base/adapters/cm-r7"}}}'
+   ```
+
+   - **Arms and the window.** A Ministral arm trained at 19.4 s an update on
+     the H100 (r7's 994 updates took 5.4 h, against 3.3 h for Qwen). Two arms
+     come to about 12.8 h with the job's head and the export, over the 12 h
+     window (`train.window_estimate`, 20 s an update). The
+     dataset stage logs that only one arm fits, and the trainer starts the
+     second only if the first leaves room (`selection.skipped` otherwise).
+   - **Arm order.** In a full round only the first arm normally fits the
+     window, so `["base:3407","warm:3407"]` trains a from-base
+     chocolate-muffin and skips the warm start (`selection.skipped`); only
+     the SMOKE and the resume smoke exercise cm-r7. That keeps a from-base
+     model in every round, as R4 asks. Put `warm:3407` first if continuing
+     cm-r7 on r8's data should be what competes.
+   - **The A100 rung.** An r7-sized Ministral arm overruns one 12 h attempt on
+     the A100-40 rung (about 2× the H100's time): it finishes on that rung's
+     second attempt, from its checkpoints.
+   - **The bar's noise.** `sigma_seed` (R10) was measured on Qwen arms. Read
+     a mistral round's margins with that in mind until a Ministral seed-noise
+     run measures its own.
+   - **The warm arm** trains at 5e-5 from cm-r7, which saw r7's rows once
+     already.
+
+5. **Read the report.** If the live model is still blueberry-muffin (qwen),
+   the decision's summary starts with "Base family change". An Approve then
+   also needs the int route switched to chocolate-muffin's settings, and in
+   the serving runbook's order: the alias first (the `gcloud … MODEL_ROUTE_ALIASES`
+   command of CHOCOLATE-MUFFIN.md step 5a, with `gpu_model_mistral_route`
+   enabled), then the Approve, which rolls the model, then step 5b's Terraform
+   mirror and `pipeline_base_family`. The other way (a qwen candidate while
+   chocolate-muffin is live): the Approve first, then the alias taken away.
+   The drift poll posts a route/family notice when the route and
+   `state/model.json` disagree for an hour. If chocolate-muffin is already
+   live, the round is mistral against mistral and no route change is needed.
+
+### Failures
+
+| failure | meaning | fix |
+|---|---|---|
+| dataset: `trigger.base_family: base family 'x'` / `infra/config.json base_family: …` | not `qwen` or `mistral` | fix the trigger in `run.json` (or the tfvar), `resume_from dataset` |
+| dataset: `train-config.json names the base family …` | a `train-config.json` written earlier, or by hand, pins another family | fix one or the other, `resume_from dataset` |
+| dataset (gate): `mistral render: N rows hold a control-token string that … moves their token spans` | those rows' text holds `<s>`, `</s>`, `[INST]`, `[/INST]`, … that the Ministral tokenizer reads as control tokens; the training mask would stop on them (on the GPU) or train other text than their replies | fix or drop the named rows (their cases), `resume_from dataset`; a qwen round is not affected |
+| dataset: `trigger.train.init_adapter: … was trained on …` | the warm adapter's LoRA is on another base: r4's for mistral, cm-r7's for qwen | name the family's adapter (`base/adapters/cm-r7` for mistral) |
+| train: `gguf check` / `stage check` (training `fatal`) | the exported GGUF is not a servable `mistral3` file, or the staged Modelfile is not the family's served model | read `train/train.log` and `train/export/gguf-check.json`; nothing was pushed |
+| eval: `the candidate's staged Modelfile serves …` | `train/stage/` and `train-config.json` disagree, e.g. a trainer run by hand with `BASE_FAMILY` | fix the record or retrain (`resume_from train` after deleting `train/DONE`) |
+| eval or drift: `base family: … serves a mistral model … but the record says qwen` | the GPU service's `/api/show` is not the family recorded, for example a hand rollout of chocolate-muffin without `"family"` in `state/model.json` | write the entry (above), then resume or re-run the check |
 
 ## Lessons from r4 that apply to every round
 

@@ -48,6 +48,12 @@ kept rows (train / val) of the cases tagged meta.capability — contrast.py's cr
 group (page:create, page:exists, list:tags …) and mode, and prepare's relabelled page-create rows — beside the
 rejects of those cases (so a group that collected nothing usable shows as 0 kept, not missing).
 
+Base family (chatfmt; docs/RETRAIN.md "The base family"): trigger.base_family, else the bucket's infra/config.json
+`base_family`, else qwen. A non-qwen round (mistral: chocolate-muffin) plans with train.py --family, checks every row
+under the family's render (gate 4), checks a warm-start adapter against the family's base, and pins the family in
+runs/<id>/train-config.json (`family`), which the trainer, the eval and the decision read. A qwen round writes and
+reports exactly what it did before.
+
 Outputs: runs/<id>/dataset/{dataset/{train,val,rejects}.jsonl, stats.json,
 dataset-manifest.json, manifest.json} (the layout train.py and pipeline-train.sh
 read) and runs/<id>/model/context.tar.gz (the lab image's lab/model-image, the build
@@ -65,7 +71,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import LAB_DIR
-from .common import ConfigError, Store, load_run, notification, read_jsonl, run_prefix, write_jsonl, write_result
+from .common import (TRAIN_CONFIG, ConfigError, Store, load_run, notification, read_jsonl, round_base_family,
+                     run_prefix, trained_family, write_jsonl, write_result)
 
 TRAIN_FLAGS = ["--fields-context", "on", "--eval-steps", "150", "--val-max-rows", "150", "--checkpoint-steps", "50"]
 MIN_NEW_KEY_POSITIVES = 6
@@ -561,17 +568,31 @@ def row_checks(data: Path, *, need_followups: bool) -> dict:
     return out
 
 
-def train_plan(data: Path, name: str) -> dict:
-    """train.py's dry plan (no torch): rows, tokens, updates, over-length."""
+def train_plan(data: Path, name: str, family: str | None = None) -> dict:
+    """train.py's dry plan (no torch): rows, tokens, updates, over-length. A non-qwen family plans with --family and
+    adds train.family_report's render check (every kept row renders one segment per collated assistant message under
+    the family's served template; rows whose served form cannot carry them are counted): a row that breaks it fails
+    here, before any GPU, not in the trainer's mask step."""
+    from .. import chatfmt
     from .. import train as T
-    args = T.parse_args(["--data", str(data), "--name", name, *TRAIN_FLAGS, "--dry-run"])
+    fam = chatfmt.check(family)
+    args = T.parse_args(["--data", str(data), "--name", name, *TRAIN_FLAGS, "--dry-run",
+                         *(["--family", fam] if fam != chatfmt.DEFAULT else [])])
     tr, va = T.load_split(args.data, "train"), T.load_split(args.data, "val")
     problems = T.check_rows(tr, "train") + T.check_rows(va, "val")
     p = T.plan(args, tr, va)
     mismatch = T.check_fields_context(p["fields_context"], args.data)
     over = int((p.get("rows") or {}).get("over_length_estimate") or 0)
-    return {"problems": problems + ([mismatch] if mismatch else []) + ([f"{over} rows over max_seq"] if over else []),
-            "updates": p.get("updates"), "rows": p.get("rows"), "tokens_estimate": p.get("tokens_estimate")}
+    out = {"problems": problems + ([mismatch] if mismatch else []) + ([f"{over} rows over max_seq"] if over else []),
+           "updates": p.get("updates"), "rows": p.get("rows"), "tokens_estimate": p.get("tokens_estimate")}
+    if fam != chatfmt.DEFAULT:
+        out["family"] = fam
+        try:
+            out["family_report"] = T.family_report(chatfmt.get(fam), tr, va, args.max_seq_length).splitlines()
+        except SystemExit as e:  # train.die (trainkit.Die: its message, not the exit status): rows the family's
+            # render cannot carry as trained segments, or whose control-token strings the training mask cannot train
+            out["problems"].append(f"{fam} render: {getattr(e, 'message', None) or e}")
+    return out
 
 
 def ensure_val(data: Path) -> int:
@@ -623,13 +644,16 @@ def _pipeline_bucket(store: Store | None) -> str:
     return b if b.startswith("gs://") else "gs://" + b.split("/")[-1]
 
 
-def train_config_of(run_file: dict, store: Store | None = None) -> dict | None:
+def train_config_of(run_file: dict, store: Store | None = None, family: str | None = None) -> dict | None:
     """run.json trigger.train → runs/<id>/train-config.json (the trainer's settings: train.pipeline_config).
     None when the trigger sets none. Checked HERE, before any GPU (r6 review: a bad value used to fail on the H100,
     after the image pull): the keys, every value through the trainer's own resolver (train.pipeline_config: seeds,
     arms — base:<seed> / warm:<seed>, a warm arm needing init_adapter and an init_adapter a warm arm — learning rate,
     generation check, an adapter path inside the pipeline bucket's runs/ or base/), and, with the store, that the
-    warm-start adapter exists (adapter_config.json under it). ConfigError otherwise."""
+    warm-start adapter exists (adapter_config.json under it) and is a r16/α16 LoRA on the round's base family's base
+    (`family`, default qwen: unsloth/Qwen3.5-9B; mistral: Ministral 3 8B, e.g. chocolate-muffin's base/adapters/cm-r7).
+    The family itself is not a trigger.train key (trigger.base_family; run() adds it to the file). ConfigError
+    otherwise."""
     cfg = ((run_file or {}).get("trigger") or {}).get("train")
     if cfg in (None, {}, ""):
         return None
@@ -658,9 +682,12 @@ def train_config_of(run_file: dict, store: Store | None = None) -> dict | None:
                 raise ConfigError(f"trigger.train.init_adapter: {rel} is a r{r}/α{alpha} LoRA; the recipe trains "
                                   f"r{T.RECIPE['rank']}/α{T.RECIPE['alpha']} (a warm start continues the same LoRA)")
             base = str(acfg.get("base_model_name_or_path") or "")
-            if base and "/" in base and not base.startswith("/") and base != T.RECIPE["base"]:
-                raise ConfigError(f"trigger.train.init_adapter: {rel} was trained on {base}, the recipe's base is "
-                                  f"{T.RECIPE['base']}")
+            from .. import chatfmt
+            fam = chatfmt.check(family)
+            want = chatfmt.get(fam).base  # qwen: train.RECIPE["base"]
+            if base and "/" in base and not base.startswith("/") and base != want:
+                raise ConfigError(f"trigger.train.init_adapter: {rel} was trained on {base}, the recipe's base is {want}"
+                                  + ("" if fam == chatfmt.DEFAULT else f" (base family {fam})"))
     return dict(cfg)
 
 
@@ -675,12 +702,22 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
     font_pair: keep | drop (default SOUSCHEF_FONT_PAIR, else keep) — module docstring.
     ask_share_max: the ask cap (gate 6; default SOUSCHEF_ASK_SHARE_MAX, trigger.ask_share_max, else 0.03; 0 = off).
     Each default also reads run.json's trigger (font_pair, min_new_key_positives, new_key_positives_waive) after
-    the environment; trigger.train is written to runs/<id>/train-config.json for the trainer (an existing file wins)."""
+    the environment; trigger.train is written to runs/<id>/train-config.json for the trainer (an existing file wins).
+    The base family (trigger.base_family, else infra/config.json base_family, else qwen) is pinned there as `family`
+    when it is not qwen; an existing file that names another family stops the stage (ConfigError)."""
     from .. import r4dataset
     from . import parity_gate
     pre = run_prefix(run_id)
     trig = load_run(store, run_id).get("trigger") or {}
-    train_cfg = train_config_of({"trigger": trig}, store)
+    family, family_src = round_base_family(store, trig)
+    train_cfg = train_config_of({"trigger": trig}, store, family)
+    if store.exists(f"{pre}/{TRAIN_CONFIG}"):
+        pinned = trained_family(store, run_id)
+        if pinned != family:
+            raise ConfigError(f"{pre}/{TRAIN_CONFIG} names the base family {pinned}, the round's is {family} "
+                              f"({family_src}): fix the file or the trigger, then resume_from dataset")
+    if family != "qwen":
+        progress(f"dataset: base family {family} ({family_src})")
     smoke = mode == "smoke"
     local = Path(workdir)
     cases, manifest = local / "cases.jsonl", local / "manifest.json"
@@ -792,8 +829,8 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
     # 3. row checks
     gates["rows"] = row_checks(out / "dataset", need_followups=not smoke)
     problems += gates["rows"]["problems"]
-    # 4. the train plan
-    gates["train_plan"] = train_plan(out / "dataset", f"{run_id}-sft")
+    # 4. the train plan (the round's base family: its render checked on every row for a non-qwen family)
+    gates["train_plan"] = train_plan(out / "dataset", f"{run_id}-sft", family)
     problems += gates["train_plan"]["problems"]
     # 5. new keys: enough positive-write train rows for every new / retyped key
     if smoke or minimum <= 0:
@@ -818,6 +855,8 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
                "ask": {k: ask_st[k] for k in ("rows", "share", "share_max", "violations_kept", "unpaired_kept")},
                "capabilities": {k: {"train": v["train"], "val": v["val"], "rejected": v["rejected"]}
                                 for k, v in capabilities.items()}}
+    if family != "qwen":  # a qwen round's result is today's, key for key
+        metrics["base_family"] = {"family": family, "source": family_src}
     if problems:
         note = notification("stage_failed", "error", "Sous Chef pipeline failed: dataset (gate)",
                             "The training set failed its gates: " + "; ".join(problems[:6]) +
@@ -825,18 +864,20 @@ def run(store: Store, run_id: str, *, mode: str, workdir: Path, parity: str = "r
                             {"stage": "dataset", "reason": "gate", "problems": problems}, dedup_key=f"{run_id}:dataset")
         write_result(store, run_id, "dataset", "gate_failed", metrics=metrics, notification_=note)
         raise ConfigError("dataset gates: " + "; ".join(problems[:6]), reason="dataset_gate")
+    if family != "qwen":  # the trainer's family (train.pipeline_config `family`): pinned with the round's settings
+        train_cfg = {**(train_cfg or {}), "family": family}
     if train_cfg is not None:
-        if store.exists(f"{pre}/train-config.json"):
+        if store.exists(f"{pre}/{TRAIN_CONFIG}"):
             metrics["train_config"] = {"kept_existing": True}
         else:
-            store.write_json(f"{pre}/train-config.json", train_cfg)
+            store.write_json(f"{pre}/{TRAIN_CONFIG}", train_cfg)
             metrics["train_config"] = train_cfg
         # the arms against the 12 h Vertex window, on this dataset's updates (every arm trains on the same rows):
         # a planning figure; the trainer's own guard skips an arm that would not end in time and records it
         from .. import train as T
         arms = T.pipeline_config({}, train_cfg, _pipeline_bucket(store))["arms"]
         if len(arms) > 1:
-            win = T.window_estimate(len(arms), metrics.get("updates"))
+            win = T.window_estimate(len(arms), metrics.get("updates"), family=family)
             metrics["train_window"] = {"arms": [a["arm"] for a in arms], **win}
             if not smoke and not win["fits"]:
                 progress(f"dataset: {len(arms)} arms of {metrics.get('updates')} updates need about {win['total_h']} h "
