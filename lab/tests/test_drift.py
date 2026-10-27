@@ -309,6 +309,12 @@ def test_without_a_baseline_a_retrain_is_only_recommended(bucket):
     assert chk["verdict"] == "retrain" and not chk["retrain_eligible"]
     assert chk["retrain_blocked_by"] == "baseline not calibrated"
     assert chk["notification"]["title"] == "Sous Chef drift: retrain recommended"
+    assert chk["notification"]["summary"].endswith("No round started (baseline not calibrated), so no Approve request follows; "
+                                                   "start a round by hand for one. Playbook: docs/RETRAIN.md.")
+    # auto-retrain off is named next to every other blocker, never hidden behind the first
+    chk = _run(b, "check", "dr-n2", "--deployed-file", str(dep), "--limit-rows", "30", "--retrain-auto", "off", "--force")
+    assert chk["retrain_blocked_by"] == "baseline not calibrated"
+    assert "No round started (baseline not calibrated; auto-retrain is off), so no Approve request follows" in chk["notification"]["summary"]
 
 
 def test_a_failed_round_or_a_stale_lock_blocks_a_new_round(bucket):

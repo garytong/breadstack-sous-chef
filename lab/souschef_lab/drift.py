@@ -1456,14 +1456,21 @@ def _conclude(job: Job, mode: str, dep: dict, model: dict, st: dict, sd: dict, i
     lock_stale = bool(retrain_lock) and not lock_live
     failed_round = job.b.read_json(FAILED_ROUND, None)
     engine_ok = imp.get("engine_status") != "stale"
-    eligible = ev["verdict"] == "retrain" and calibrated and engine_ok and not failed_round and not lock_stale
-    why_not = None
-    if ev["verdict"] == "retrain" and not eligible:
-        why_not = ("baseline not calibrated" if not calibrated else "engine snapshot stale" if not engine_ok
-                   else (f"round {failed_round.get('run_id')} failed at {failed_round.get('stage')} and is not resumed "
-                         f"(resume it with resume_from, or delete {FAILED_ROUND}: docs/RETRAIN.md R8)") if failed_round
-                   else f"a stale retrain lock (round {retrain_lock.get('run_id')}, no progress since {retrain_lock.get('updated_at')}): "
-                        f"look at that round, then delete state/locks/retrain.json (docs/RETRAIN.md R8)")
+    # every blocker, not only the first: a post that named only the stale engine hid that auto-retrain was off too
+    blocked: list[str] = []
+    if ev["verdict"] == "retrain":
+        if not calibrated:
+            blocked.append("baseline not calibrated")
+        if not engine_ok:
+            blocked.append("engine snapshot stale")
+        if failed_round:
+            blocked.append(f"round {failed_round.get('run_id')} failed at {failed_round.get('stage')} and is not resumed "
+                           f"(resume it with resume_from, or delete {FAILED_ROUND}: docs/RETRAIN.md R8)")
+        if lock_stale:
+            blocked.append(f"a stale retrain lock (round {retrain_lock.get('run_id')}, no progress since {retrain_lock.get('updated_at')}): "
+                           f"look at that round, then delete state/locks/retrain.json (docs/RETRAIN.md R8)")
+    eligible = ev["verdict"] == "retrain" and not blocked
+    why_not = "; ".join(blocked) or None
     lines = summary_lines(dep=dep, model=model, cmp=cmp, ev=ev, static=sd, imp=imp, probe=probe, confirmed=len(arm_d_reps) >= 2)
     if ack:
         lines.append(f"• Since the Skip of `{ack.get('candidate_id')}` ({str(ack.get('at') or '')[:10]}): compared with the "
@@ -1484,8 +1491,12 @@ def _conclude(job: Job, mode: str, dep: dict, model: dict, st: dict, sd: dict, i
         if eligible and auto and not lock_live:
             title, tail = "Sous Chef drift: retraining started", "A retrain round starts now; the decision should land in about 10 h."
         else:
-            why = why_not or ("auto-retrain is off" if not auto else f"round {retrain_lock.get('run_id')} is running")
-            title, tail = "Sous Chef drift: retrain recommended", f"No round started ({why}). Playbook: docs/RETRAIN.md."
+            why = blocked + ([] if auto else ["auto-retrain is off"])
+            if lock_live:
+                why.append(f"round {retrain_lock.get('run_id')} is running")
+            # only a round asks for an Approve: say so, or the post reads like it waits on one
+            follow = "" if lock_live else ", so no Approve request follows; start a round by hand for one"
+            title, tail = "Sous Chef drift: retrain recommended", f"No round started ({'; '.join(why)}){follow}. Playbook: docs/RETRAIN.md."
         job.notifications.insert(0, PC.notification("drift_detected", severity="warn", title=title,
                                                     summary="\n".join(lines + [tail]),
                                                     details={"report": job.b.uri(f'{job.prefix}/report.json'), "fired": ev["fired"], "link": link},
